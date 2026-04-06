@@ -97,3 +97,29 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_auto_dispatches_to_matching_provider_when_image_gen_unset(self, monkeypatch):
+        """``image_gen.provider`` unset → use a plugin matching
+        ``model.provider`` if available, else fall through (None)."""
+        from tools import image_generation_tool
+        from agent import image_gen_registry as registry_module
+        from hermes_cli import plugins as plugins_module
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: None)
+        monkeypatch.setattr(image_generation_tool, "_read_model_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda *a, **kw: None)
+        image_gen_registry.register_provider(_FakeCodexProvider())
+        monkeypatch.setattr(
+            registry_module, "get_provider",
+            lambda name: _FakeCodexProvider() if name == "codex" else None,
+        )
+
+        # Plugin available → auto-dispatch.
+        dispatched = image_generation_tool._dispatch_to_plugin_provider("draw cat", "landscape")
+        assert dispatched is not None
+        assert json.loads(dispatched)["provider"] == "codex"
+
+        # No matching plugin → returns None (caller drops to legacy FAL).
+        monkeypatch.setattr(image_generation_tool, "_read_model_provider", lambda: "unmapped-provider")
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: None)
+        assert image_generation_tool._dispatch_to_plugin_provider("draw cat", "landscape") is None
