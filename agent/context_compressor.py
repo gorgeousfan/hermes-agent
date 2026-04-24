@@ -479,6 +479,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._last_compression_time = 0.0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
 
     def update_model(
@@ -579,6 +580,7 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        self._last_compression_time: float = 0.0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -608,6 +610,18 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # Anti-thrashing: time-based recovery — if enough time has passed since
+        # the last compression, reset the ineffective counter so the session
+        # gets another chance.  300s is enough for significant new context to
+        # accumulate, making another attempt worthwhile.
+        if (self._ineffective_compression_count >= 2
+                and self._last_compression_time > 0
+                and time.monotonic() - self._last_compression_time >= 300):
+            self._ineffective_compression_count = 0
+            if not self.quiet_mode:
+                logger.info(
+                    "Anti-thrashing cooldown expired — re-enabling auto-compression"
+                )
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -1679,6 +1693,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness
+        self._last_compression_time = time.monotonic()
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
         if savings_pct < 10:
