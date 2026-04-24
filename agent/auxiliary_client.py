@@ -305,6 +305,27 @@ _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding-cn",
 })
 
+# Known substrings that indicate a model is vision/multimodal-capable.
+_VISION_MODEL_INDICATORS = (
+    "vision", "vl", "omni", "multimodal", "4o", "gpt-4o",
+    "gemini", "claude", "mimo", "pixtral", "llava", "cogvlm",
+    "fuyu", "idefics", "internvl", "qwen-vl", "qwen2-vl",
+    "glm-5v", "glm-4v",
+)
+
+
+def _is_likely_vision_model(model: str) -> bool:
+    """Heuristic check whether a model name looks vision-capable.
+
+    Returns True if the model name contains a known vision/multimodal
+    indicator substring.  Used by the vision auto-detection fallback to
+    avoid sending image payloads to models that cannot process them.
+    """
+    if not model:
+        return False
+    lower = model.lower()
+    return any(indicator in lower for indicator in _VISION_MODEL_INDICATORS)
+
 # OpenRouter app attribution headers (base — always sent).
 # `X-Title` is the canonical attribution header OpenRouter's dashboard
 # reads; the previous `X-OpenRouter-Title` label was not recognized there.
@@ -3690,17 +3711,28 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
-                rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model,
-                    api_mode=resolved_api_mode,
-                    is_vision=True)
-                if rpc_client is not None:
+                # When no explicit vision override exists (fell through to
+                # main_model), check if the main model looks vision-capable.
+                # If not, skip directly to aggregator fallbacks instead of
+                # sending an image payload to a text-only model (#14744).
+                if vision_model == main_model and not _is_likely_vision_model(main_model):
                     logger.info(
-                        "Vision auto-detect: using main provider %s (%s)",
-                        main_provider, rpc_model or vision_model,
+                        "Vision auto-detect: skipping main provider %s "
+                        "(model %r is not vision-capable)",
+                        main_provider, main_model,
                     )
-                    return _finalize(
-                        main_provider, rpc_client, rpc_model or vision_model)
+                else:
+                    rpc_client, rpc_model = resolve_provider_client(
+                        main_provider, vision_model,
+                        api_mode=resolved_api_mode,
+                        is_vision=True)
+                    if rpc_client is not None:
+                        logger.info(
+                            "Vision auto-detect: using main provider %s (%s)",
+                            main_provider, rpc_model or vision_model,
+                        )
+                        return _finalize(
+                            main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators (uses their dedicated vision model,
         # not the user's main model) when main provider has no client.
