@@ -656,6 +656,14 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_kwargs.pop("direct_messages_topic_id", None)
             return await send_fn(**retry_kwargs)
 
+    @staticmethod
+    def _is_forum_group_chat(chat: Any) -> bool:
+        """Return True for Telegram forum chats that carry topic threads."""
+        return (
+            getattr(chat, "type", None) in (ChatType.GROUP, ChatType.SUPERGROUP)
+            and bool(getattr(chat, "is_forum", False))
+        )
+
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
         configured = self.config.extra.get("fallback_ips", []) if getattr(self.config, "extra", None) else []
@@ -3547,8 +3555,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_type = "group"
             elif chat.type == ChatType.SUPERGROUP:
                 chat_type = "group"
-                if chat.is_forum:
-                    chat_type = "forum"
+            if self._is_forum_group_chat(chat):
+                chat_type = "forum"
             elif chat.type == ChatType.CHANNEL:
                 chat_type = "channel"
             
@@ -4667,9 +4675,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 thread_id_str = str(thread_id_raw)
         # For forum groups without an explicit topic, default to the
         # General-topic id so the gateway routes back to the General topic
-        # rather than dropping into the bot's main channel (#22423).
-        if chat_type == "group" and thread_id_str is None and getattr(chat, "is_forum", False):
+        # rather than dropping into the bot's main channel (#22423, #13607).
+        if self._is_forum_group_chat(chat) and thread_id_str is None:
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
+            logger.debug(
+                "Forum Telegram chat without thread_id — routing to General topic (thread=%s)",
+                thread_id_str,
+            )
         chat_topic = None
         topic_skill = None
 
