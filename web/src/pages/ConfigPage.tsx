@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Code,
   Download,
@@ -125,6 +126,25 @@ export default function ConfigPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Deep-link target — e.g. /config?category=compression.
+  // requestedCategory is live (re-reads searchParams each render). The effect
+  // below reacts to changes so that intra-page navigation (back/forward,
+  // address-bar edits, modal links fired while Config is already mounted)
+  // updates the visible tab — not just first-mount.
+  const requestedCategory = searchParams.get("category") ?? "";
+
+  // Centralized handler keeps the URL and active tab in sync. `replace: true`
+  // means the back-button doesn't accumulate a step per category click.
+  const selectCategory = (cat: string) => {
+    setSearchQuery("");
+    setActiveCategory(cat);
+    if (searchParams.get("category") !== cat) {
+      const next = new URLSearchParams(searchParams);
+      next.set("category", cat);
+      setSearchParams(next, { replace: true });
+    }
+  };
 
   useLayoutEffect(() => {
     if (!config || !schema) {
@@ -184,12 +204,40 @@ export default function ConfigPage() {
       .catch(() => {});
   }, []);
 
-  // Set active category when categories load
+  // Resolved categories = ordered list ∪ extras present only in the schema
+  // (e.g. plugin-added). Used both for nav rendering and deep-link validation
+  // so a /config?category=<plugin> URL also works.
+  const categories = useMemo(() => {
+    if (!schema) return [];
+    const allCats = [...new Set(Object.values(schema).map((s) => String(s.category ?? "general")))];
+    const ordered = categoryOrder.filter((c) => allCats.includes(c));
+    const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
+    return [...ordered, ...extra];
+  }, [schema, categoryOrder]);
+
+  // Sync the active category with the URL on mount AND on subsequent
+  // ?category=… changes (deep-link from a warning modal, browser back/
+  // forward, address-bar paste). If the requested category is valid and
+  // differs from the current tab, switch to it. Otherwise — only when no
+  // tab has been picked yet — fall back to the first configured category.
+  //
+  // Loop safety: after setActiveCategory(requestedCategory) the effect
+  // re-runs (activeCategory is in deps), the equality branch matches, and
+  // we no-op. We deliberately do NOT call selectCategory() here because
+  // that would write back to the URL and could fight with the browser's
+  // own history machinery during back/forward navigation — the URL is
+  // already correct in this code path; we're only catching the visible
+  // tab up to it.
   useEffect(() => {
-    if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
+    if (categories.length === 0) return;
+    if (requestedCategory && categories.includes(requestedCategory)) {
+      if (activeCategory !== requestedCategory) {
+        setActiveCategory(requestedCategory);
+      }
+    } else if (!activeCategory) {
+      setActiveCategory(categories[0]);
     }
-  }, [categoryOrder, activeCategory]);
+  }, [categories, activeCategory, requestedCategory]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
@@ -202,19 +250,6 @@ export default function ConfigPage() {
         .finally(() => setYamlLoading(false));
     }
   }, [yamlMode]);
-
-  /* ---- Categories ---- */
-  const categories = useMemo(() => {
-    if (!schema) return [];
-    const allCats = [
-      ...new Set(
-        Object.values(schema).map((s) => String(s.category ?? "general")),
-      ),
-    ];
-    const ordered = categoryOrder.filter((c) => allCats.includes(c));
-    const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
-    return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
@@ -552,10 +587,7 @@ export default function ConfigPage() {
                       <ListItem
                         key={cat}
                         active={isActive}
-                        onClick={() => {
-                          setSearchQuery("");
-                          setActiveCategory(cat);
-                        }}
+                        onClick={() => selectCategory(cat)}
                         className="rounded-sm whitespace-nowrap px-2 py-1 text-[11px]"
                       >
                         <CategoryIcon
