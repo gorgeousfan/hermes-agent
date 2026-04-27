@@ -59,6 +59,46 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('updates usage and account limits from message.complete payload', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const accountLimits = {
+      credential_label: 'main',
+      label: 'Codex',
+      level: 'warn' as const,
+      provider: 'openai-codex',
+      windows: [{ label: '5h', level: 'warn' as const, remaining_percent: 18, used_percent: 82 }]
+    }
+
+    patchUiState({ info: { account_limits: null, model: 'gpt-5.5', skills: {}, tools: {} } })
+
+    onEvent({ payload: { account_limits: accountLimits, text: 'done', usage: { total: 42 } }, type: 'message.complete' } as any)
+
+    expect(getUiState().usage.total).toBe(42)
+    expect(getUiState().info?.account_limits).toEqual(accountLimits)
+  })
+
+  it('keeps account limits when message.complete only updates usage', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const accountLimits = {
+      credential_label: 'main',
+      label: 'Codex',
+      level: 'ok' as const,
+      provider: 'openai-codex',
+      windows: [{ label: '5h', level: 'ok' as const, remaining_percent: 83, used_percent: 17 }]
+    }
+
+    patchUiState({ info: { account_limits: accountLimits, model: 'gpt-5.5', skills: {}, tools: {} } })
+
+    onEvent({ payload: { text: 'done', usage: { total: 43 } }, type: 'message.complete' } as any)
+
+    expect(getUiState().usage.total).toBe(43)
+    expect(getUiState().info?.account_limits).toEqual(accountLimits)
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 
