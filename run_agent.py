@@ -4236,7 +4236,7 @@ class AIAgent:
         else:
             prompt = self._SKILL_REVIEW_PROMPT
 
-        def _run_review():
+        def _run_review(_AgentClass=type(self)):
             import contextlib
             # Install a non-interactive approval callback on this worker
             # thread so any dangerous-command guard the review agent trips
@@ -4267,7 +4267,7 @@ class AIAgent:
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
                     _parent_runtime = self._current_main_runtime()
-                    review_agent = AIAgent(
+                    review_agent = _AgentClass(
                         model=self.model,
                         max_iterations=16,
                         quiet_mode=True,
