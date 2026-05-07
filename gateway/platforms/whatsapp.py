@@ -93,7 +93,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
 
     The bridge writes ``bridge.pid`` into the session directory when it
     starts.  If the gateway crashed without a clean shutdown the old bridge
-    process becomes orphaned — this helper finds and kills it.
+    process becomes orphaned - this helper finds and kills it.
     """
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
@@ -208,13 +208,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
     - bridge_script: Path to the Node.js bridge script
     - bridge_port: Port for HTTP communication (default: 3000)
     - session_path: Path to store WhatsApp session data
-    - dm_policy: "open" | "allowlist" | "disabled" — how DMs are handled (default: "open")
+    - dm_policy: "open" | "allowlist" | "disabled" - how DMs are handled (default: "open")
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
-    - group_policy: "open" | "allowlist" | "disabled" — which groups are processed (default: "open")
+    - group_policy: "open" | "allowlist" | "disabled" - which groups are processed (default: "open")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
     """
     
-    # WhatsApp message limits — practical UX limit, not protocol max.
+    # WhatsApp message limits - practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
     DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
@@ -303,7 +303,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return False
         if self._dm_policy == "allowlist":
             return sender_id in self._allow_from
-        # "open" — all DMs allowed
+        # "open" - all DMs allowed
         return True
 
     def _is_group_allowed(self, chat_id: str) -> bool:
@@ -312,7 +312,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return False
         if self._group_policy == "allowlist":
             return chat_id in self._group_allow_from
-        # "open" — all groups allowed
+        # "open" - all groups allowed
         return True
 
     def _compile_mention_patterns(self):
@@ -600,7 +600,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     except Exception:
                         continue
                 else:
-                    # Still not connected — warn but proceed (bridge may
+                    # Still not connected - warn but proceed (bridge may
                     # auto-reconnect later, e.g. after a code 515 restart).
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
@@ -756,8 +756,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         result = re.sub(r"__(.+?)__", r"*\1*", result)
         # Strikethrough: ~~text~~ → ~text~
         result = re.sub(r"~~(.+?)~~", r"~\1~", result)
-        # Italic: *text* is already WhatsApp italic — leave as-is
-        # _text_ is already WhatsApp italic — leave as-is
+        # Italic: *text* is already WhatsApp italic - leave as-is
+        # _text_ is already WhatsApp italic - leave as-is
 
         # --- 4. Convert markdown headers to bold text ---
         # # Header → *Header*
@@ -942,6 +942,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
         """Send a local image file natively via bridge."""
         return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
 
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send audio as WhatsApp voice note (PTT) via bridge. Bridge auto-sets ptt:true for ogg/opus."""
+        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+
     async def send_video(
         self,
         chat_id: str,
@@ -950,7 +961,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a video natively via bridge — plays inline in WhatsApp."""
+        """Send a video natively via bridge - plays inline in WhatsApp."""
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
     async def send_voice(
@@ -989,7 +1000,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Must wrap in `async with` — a bare `await session.post(...)`
+            # Must wrap in `async with` - a bare `await session.post(...)`
             # leaves the response object alive until GC, holding its TCP
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
@@ -1110,7 +1121,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         cached_urls.append(url)
                         media_types.append("image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the image
+                    # Local file path - bridge already downloaded the image
                     cached_urls.append(url)
                     media_types.append("image/jpeg")
                     print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
@@ -1125,12 +1136,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         cached_urls.append(url)
                         media_types.append("audio/ogg")
                 elif msg_type == MessageType.VOICE and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the audio
+                    # Local file path - bridge already downloaded the audio
                     cached_urls.append(url)
                     media_types.append("audio/ogg")
                     print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
-                    # Local file path — bridge already downloaded the document
+                    # Local file path - bridge already downloaded the document
                     cached_urls.append(url)
                     ext = Path(url).suffix.lower()
                     mime = SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")

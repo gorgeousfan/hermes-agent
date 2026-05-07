@@ -2,15 +2,17 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
-  - **local** (default, free) — faster-whisper running locally, no API key needed.
+  - **local** (default, free) - faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
-  - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
-  - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
-  - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
-  - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
+  - **groq** (free tier) - Groq Whisper API, requires ``GROQ_API_KEY``.
+  - **openai** (paid) - OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** - Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
+  - **xai** - xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
+  - **gemini** - Google Gemini generateContent (inline audio). Requires
+    ``GEMINI_STT_API_KEY`` (also accepts ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY``).
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -26,12 +28,17 @@ Usage::
         print(result["transcript"])
 """
 
+import base64
+import json
 import logging
+import mimetypes
 import os
 import shlex
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -57,7 +64,7 @@ def get_env_value(name, default=None):
     return default if value is None else value
 
 # ---------------------------------------------------------------------------
-# Optional imports — graceful degradation
+# Optional imports - graceful degradation
 # ---------------------------------------------------------------------------
 
 import importlib.util as _ilu
@@ -84,6 +91,15 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_GEMINI_STT_MODEL = os.getenv("GEMINI_STT_MODEL", "gemini-3-flash-preview")
+GEMINI_STT_BASE_URL = os.getenv(
+    "GEMINI_STT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"
+)
+GEMINI_STT_PROMPT = (
+    "Transcribe the following audio verbatim. Return only the transcript, no "
+    "preamble, in the audio's original language. If the audio is in Portuguese, "
+    "return Portuguese text."
+)
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -100,7 +116,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
-# Singleton for the local model — loaded once, reused across calls
+# Singleton for the local model - loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
@@ -201,7 +217,7 @@ def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
     When ``stt.provider`` is explicitly set in config, that choice is
-    honoured — no silent cloud fallback.  When no provider is configured,
+    honoured - no silent cloud fallback.  When no provider is configured,
     auto-detect tries: local > groq (free) > openai (paid).
     """
     if not is_stt_enabled(stt_config):
@@ -268,9 +284,18 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
-        return provider  # Unknown — let it fail downstream
+        if provider == "gemini":
+            if _resolve_gemini_api_key():
+                return "gemini"
+            logger.warning(
+                "STT provider 'gemini' configured but GEMINI_STT_API_KEY "
+                "(or GEMINI_API_KEY / GOOGLE_API_KEY) is not set"
+            )
+            return "none"
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > xai -
+        return provider  # Unknown - let it fail downstream
+
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > xai > gemini -
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -288,6 +313,9 @@ def _get_provider(stt_config: dict) -> str:
     if get_env_value("XAI_API_KEY"):
         logger.info("No local STT available, using xAI Grok STT API")
         return "xai"
+    if _resolve_gemini_api_key():
+        logger.info("No local STT available, using Gemini API")
+        return "gemini"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -330,11 +358,11 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 # Substrings that identify a missing/unloadable CUDA runtime library.  When
 # ctranslate2 (the backend for faster-whisper) cannot dlopen one of these, the
 # "auto" device picker has already committed to CUDA and the model can no
-# longer be used — we fall back to CPU and reload.
+# longer be used - we fall back to CPU and reload.
 #
 # Deliberately narrow: we match on library-name tokens and dlopen phrasing so
 # we DO NOT accidentally catch legitimate runtime failures like "CUDA out of
-# memory" — those should surface to the user, not silently fall back to CPU
+# memory" - those should surface to the user, not silently fall back to CPU
 # (a 32GB audio clip on CPU at int8 isn't useful either).
 _CUDA_LIB_ERROR_MARKERS = (
     "libcublas",
@@ -365,7 +393,7 @@ def _load_local_whisper_model(model_name: str):
 
     faster-whisper's ``device="auto"`` picks CUDA when the ctranslate2 wheel
     ships CUDA shared libs, even on hosts where the NVIDIA runtime
-    (``libcublas.so.12`` / ``libcudnn*``) isn't installed — common on WSL2
+    (``libcublas.so.12`` / ``libcudnn*``) isn't installed - common on WSL2
     without CUDA-on-WSL, headless servers, and CPU-only developer machines.
     On those hosts the load itself sometimes succeeds and the dlopen failure
     only surfaces at first ``transcribe()`` call.
@@ -380,7 +408,7 @@ def _load_local_whisper_model(model_name: str):
         if not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning(
-            "faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
+            "faster-whisper CUDA load failed (%s) - falling back to CPU (int8). "
             "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
             exc,
         )
@@ -423,7 +451,7 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             if not _looks_like_cuda_lib_error(exc):
                 raise
             logger.warning(
-                "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                "faster-whisper CUDA runtime failed mid-transcribe (%s) - "
                 "evicting cached model and retrying on CPU (int8).",
                 exc,
             )
@@ -535,7 +563,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
-# Provider: groq (Whisper API — free tier)
+# Provider: groq (Whisper API - free tier)
 # ---------------------------------------------------------------------------
 
 
@@ -680,6 +708,159 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error("Mistral transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
+
+# ---------------------------------------------------------------------------
+# Provider: gemini (Google Generative Language API - inline audio)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_gemini_api_key() -> Optional[str]:
+    """Resolve the Gemini API key from the canonical envs, in order of preference."""
+    for name in ("GEMINI_STT_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _guess_gemini_mime_type(file_path: str) -> str:
+    """Return a mime type the Gemini API accepts for a given audio file."""
+    suffix = Path(file_path).suffix.lower()
+    if suffix in (".ogg", ".opus"):
+        return "audio/ogg; codecs=opus"
+    if suffix == ".mp3":
+        return "audio/mpeg"
+    if suffix in (".m4a", ".mp4", ".aac"):
+        return "audio/mp4"
+    if suffix == ".wav":
+        return "audio/wav"
+    if suffix == ".flac":
+        return "audio/flac"
+    if suffix == ".webm":
+        return "audio/webm"
+    guessed, _ = mimetypes.guess_type(file_path)
+    return guessed or "audio/ogg; codecs=opus"
+
+
+def _transcribe_gemini(file_path: str, config: Optional[dict] = None) -> Dict[str, Any]:
+    """Transcribe using Google Gemini generateContent with inline audio.
+
+    Calls ``POST {base}/models/{model}:generateContent?key={key}`` with the audio
+    bytes base64-encoded inline. Returns the standard transcription result dict.
+    """
+    api_key = _resolve_gemini_api_key()
+    if not api_key:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": (
+                "GEMINI_STT_API_KEY not set (also accepts GEMINI_API_KEY or "
+                "GOOGLE_API_KEY)"
+            ),
+        }
+
+    cfg = config or {}
+    model_name = (
+        cfg.get("model")
+        or os.getenv("GEMINI_STT_MODEL")
+        or DEFAULT_GEMINI_STT_MODEL
+    )
+    try:
+        timeout = float(cfg.get("timeout", 60))
+    except (TypeError, ValueError):
+        timeout = 60.0
+
+    try:
+        with open(file_path, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except OSError as e:
+        return {"success": False, "transcript": "", "error": f"Failed to read audio file: {e}"}
+
+    mime_type = _guess_gemini_mime_type(file_path)
+    b64_audio = base64.b64encode(audio_bytes).decode("ascii")
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": GEMINI_STT_PROMPT},
+                    {"inline_data": {"mime_type": mime_type, "data": b64_audio}},
+                ]
+            }
+        ]
+    }
+
+    url = (
+        f"{GEMINI_STT_BASE_URL.rstrip('/')}/models/{model_name}:generateContent"
+        f"?key={api_key}"
+    )
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        logger.error("Gemini STT HTTP %s: %s", e.code, detail)
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Gemini API error {e.code}: {detail or e.reason}",
+        }
+    except urllib.error.URLError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e.reason}"}
+    except TimeoutError as e:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
+    except Exception as e:
+        logger.error("Gemini transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        return {"success": False, "transcript": "", "error": f"Invalid Gemini JSON: {e}"}
+
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        prompt_feedback = data.get("promptFeedback") if isinstance(data, dict) else None
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Gemini response missing transcript (feedback={prompt_feedback})",
+        }
+
+    transcript_text = ""
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            transcript_text += part["text"]
+    transcript_text = transcript_text.strip()
+
+    if not transcript_text:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "Gemini returned an empty transcript",
+        }
+
+    logger.info(
+        "Transcribed %s via Gemini API (%s, %d chars)",
+        Path(file_path).name,
+        model_name,
+        len(transcript_text),
+    )
+    return {"success": True, "transcript": transcript_text, "provider": "gemini"}
 
 
 # ---------------------------------------------------------------------------
@@ -850,9 +1031,15 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_mistral(file_path, model_name)
 
     if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
+        # xAI Grok STT doesn't use a model parameter - pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
+
+    if provider == "gemini":
+        gemini_cfg = dict(stt_config.get("gemini", {}))
+        if model:
+            gemini_cfg["model"] = model
+        return _transcribe_gemini(file_path, gemini_cfg)
 
     # No provider available
     return {
@@ -862,7 +1049,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, set "
+            "GEMINI_STT_API_KEY for Google Gemini, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

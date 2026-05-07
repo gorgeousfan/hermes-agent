@@ -146,13 +146,20 @@ DEFAULT_XAI_LANGUAGE = "en"
 DEFAULT_XAI_SAMPLE_RATE = 24000
 DEFAULT_XAI_BIT_RATE = 128000
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
-DEFAULT_GEMINI_TTS_VOICE = "Kore"
-DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview")
+DEFAULT_GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Kore")
+DEFAULT_GEMINI_TTS_BASE_URL = os.getenv(
+    "GEMINI_TTS_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"
+)
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
 GEMINI_TTS_SAMPLE_WIDTH = 2  # 16-bit PCM (L16)
+# Full prebuilt voice list (30 voices, all multilingual incl. pt-BR):
+# Zephyr, Puck, Charon, Kore, Fenrir, Leda, Orus, Aoede, Callirrhoe, Autonoe,
+# Enceladus, Iapetus, Umbriel, Algieba, Despina, Erinome, Algenib, Rasalgethi,
+# Laomedeia, Achernar, Alnilam, Schedar, Gacrux, Pulcherrima, Achird,
+# Zubenelgenubi, Vindemiatrix, Sadachbia, Sadaltager, Sulafat.
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -1087,6 +1094,25 @@ def _wrap_pcm_as_wav(
     return riff_header + fmt_chunk + data_chunk_header + pcm_bytes
 
 
+def _resolve_gemini_tts_api_key() -> Optional[str]:
+    """Resolve the Gemini TTS API key, in order of preference.
+
+    Mirrors the STT resolver in transcription_tools. The paid Gemini key can
+    be reused for TTS via GEMINI_STT_API_KEY when a dedicated GEMINI_TTS_API_KEY
+    is not provisioned.
+    """
+    for name in (
+        "GEMINI_TTS_API_KEY",
+        "GEMINI_STT_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        value = get_env_value(name)
+        if value:
+            return value.strip() or None
+    return None
+
+
 def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio using Google Gemini TTS.
 
@@ -1094,6 +1120,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
     header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
     the caller requested those formats (same pattern as NeuTTS).
+
+    For WhatsApp voice-note delivery we emit 32 kbps mono OGG Opus so the
+    bridge sends a PTT voice bubble.
 
     Args:
         text: Text to convert (prompt-style; supports inline direction like
@@ -1106,20 +1135,35 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     """
     import requests
 
-    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
+    api_key = _resolve_gemini_tts_api_key()
     if not api_key:
         raise ValueError(
-            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+            "Gemini TTS API key not set. Accepted envs (in order): "
+            "GEMINI_TTS_API_KEY, GEMINI_STT_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY. "
+            "Get one at https://aistudio.google.com/app/apikey"
         )
 
     gemini_config = tts_config.get("gemini", {})
-    model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
-    voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
+    model = str(
+        gemini_config.get("model")
+        or os.getenv("GEMINI_TTS_MODEL")
+        or DEFAULT_GEMINI_TTS_MODEL
+    ).strip() or DEFAULT_GEMINI_TTS_MODEL
+    voice = str(
+        gemini_config.get("voice")
+        or os.getenv("GEMINI_TTS_VOICE")
+        or DEFAULT_GEMINI_TTS_VOICE
+    ).strip() or DEFAULT_GEMINI_TTS_VOICE
     base_url = str(
         gemini_config.get("base_url")
+        or get_env_value("GEMINI_TTS_BASE_URL")
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
+    try:
+        timeout = float(gemini_config.get("timeout", 60))
+    except (TypeError, ValueError):
+        timeout = 60.0
 
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": text}]}],
@@ -1139,7 +1183,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         params={"key": api_key},
         headers={"Content-Type": "application/json"},
         json=payload,
-        timeout=60,
+        timeout=timeout,
     )
     if response.status_code != 200:
         # Surface the API error message when present
@@ -1187,13 +1231,16 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     try:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
-            # For .ogg output, force libopus encoding (Telegram voice bubbles
-            # require Opus specifically; ffmpeg's default for .ogg is Vorbis).
+            # For .ogg output, force libopus encoding at 32 kbps mono so
+            # WhatsApp / Telegram recognise it as a PTT voice note
+            # (ffmpeg's default for .ogg is Vorbis, which the bridge treats
+            # as a regular audio attachment rather than a voice bubble).
             if output_path.lower().endswith(".ogg"):
                 cmd = [
                     ffmpeg, "-i", wav_path,
-                    "-acodec", "libopus", "-ac", "1",
-                    "-b:a", "64k", "-vbr", "off",
+                    "-c:a", "libopus", "-ac", "1",
+                    "-b:a", "32k", "-vbr", "off",
+                    "-application", "voip",
                     "-y", "-loglevel", "error",
                     output_path,
                 ]
@@ -1265,7 +1312,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
     device = neutts_config.get("device", "cpu")
 
-    # NeuTTS outputs WAV natively — use a .wav path for generation,
+    # NeuTTS outputs WAV natively - use a .wav path for generation,
     # let the caller convert to the final format afterward.
     wav_path = output_path
     if not output_path.endswith(".wav"):
@@ -1297,7 +1344,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
             subprocess.run(conv_cmd, check=True, timeout=30)
             os.remove(wav_path)
         else:
-            # No ffmpeg — just rename the WAV to the expected path
+            # No ffmpeg - just rename the WAV to the expected path
             os.rename(wav_path, output_path)
 
     return output_path
@@ -1379,7 +1426,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
 
     if not cached.exists():
         raise RuntimeError(
-            f"Piper voice download completed but {cached} is missing — "
+            f"Piper voice download completed but {cached} is missing - "
             f"check voice name (see: https://github.com/OHF-Voice/piper1-gpl/"
             f"blob/main/docs/VOICES.md)"
         )
@@ -1412,7 +1459,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         logger.info("[Piper] Voice loaded")
     voice = _piper_voice_cache[cache_key]
 
-    # Optional synthesis knobs — only pass a SynthesisConfig when at least
+    # Optional synthesis knobs - only pass a SynthesisConfig when at least
     # one advanced knob is configured, so we don't depend on a newer Piper
     # version than the user's installed one unless we need to.
     syn_config = None
@@ -1433,7 +1480,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         except ImportError:
             logger.warning(
                 "[Piper] SynthesisConfig not available in this piper-tts "
-                "version — advanced knobs ignored"
+                "version - advanced knobs ignored"
             )
 
     # Piper outputs WAV. Caller handles downstream MP3/Opus conversion.
@@ -1458,7 +1505,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
             except OSError:
                 pass
         else:
-            # No ffmpeg — keep WAV and return that path
+            # No ffmpeg - keep WAV and return that path
             os.rename(wav_path, output_path)
 
     return output_path
@@ -1521,7 +1568,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
             subprocess.run(conv_cmd, check=True, timeout=30)
             os.remove(wav_path)
         else:
-            # No ffmpeg — rename the WAV to the expected path
+            # No ffmpeg - rename the WAV to the expected path
             os.rename(wav_path, output_path)
 
     return output_path
@@ -1579,7 +1626,7 @@ def text_to_speech_tool(
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in ("telegram", "whatsapp")
 
     # Determine output path
     if output_path:
@@ -1738,7 +1785,7 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
 
         # Try Opus conversion for Telegram compatibility
-        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
+        # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV - all need ffmpeg conversion
         voice_compatible = False
         if command_provider_config is not None:
             # Command providers are documents by default. Voice-bubble
@@ -1829,7 +1876,7 @@ def check_tts_requirements() -> bool:
         return True
     if get_env_value("XAI_API_KEY"):
         return True
-    if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+    if _resolve_gemini_tts_api_key():
         return True
     try:
         _import_mistral_client()
@@ -2156,7 +2203,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+    "description": "Convert text to speech and deliver as a native voice note on WhatsApp/Telegram. CRITICAL: to actually deliver, you MUST append the returned media_tag field VERBATIM at the end of your reply. Do NOT paraphrase. Do NOT show the file path as text. The tag looks like [[audio_as_voice]] then MEDIA:/path/to/file.ogg and is stripped by the adapter before the user sees it. Format: your textual message, blank line, media_tag exactly as returned. Voice and provider are user-configured.",
     "parameters": {
         "type": "object",
         "properties": {
