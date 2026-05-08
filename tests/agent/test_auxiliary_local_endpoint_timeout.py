@@ -8,8 +8,6 @@ auto-bumps timeouts for local endpoints; auxiliary calls should do the
 same when neither the caller nor config has set an explicit value.
 """
 
-import os
-
 import pytest
 from unittest.mock import patch
 

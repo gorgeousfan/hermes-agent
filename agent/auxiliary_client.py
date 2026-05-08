@@ -100,6 +100,7 @@ class _OpenAIProxy:
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
+from agent.model_metadata import is_local_endpoint
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
@@ -4405,13 +4406,8 @@ def _resolve_default_timeout(default: float, base_url: Optional[str]) -> float:
     Only triggers when *default* is the implicit ``_DEFAULT_AUX_TIMEOUT``
     (so explicit caller defaults are respected) and *base_url* is local.
     """
-    if base_url and default == _DEFAULT_AUX_TIMEOUT:
-        try:
-            from agent.model_metadata import is_local_endpoint
-            if is_local_endpoint(base_url):
-                return _local_aux_default_timeout()
-        except ImportError:
-            pass
+    if base_url and default == _DEFAULT_AUX_TIMEOUT and is_local_endpoint(base_url):
+        return _local_aux_default_timeout()
     return default
 
 
