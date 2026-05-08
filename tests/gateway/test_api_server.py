@@ -1734,6 +1734,108 @@ class TestResponsesStreaming:
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
 
     @pytest.mark.asyncio
+    async def test_stream_emits_reasoning_output_item(self, adapter):
+        """Reasoning callback fired by the agent must surface as a single
+        ``output_item.added/done`` pair with ``item.type == 'reasoning'``,
+        positioned BEFORE the assistant message item in the persisted
+        ``output[]`` array.  Validates the wiring added to expose model
+        thinking via /v1/responses (previously only available via /v1/runs).
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                reasoning_cb = kwargs.get("reasoning_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                # Reasoning typically arrives as multiple deltas before
+                # the assistant text starts streaming.
+                if reasoning_cb:
+                    reasoning_cb("Step 1: parse the question.\n")
+                    reasoning_cb("Step 2: pick the answer.")
+                if text_cb:
+                    text_cb("42")
+                return (
+                    {"final_response": "42", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "what is the answer?", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+                # SSE events: reasoning item.added/done present, with full text
+                assert '"type": "reasoning"' in body
+                assert "Step 1: parse the question." in body
+                assert "Step 2: pick the answer." in body
+                assert '"type": "summary_text"' in body
+                assert '"type": "reasoning_text"' in body
+
+                # Walk the SSE stream to validate ordering and final envelope
+                completed_envelope = None
+                reasoning_done_seen = False
+                message_done_seen = False
+                reasoning_before_message = False
+                for line in body.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        payload = json.loads(line[len("data: "):])
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("type") == "response.output_item.done":
+                        item_type = payload.get("item", {}).get("type")
+                        if item_type == "reasoning":
+                            reasoning_done_seen = True
+                            if not message_done_seen:
+                                reasoning_before_message = True
+                        elif item_type == "message":
+                            message_done_seen = True
+                    elif payload.get("type") == "response.completed":
+                        completed_envelope = payload["response"]
+
+                assert reasoning_done_seen, "reasoning output_item.done event missing"
+                assert reasoning_before_message, "reasoning must precede message in stream order"
+
+                # Final envelope keeps reasoning in output[] for GET /v1/responses/{id}
+                assert completed_envelope is not None
+                output_types = [it.get("type") for it in completed_envelope["output"]]
+                assert "reasoning" in output_types
+                assert output_types.index("reasoning") < output_types.index("message")
+
+                # Reasoning item shape: summary[] + content[] both carry the joined text
+                reasoning_item = next(it for it in completed_envelope["output"] if it["type"] == "reasoning")
+                joined = "Step 1: parse the question.\nStep 2: pick the answer."
+                assert reasoning_item["summary"][0]["text"] == joined
+                assert reasoning_item["content"][0]["text"] == joined
+
+    @pytest.mark.asyncio
+    async def test_stream_no_reasoning_emits_no_reasoning_item(self, adapter):
+        """When the model produces no reasoning (callback never fires), the
+        SSE stream and final envelope must NOT contain a reasoning item —
+        prevents an empty reasoning block from appearing in output[]."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                text_cb = kwargs.get("stream_delta_callback")
+                if text_cb:
+                    text_cb("ok")
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                body = await resp.text()
+                assert '"type": "reasoning"' not in body
+
+    @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

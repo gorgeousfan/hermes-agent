@@ -793,6 +793,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -841,6 +842,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -1449,6 +1451,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Output items we've emitted so far (used to build the terminal
         # response.completed payload).  Kept in the order they appeared.
         emitted_items: List[Dict[str, Any]] = []
+        # Buffer for reasoning text deltas (model thinking).  Flushed as a
+        # single ``response.output_item.added/done`` pair (item.type=reasoning)
+        # right before the assistant message item closes — see _flush_reasoning.
+        reasoning_parts: List[str] = []
+        reasoning_emitted = False
         # Monotonic counter for output_index (spec requires it).
         output_index = 0
         # Monotonic counter for call_id generation if the agent doesn't
@@ -1518,6 +1525,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 return
             incomplete_text = "".join(final_text_parts) or final_response_text
             incomplete_items: List[Dict[str, Any]] = list(emitted_items)
+            # If reasoning was buffered but never flushed (client disconnect
+            # before _flush_reasoning ran), append it into the incomplete
+            # snapshot so GET /v1/responses/{id} still surfaces the thinking.
+            if reasoning_parts and not reasoning_emitted:
+                _full = "".join(reasoning_parts)
+                incomplete_items.append({
+                    "id": f"rs_{uuid.uuid4().hex[:24]}",
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": _full}],
+                    "content": [{"type": "reasoning_text", "text": _full}],
+                })
             if incomplete_text:
                 incomplete_items.append({
                     "type": "message",
@@ -1691,26 +1710,68 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
+            async def _flush_reasoning() -> None:
+                """Emit accumulated reasoning text as a single output_item.
+
+                Called once before the assistant message item is opened/closed
+                so the canonical order in ``output[]`` is:
+                ``function_calls → reasoning → message``.
+
+                Idempotent: subsequent calls after the first do nothing.
+                """
+                nonlocal output_index, reasoning_emitted
+                if reasoning_emitted or not reasoning_parts:
+                    return
+                reasoning_emitted = True
+                full_text = "".join(reasoning_parts)
+                reasoning_parts.clear()
+                reasoning_item = {
+                    "id": f"rs_{uuid.uuid4().hex[:24]}",
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": full_text}],
+                    "content": [{"type": "reasoning_text", "text": full_text}],
+                }
+                idx = output_index
+                output_index += 1
+                emitted_items.append(reasoning_item)
+                await _write_event("response.output_item.added", {
+                    "type": "response.output_item.added",
+                    "output_index": idx,
+                    "item": reasoning_item,
+                })
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
+                    "output_index": idx,
+                    "item": reasoning_item,
+                })
+
             # Main drain loop — thread-safe queue fed by agent callbacks.
             async def _dispatch(it) -> None:
                 """Route a queue item to the correct SSE emitter.
 
                 Plain strings are text deltas — they are batched (50ms)
                 to reduce Open WebUI re-render storms.  Tagged tuples
-                with ``__tool_started__`` / ``__tool_completed__``
-                prefixes are tool lifecycle events and flush the buffer
-                before emitting.
+                with ``__tool_started__`` / ``__tool_completed__`` /
+                ``__reasoning__`` prefixes are control events and flush
+                the text buffer before emitting.
                 """
                 nonlocal _batch_timer
                 if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
                     tag, payload = it
-                    # Flush batched text before tool events
+                    # Flush batched text before tool / reasoning events
                     if _batch_buf:
                         await _flush_batch()
                     if tag == "__tool_started__":
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__reasoning__":
+                        # Buffer reasoning text — emit as a single output_item
+                        # at end-of-run via _flush_reasoning so consumers see
+                        # the full thinking block in one piece.
+                        if isinstance(payload, str) and payload:
+                            reasoning_parts.append(payload)
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -1800,6 +1861,10 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = str(e)
+
+            # Flush any accumulated reasoning before the message item closes
+            # so the persisted output[] order is function_calls → reasoning → message
+            await _flush_reasoning()
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -2125,6 +2190,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_reasoning(text):
+                """Queue reasoning text (model thinking) for live emission as a
+                reasoning output_item.  Fires from AIAgent._fire_reasoning_delta
+                during streaming and from the post-response capture in
+                non-streaming mode.  The SSE writer batches deltas and emits
+                a single reasoning output_item.added/done pair before the
+                assistant message item closes."""
+                if text:
+                    _stream_q.put(("__reasoning__", str(text)))
+
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -2135,6 +2210,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -2623,6 +2699,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
@@ -2647,6 +2724,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                reasoning_callback=reasoning_callback,
                 gateway_session_key=gateway_session_key,
             )
             if agent_ref is not None:
