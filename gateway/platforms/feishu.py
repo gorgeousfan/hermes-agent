@@ -4114,12 +4114,12 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = False
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
-                reply_in_thread=reply_in_thread,
+                reply_in_thread=False,
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(effective_reply_to, body)
