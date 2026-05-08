@@ -477,31 +477,51 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
 
+    Arg-required commands (``args_hint`` like ``<prompt>``) are included so
+    Telegram tags ``/cmd <text>`` typed by the user with a ``bot_command``
+    entity; without registration Telegram delivers the whole line as plain
+    chat text and the gateway never routes it to the handler.  Selecting
+    such a command from Telegram's autocomplete menu sends only ``/cmd``,
+    which each handler surfaces as a usage hint.  The required argument is
+    appended to the description so users see what to type.
+
     Built-in commands that require arguments (e.g. /queue, /steer, /background)
     are **included** because their handlers return usage text when selected
-    without a payload, making them discoverable via autocomplete.
-
-    Plugin-registered slash commands that require arguments are **excluded**
-    because plugins may not provide a no-arg usage fallback.
+    without a payload, making them discoverable via autocomplete (#24312).
+    Plugin-registered slash commands are likewise included so plugins get
+    native Telegram autocomplete without touching core code.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        # Built-in arg-taking commands are included — their handlers show
-        # usage text when invoked without arguments, and hiding them from
-        # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, _telegram_description(cmd.description, cmd.args_hint)))
     for name, description, args_hint in _iter_plugin_command_entries():
-        if _requires_argument(args_hint):
-            continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
-            result.append((tg_name, description))
+            result.append((tg_name, _telegram_description(description, args_hint)))
     return result
+
+
+# Telegram's setMyCommands description field caps at 256 characters.
+_TG_DESCRIPTION_LIMIT = 256
+
+
+def _telegram_description(description: str, args_hint: str) -> str:
+    """Append ``args_hint`` to *description* so Telegram menu entries hint
+    at the required syntax.  Result is clamped to Telegram's 256-char limit.
+    """
+    base = description or ""
+    hint = (args_hint or "").strip()
+    if hint:
+        suffix = f" (args: {hint})"
+        if len(base) + len(suffix) > _TG_DESCRIPTION_LIMIT:
+            base = base[: _TG_DESCRIPTION_LIMIT - len(suffix)]
+        return base + suffix
+    return base[:_TG_DESCRIPTION_LIMIT]
 
 
 _CMD_NAME_LIMIT = 32
