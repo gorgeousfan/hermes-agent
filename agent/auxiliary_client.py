@@ -4387,10 +4387,51 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
-def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+def _local_aux_default_timeout() -> float:
+    """Default auxiliary timeout for local providers (Ollama, llama.cpp, vLLM).
+
+    Mirrors ``HERMES_API_TIMEOUT`` (default 1800s) used by ``run_agent.py``
+    for the main loop's local-endpoint stream/stale timeout bumps.
+    """
+    try:
+        return float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+    except (ValueError, TypeError):
+        return 1800.0
+
+
+def _resolve_default_timeout(default: float, base_url: Optional[str]) -> float:
+    """Apply the local-endpoint bump to *default* when applicable.
+
+    Only triggers when *default* is the implicit ``_DEFAULT_AUX_TIMEOUT``
+    (so explicit caller defaults are respected) and *base_url* is local.
+    """
+    if base_url and default == _DEFAULT_AUX_TIMEOUT:
+        try:
+            from agent.model_metadata import is_local_endpoint
+            if is_local_endpoint(base_url):
+                return _local_aux_default_timeout()
+        except ImportError:
+            pass
+    return default
+
+
+def _get_task_timeout(
+    task: str,
+    default: float = _DEFAULT_AUX_TIMEOUT,
+    base_url: Optional[str] = None,
+) -> float:
+    """Read timeout from ``auxiliary.{task}.timeout`` in config, falling back to *default*.
+
+    When ``base_url`` is supplied and points to a local endpoint (Ollama,
+    llama.cpp, vLLM, etc.) AND neither the caller nor the config has set an
+    explicit value, the default is bumped to ``HERMES_API_TIMEOUT`` (1800s
+    by default). This mirrors the local-endpoint timeout behavior the main
+    agent loop already applies in ``run_agent.py`` and prevents the 30s
+    auxiliary default from triggering ReadTimeout → retry → inference-server
+    queue saturation on slow local prefill (#21566).
+    """
     if not task:
-        return default
+        return _resolve_default_timeout(default, base_url)
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("timeout")
     if raw is not None:
@@ -4398,7 +4439,7 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
             return float(raw)
         except (ValueError, TypeError):
             pass
-    return default
+    return _resolve_default_timeout(default, base_url)
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
@@ -4701,10 +4742,14 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
-
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
+    effective_timeout = (
+        timeout
+        if timeout is not None
+        else _get_task_timeout(task, base_url=_base_info or resolved_base_url)
+    )
+
     if task:
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
@@ -5095,12 +5140,16 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
-
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
     # api.moonshot.ai vs api.kimi.com/coding even on auto-detected routes.
     _client_base = str(getattr(client, "base_url", "") or "")
+    effective_timeout = (
+        timeout
+        if timeout is not None
+        else _get_task_timeout(task, base_url=_client_base or resolved_base_url)
+    )
+
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
