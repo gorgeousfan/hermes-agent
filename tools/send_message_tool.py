@@ -30,6 +30,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+_WHATSAPP_JID_RE = re.compile(r"^\s*([A-Za-z0-9_.:-]+@(?:s\.whatsapp\.net|g\.us|lid))\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -177,7 +178,20 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
-    if target_ref:
+    if target_ref and platform_name == "whatsapp":
+        # WhatsApp targets are unusually ambiguous: a bare numeric-looking target
+        # can be a phone number, a group display name, or a cached directory ID.
+        # Prefer the channel directory first so labels returned by
+        # send_message(action="list") resolve to bridge-ready JIDs instead of
+        # falling through to home-channel delivery or bare-number sends that
+        # Baileys rejects with jidDecode errors.
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+        except Exception:
+            resolved = None
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, resolved or target_ref)
+    elif target_ref:
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
     else:
         is_explicit = False
@@ -317,6 +331,8 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    if not target_ref:
+        return None, None, False
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -344,11 +360,21 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "whatsapp":
+        match = _WHATSAPP_JID_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+        match = _E164_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return f"{match.group(1)}@s.whatsapp.net", None, True
+        stripped = target_ref.strip()
+        if stripped.isdigit():
+            return f"{stripped}@s.whatsapp.net", None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
-            # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
-            # expect E.164 format for direct recipients.
+            # Preserve the leading '+' for signal-cli and SMS. WhatsApp is
+            # handled above because the Baileys bridge needs JIDs, not raw E.164.
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
