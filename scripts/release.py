@@ -910,6 +910,8 @@ AUTHOR_MAP = {
     "wtyopenclaw@gmail.com": "WuTianyi123",  # PR #20275 salvage of #13723 (feishu markdown)
     "zhicheng.han@mathematik.uni-goettingen.de": "hanzckernel",  # PR #20311 (api-server approval events)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
+    "chaithanya.kumar42a@gmail.com": "chaithanyak42", # PR #15624
+    "kartik.labhshetwar@mem0.ai": "kartik-mem0", # PR #15624
 }
 
 
