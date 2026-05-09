@@ -54,7 +54,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if (
+        _platform_name(getattr(source, "platform", None)) == "telegram"
+        and getattr(source, "chat_type", None) == "dm"
+        and str(thread_id).isdigit()
+    ):
         metadata["telegram_dm_topic_reply_fallback"] = True
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
@@ -65,12 +69,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
-    Telegram forum/supergroup topics should be routed by topic metadata, not by
-    replying to the triggering message. Hermes-created Telegram private-chat
-    topic lanes are different: Bot API sends reject their ``message_thread_id``
-    and do not route with ``direct_messages_topic_id``. Those lanes only remain
-    visible when sent with both the private topic thread id and a reply to the
-    triggering user message.
+    Telegram forum/supergroup topics are routed by topic metadata, but keeping
+    the triggering message as the reply anchor preserves threaded reply
+    behavior in adapters that support both. Hermes-created Telegram
+    private-chat topic lanes are different: Bot API sends reject their
+    ``message_thread_id`` and do not route with ``direct_messages_topic_id``.
+    Those lanes only remain visible when sent with both the private topic
+    thread id and a reply to the triggering user message.
     """
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
@@ -80,7 +85,7 @@ def _reply_anchor_for_event(event) -> str | None:
         # topic seed/anchor can render the bot response outside the active lane.
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
-        return None
+        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
@@ -813,6 +818,7 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 
 SUPPORTED_DOCUMENT_TYPES = {
+    # Documents
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
@@ -820,12 +826,21 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".log": "text/plain",
     ".json": "application/json",
     ".xml": "application/xml",
+    ".html": "text/html",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
     ".toml": "application/toml",
     ".ini": "text/plain",
     ".cfg": "text/plain",
+    # Code
+    ".py": "text/x-python",
+    ".js": "application/javascript",
+    ".ts": "application/typescript",
+    ".sh": "application/x-sh",
+    ".sql": "text/x-sql",
+    # Archives
     ".zip": "application/zip",
+    # Office
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
