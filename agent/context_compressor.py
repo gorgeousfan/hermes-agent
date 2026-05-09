@@ -515,6 +515,7 @@ class ContextCompressor(ContextEngine):
         threshold_percent: float = 0.50,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
+        min_tail_user_messages: int = 3,
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
@@ -533,6 +534,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        self.min_tail_user_messages = max(1, min_tail_user_messages)
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # When True, summary-generation failure aborts compression entirely
@@ -1536,6 +1538,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Ensure the most recent user message is always in the tail so the
         # active task is never lost to compression (fixes #10896).
         cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Ensure the last N user messages are in the tail (COMPRESS-01).
+        # When N > 1, this applies additional repositioning beyond the
+        # single-message guarantee above; when N <= 1, it delegates to
+        # _ensure_last_user_message_in_tail internally.
+        cut_idx = self._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx, head_end, self.min_tail_user_messages
+        )
 
         return max(cut_idx, head_end + 1)
 
