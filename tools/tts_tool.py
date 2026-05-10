@@ -770,17 +770,17 @@ def _provider_source_path(output_path: str, provider: str) -> str:
     """Return the provider-native source path for a requested output path."""
     requested = Path(output_path)
     source_ext = _PROVIDER_SOURCE_EXTENSIONS.get((provider or "").lower())
-    if requested.suffix.lower() == ".ogg" and source_ext:
+    if requested.suffix.lower() in {".ogg", ".opus"} and source_ext:
         return str(requested.with_suffix(source_ext))
     return output_path
 
 
-def _convert_to_opus(mp3_path: str) -> Optional[str]:
+def _convert_to_opus(source_path: str) -> Optional[str]:
     """
-    Convert an MP3 file to OGG Opus format for Telegram voice bubbles.
+    Convert an audio file to OGG Opus format for Telegram voice bubbles.
 
     Args:
-        mp3_path: Path to the input MP3 file.
+        source_path: Path to the input audio file.
 
     Returns:
         Path to the .ogg file, or None if conversion fails.
@@ -788,10 +788,11 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     if not _has_ffmpeg():
         return None
 
-    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+    source = Path(source_path)
+    ogg_path = str(source.with_name(f"{source.stem}.voice.ogg"))
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
+            ["ffmpeg", "-i", source_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
         )
@@ -1695,6 +1696,7 @@ def text_to_speech_tool(
 
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    requested_voice_artifact = file_path.suffix.lower() in {".ogg", ".opus"}
     file_str = str(file_path)
     if command_provider_config is None:
         file_str = _provider_source_path(file_str, provider)
@@ -1841,7 +1843,11 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = _is_telegram_voice_artifact(file_str)
-        elif provider in _PROVIDER_SOURCE_EXTENSIONS and not _is_telegram_voice_artifact(file_str):
+        elif (
+            provider in _PROVIDER_SOURCE_EXTENSIONS
+            and (want_opus or requested_voice_artifact)
+            and not _is_telegram_voice_artifact(file_str)
+        ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
