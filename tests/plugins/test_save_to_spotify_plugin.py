@@ -56,6 +56,7 @@ def test_missing_binary_returns_install_error(monkeypatch: pytest.MonkeyPatch) -
 
     assert "error" in payload
     assert "not installed" in payload["error"]
+    assert "hermes auth save-to-spotify" in payload["error"]
 
 
 def test_subprocess_success_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,7 +100,10 @@ def test_auth_missing_path_maps_to_login_message(monkeypatch: pytest.MonkeyPatch
 
     payload = json.loads(save_tools.handle_save_to_spotify_shows({"action": "list"}))
 
-    assert payload["error"] == "Save to Spotify is not authenticated. Run `save-to-spotify auth login` first."
+    assert payload["error"] == (
+        "Save to Spotify is not authenticated. Run `hermes auth save-to-spotify` "
+        "(or `save-to-spotify auth login`) first."
+    )
 
 
 def test_file_path_validation_failures(tmp_path: Path) -> None:

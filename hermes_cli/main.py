@@ -5504,6 +5504,50 @@ def cmd_auth(args):
     auth_command(args)
 
 
+def _register_auth_provider_parsers(auth_subparsers) -> None:
+    auth_spotify = auth_subparsers.add_parser(
+        "spotify", help="Authenticate Hermes with Spotify via PKCE"
+    )
+    auth_spotify.add_argument(
+        "spotify_action",
+        nargs="?",
+        choices=["login", "status", "logout"],
+        default="login",
+    )
+    auth_spotify.add_argument(
+        "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)"
+    )
+    auth_spotify.add_argument(
+        "--redirect-uri",
+        help="Allow-listed localhost redirect URI for your Spotify app",
+    )
+    auth_spotify.add_argument("--scope", help="Override requested Spotify scopes")
+    auth_spotify.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not attempt to open the browser automatically",
+    )
+    auth_spotify.add_argument(
+        "--timeout", type=float, help="Callback/token exchange timeout in seconds"
+    )
+
+    auth_save_to_spotify = auth_subparsers.add_parser(
+        "save-to-spotify",
+        help="Delegate Save to Spotify CLI auth through Hermes",
+    )
+    auth_save_to_spotify.add_argument(
+        "save_to_spotify_action",
+        nargs="?",
+        choices=["login", "status", "logout"],
+        default="login",
+    )
+    auth_save_to_spotify.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Do not attempt to open the browser automatically",
+    )
+
+
 def cmd_status(args):
     """Show status of all components."""
     from hermes_cli.status import show_status
@@ -10369,31 +10413,7 @@ def main():
         "logout", help="Log out a provider and clear stored auth state"
     )
     auth_logout.add_argument("provider", help="Provider id")
-    auth_spotify = auth_subparsers.add_parser(
-        "spotify", help="Authenticate Hermes with Spotify via PKCE"
-    )
-    auth_spotify.add_argument(
-        "spotify_action",
-        nargs="?",
-        choices=["login", "status", "logout"],
-        default="login",
-    )
-    auth_spotify.add_argument(
-        "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)"
-    )
-    auth_spotify.add_argument(
-        "--redirect-uri",
-        help="Allow-listed localhost redirect URI for your Spotify app",
-    )
-    auth_spotify.add_argument("--scope", help="Override requested Spotify scopes")
-    auth_spotify.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically",
-    )
-    auth_spotify.add_argument(
-        "--timeout", type=float, help="Callback/token exchange timeout in seconds"
-    )
+    _register_auth_provider_parsers(auth_subparsers)
     auth_parser.set_defaults(func=cmd_auth)
 
     # =========================================================================

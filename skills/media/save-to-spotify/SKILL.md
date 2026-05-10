@@ -24,11 +24,13 @@ The user wants to put a briefing, recap, lesson, memo, or other audio file into 
 
 - This capability uploads media; it does not generate audio.
 - Use Hermes TTS or existing local media first, then upload the result.
+- Think of it as: text/content -> TTS or recording -> Spotify upload.
 - Prefer reusing an existing show before creating a new one.
 - Check `save_to_spotify_episodes` with `action: "status"` before writing timeline items.
 - Only set timeline items after the episode is `READY`.
 - Prefer full `spotify:...` URIs for `spotify_entity`.
 - Do not invent timeline items unless the user explicitly asked for them.
+- If auth fails, tell the user to run `hermes auth save-to-spotify` and mention `--no-browser` for SSH/headless sessions.
 
 ## Typical workflow
 
@@ -37,6 +39,18 @@ The user wants to put a briefing, recap, lesson, memo, or other audio file into 
 3. Upload the file with a title and optional show choice.
 4. If timeline/chapter content matters, check episode readiness first.
 5. Only after the episode is `READY`, set timeline items if the user asked for them.
+
+Good fits:
+
+- Morning briefing
+- Meeting summary
+- Lesson recap
+- Language practice
+- Release notes narration
+- Dev podcast episode
+- Agent audio log
+- Research summary
+- Build update recap
 
 ## Minimal patterns
 

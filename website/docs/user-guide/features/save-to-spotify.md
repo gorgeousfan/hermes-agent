@@ -25,7 +25,13 @@ Use them to:
 
 ## Important boundary
 
-This toolset **does not generate audio**. Generate audio first with Hermes TTS or provide an existing local media file, then upload that file to Spotify.
+This toolset **does not generate audio**. The workflow is intentionally three-part:
+
+1. Hermes or the user prepares the text/content.
+2. A TTS provider or existing recording produces the audio file.
+3. `save_to_spotify` publishes that finished file to Spotify.
+
+Hermes does not add a combined "generate then upload" primitive in this toolset.
 
 ## Setup
 
@@ -44,14 +50,22 @@ Or follow the manual install steps in the upstream project:
 ### 2. Authenticate the CLI once
 
 ```bash
-save-to-spotify auth login
+hermes auth save-to-spotify
 ```
 
 To verify:
 
 ```bash
-save-to-spotify auth status
+hermes auth save-to-spotify status
 ```
+
+Hermes delegates to the official `save-to-spotify auth ...` flow. If you are on SSH, a remote devbox, or another headless environment, prefer:
+
+```bash
+hermes auth save-to-spotify --no-browser
+```
+
+If the CLI prints an authorization URL, open it in a browser yourself. The official flow still expects Spotify to redirect back to `http://127.0.0.1:<port>` on the same environment that ran the command. If your browser cannot reach that machine's localhost callback, the login cannot complete from that session.
 
 ### 3. Enable the Hermes toolset
 
@@ -77,13 +91,29 @@ Generate a morning briefing with TTS, upload it to Spotify, and wait until it's 
 Upload this lesson audio to Spotify, then add chapter markers once the episode is ready.
 ```
 
+```text
+Turn this meeting summary into speech, publish it to Spotify, and keep it under my Meeting Recaps show.
+```
+
+```text
+Generate a short language-practice lesson in Turkish, save it to Spotify, and wait until it's ready.
+```
+
 ## Recommended workflow
 
-1. Generate or locate the audio file first.
-2. List shows and reuse one when possible.
-3. Upload the episode.
-4. Check readiness with `episodes status`.
-5. Only after the episode is `READY`, set timeline items if the user asked for them.
+1. Prepare the text or source material first.
+2. Generate or locate the audio file.
+3. List shows and reuse one when possible.
+4. Upload the episode.
+5. Check readiness with `episodes status`.
+6. Only after the episode is `READY`, set timeline items if the user asked for them.
+
+Common fits:
+
+- Morning briefing
+- Meeting summary
+- Lesson recap
+- Language practice
 
 ## Tool behaviors
 
@@ -154,8 +184,8 @@ Example timeline payload:
 
 ## Failure modes
 
-- If the `save-to-spotify` binary is missing, Hermes returns a clear install error.
-- If the CLI is not authenticated, Hermes returns a clear message telling you to run `save-to-spotify auth login`.
+- If the `save-to-spotify` binary is missing, Hermes returns a clear install error and points you to `hermes auth save-to-spotify`.
+- If the CLI is not authenticated, Hermes returns a clear message telling you to run `hermes auth save-to-spotify`.
 - If the CLI hangs unexpectedly, Hermes returns a system-timeout error distinct from the CLI's normal readiness timeout handling.
 
 ## Relationship to the existing Spotify toolset

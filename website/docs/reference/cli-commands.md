@@ -337,9 +337,10 @@ hermes auth reset openrouter                             # Clear cooldowns
 hermes auth status anthropic                             # Show auth status for a provider
 hermes auth logout anthropic                             # Log out and clear stored auth state
 hermes auth spotify                                      # Authenticate Hermes with Spotify via PKCE
+hermes auth save-to-spotify                              # Delegate Save to Spotify auth through Hermes
 ```
 
-Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`. When called with no subcommand, launches the interactive management wizard.
+Subcommands: `add`, `list`, `remove`, `reset`, `status`, `logout`, `spotify`, `save-to-spotify`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes status`
 

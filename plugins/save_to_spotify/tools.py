@@ -11,21 +11,20 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from plugins.save_to_spotify.auth_helper import (
+    CLI_NAME as _CLI_NAME,
+    install_message as _install_message,
+    login_message as _login_message,
+    runtime_blocker_message,
+)
 from tools.registry import tool_error, tool_result
 
 COMMON_STRING = {"type": "string"}
 COMMON_BOOL = {"type": "boolean"}
 
-_CLI_NAME = "save-to-spotify"
 _DEFAULT_TIMEOUT_SECONDS = 45
 _DEFAULT_WAIT_SECONDS = 300
 _WAIT_TIMEOUT_BUFFER_SECONDS = 30
-_AUTH_REQUIRED_MESSAGE = (
-    "Save to Spotify is not authenticated. Run `save-to-spotify auth login` first."
-)
-_INSTALL_MESSAGE = (
-    "Save to Spotify CLI is not installed. Install the `save-to-spotify` binary first."
-)
 _HANG_TIMEOUT_MESSAGE = (
     "Save to Spotify CLI timed out unexpectedly before finishing. This is a system timeout, "
     "not the normal episode readiness timeout."
@@ -39,7 +38,7 @@ class SaveToSpotifyError(RuntimeError):
 def _check_binary() -> str:
     binary = shutil.which(_CLI_NAME)
     if not binary:
-        raise SaveToSpotifyError(_INSTALL_MESSAGE)
+        raise SaveToSpotifyError(_install_message())
     return binary
 
 
@@ -114,11 +113,11 @@ def _hard_timeout_seconds(*, wait: bool = False, wait_timeout: str | None = None
 def _auth_error_from_message(message: str) -> str | None:
     lowered = message.lower()
     if "auth login" in lowered:
-        return _AUTH_REQUIRED_MESSAGE
+        return _login_message()
     if "not authenticated" in lowered or "not logged in" in lowered:
-        return _AUTH_REQUIRED_MESSAGE
+        return _login_message()
     if "login required" in lowered or "unauthorized" in lowered:
-        return _AUTH_REQUIRED_MESSAGE
+        return _login_message()
     return None
 
 
@@ -142,7 +141,9 @@ def _normalize_json_payload(stdout: str) -> dict[str, Any] | list[Any]:
         ) from exc
     if isinstance(payload, dict) and payload.get("error"):
         message = _extract_cli_message(payload)
-        raise SaveToSpotifyError(_auth_error_from_message(message) or message)
+        raise SaveToSpotifyError(
+            _auth_error_from_message(message) or message or runtime_blocker_message()
+        )
     return payload
 
 
