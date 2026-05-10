@@ -734,7 +734,7 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
+    """Schedule a job to run immediately (on the next scheduler tick)."""
     job = get_job(job_id)
     if not job:
         return None
