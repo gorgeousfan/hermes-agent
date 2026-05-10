@@ -154,6 +154,11 @@ export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promis
     const diagPath = join(dir, `${base}.diagnostics.json`)
 
     await writeFile(diagPath, JSON.stringify(diagnostics, null, 2), { mode: 0o600 })
+
+    if (isAutomaticTrigger(trigger) && !autoHeapSnapshotsEnabled()) {
+      return { diagPath, success: true }
+    }
+
     await pipeline(getHeapSnapshot(), createWriteStream(heapPath, { mode: 0o600 }))
 
     return { diagPath, heapPath, success: true }
@@ -176,6 +181,11 @@ export function formatBytes(bytes: number): string {
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
 
 const STARTED_AT = { rss: process.memoryUsage().rss, uptime: process.uptime() }
+
+const autoHeapSnapshotsEnabled = (): boolean =>
+  /^(?:1|true|yes|on)$/i.test((process.env.HERMES_AUTO_HEAPDUMP ?? '').trim())
+
+const isAutomaticTrigger = (trigger: MemoryTrigger): boolean => trigger !== 'manual'
 
 // Returns undefined when the probe isn't available (non-Linux paths, sandboxed FS).
 const swallow = async <T>(fn: () => Promise<T>): Promise<T | undefined> => {

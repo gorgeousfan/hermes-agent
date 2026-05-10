@@ -121,8 +121,16 @@ jobs:
           path: .lint-reports/
           retention-days: 14
 
+      - name: Note fork PR comment skip
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          {
+            echo
+            echo "_PR comment skipped: forked pull requests only get a read-only GITHUB_TOKEN, so this workflow keeps the summary in the step summary and artifact instead._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
