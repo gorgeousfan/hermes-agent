@@ -88,7 +88,7 @@ class AnthropicTransport(ProviderTransport):
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        _MCP_PREFIX = "mcp_"
+        _MCP_PREFIX = "mcp__"
 
         text_parts = []
         reasoning_parts = []
@@ -106,7 +106,11 @@ class AnthropicTransport(ProviderTransport):
             elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = name[len(_MCP_PREFIX):]
+                    name = name[len(_MCP_PREFIX):].replace("__", "_")
+                elif strip_tool_prefix and name.startswith("mcp_"):
+                    # Backward-compatible normalization for responses stored
+                    # before the Claude-Code OAuth double-underscore prefix.
+                    name = name[len("mcp_"):]
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
