@@ -306,6 +306,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "save_to_spotify": {
+        "description": "Upload personal audio to Spotify and manage shows, episodes, and companion timelines",
+        "tools": [
+            "save_to_spotify_upload", "save_to_spotify_shows",
+            "save_to_spotify_episodes", "save_to_spotify_timeline",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     
