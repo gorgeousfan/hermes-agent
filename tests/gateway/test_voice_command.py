@@ -420,10 +420,15 @@ class TestSendVoiceReply:
         event = _make_event()
         runner.adapters[event.source.platform] = mock_adapter
 
-        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+        tts_result = json.dumps({
+            "success": True,
+            "file_path": "/tmp/test.ogg",
+            "voice_compatible": True,
+        })
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._is_telegram_voice_artifact", return_value=True), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -446,10 +451,15 @@ class TestSendVoiceReply:
         event.message_id = "462"
         runner.adapters[event.source.platform] = mock_adapter
 
-        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+        tts_result = json.dumps({
+            "success": True,
+            "file_path": "/tmp/test.ogg",
+            "voice_compatible": True,
+        })
 
         with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
              patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._is_telegram_voice_artifact", return_value=True), \
              patch("os.path.isfile", return_value=True), \
              patch("os.unlink"), \
              patch("os.makedirs"):
@@ -488,6 +498,28 @@ class TestSendVoiceReply:
             await runner._send_voice_reply(event, "Hello")
 
         mock_adapter.send_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_voice_reply_does_not_send_invalid_tts_result(self, runner, tmp_path):
+        event = _make_event("hi", message_type=MessageType.VOICE)
+        adapter = SimpleNamespace(send_voice=AsyncMock())
+        runner.adapters[event.source.platform] = adapter
+        runner._get_guild_id = lambda event: None
+
+        bad_path = tmp_path / "bad.ogg"
+        bad_path.write_bytes(b"mp3")
+        bad_result = json.dumps({
+            "success": True,
+            "file_path": str(bad_path),
+            "voice_compatible": False,
+        })
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=bad_result), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool._is_telegram_voice_artifact", return_value=False):
+            await runner._send_voice_reply(event, "你好")
+
+        adapter.send_voice.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_exception_caught(self, runner):
