@@ -160,14 +160,21 @@ export function ModelPickerDialog(props: Props) {
             (p) =>
               p.name.toLowerCase().includes(needle) ||
               p.slug.toLowerCase().includes(needle) ||
-              (p.models ?? []).some((m) => m.toLowerCase().includes(needle)),
+              (p.models ?? []).some(
+                (m) =>
+                  typeof m === "string" && m.toLowerCase().includes(needle),
+              ),
           ),
     [providers, needle],
   );
 
   const filteredModels = useMemo(
     () =>
-      !needle ? models : models.filter((m) => m.toLowerCase().includes(needle)),
+      !needle
+        ? models
+        : models.filter(
+            (m) => typeof m === "string" && m.toLowerCase().includes(needle),
+          ),
     [models, needle],
   );
 
