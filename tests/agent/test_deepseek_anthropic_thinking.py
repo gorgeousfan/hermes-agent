@@ -10,11 +10,11 @@ next tool-call turn fails with HTTP 400::
     The content[].thinking in the thinking mode must be passed back to the
     API.
 
-DeepSeek's compatibility matrix lists ``thinking`` as supported but
-``redacted_thinking`` and ``cache_control`` on thinking blocks as not
-supported.  Handling is the same as Kimi's ``/coding`` endpoint: strip
-Anthropic-signed blocks (DeepSeek can't validate them) but preserve unsigned
-blocks that Hermes synthesises from ``reasoning_content``.
+DeepSeek v4-pro signs thinking blocks with UUIDs (e.g.
+``53f4dd1d-...``) that are NOT Anthropic cryptographic signatures.
+On the DeepSeek /anthropic path we preserve ALL thinking blocks as-is —
+DeepSeek creates and can validate its own signatures.  This differs from
+Kimi's /coding endpoint which requires only unsigned blocks.
 
 See hermes-agent#16748.
 """
@@ -119,11 +119,14 @@ class TestDeepSeekAnthropicPreservesThinking:
             assert len(thinking) == 1
             assert thinking[0]["thinking"] == expected
 
-    def test_signed_anthropic_thinking_block_is_stripped(self) -> None:
-        """Anthropic-signed blocks (that leaked through) must still be stripped.
+    def test_signed_deepseek_thinking_block_is_preserved(self) -> None:
+        """DeepSeek-signed thinking blocks must be preserved for round-tripping.
 
-        DeepSeek issues its own signatures and cannot validate Anthropic's —
-        the strip-signed / keep-unsigned split matches the Kimi policy.
+        DeepSeek v4-pro signs its thinking blocks with UUIDs (e.g.
+        ``53f4dd1d-...``) that are NOT Anthropic cryptographic signatures.
+        These blocks must survive replay — DeepSeek creates and validates its
+        own signatures, and rejecting them triggers HTTP 400:
+        "The content[].thinking in the thinking mode must be passed back."
         """
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
@@ -134,8 +137,8 @@ class TestDeepSeekAnthropicPreservesThinking:
                 "content": [
                     {
                         "type": "thinking",
-                        "thinking": "anthropic-signed payload",
-                        "signature": "anthropic-sig-xyz",
+                        "thinking": "deepseek-signed reasoning",
+                        "signature": "53f4dd1d-54b6-484b-b43c-170a86447d66",
                     },
                     {"type": "text", "text": "hello"},
                 ],
@@ -151,10 +154,13 @@ class TestDeepSeekAnthropicPreservesThinking:
             b for b in assistant_msg["content"]
             if isinstance(b, dict) and b.get("type") == "thinking"
         ]
-        assert thinking_blocks == [], (
-            "Signed Anthropic thinking blocks must be stripped on DeepSeek — "
-            "DeepSeek cannot validate Anthropic-proprietary signatures."
+        assert len(thinking_blocks) == 1, (
+            "DeepSeek-signed thinking blocks must be preserved on the "
+            "/anthropic endpoint — DeepSeek creates and validates its own "
+            "UUID signatures and requires them to round-trip."
         )
+        assert thinking_blocks[0]["thinking"] == "deepseek-signed reasoning"
+        assert thinking_blocks[0]["signature"] == "53f4dd1d-54b6-484b-b43c-170a86447d66"
 
     def test_cache_control_stripped_from_thinking_block(self) -> None:
         """cache_control must still be stripped even when the block is preserved.

@@ -452,12 +452,13 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
         The content[].thinking in the thinking mode must be passed back
         to the API.
 
-    Per DeepSeek's published compatibility matrix the blocks are unsigned
-    (no Anthropic-proprietary signature, no ``redacted_thinking`` support),
-    so this endpoint is handled with the same strip-signed / keep-unsigned
-    policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
-    the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
-    base URL (which never reaches this adapter) is not misclassified.
+    DeepSeek v4-pro signs thinking blocks with UUIDs (e.g.
+    ``53f4dd1d-...``) which are NOT Anthropic cryptographic signatures.
+    On the DeepSeek /anthropic path we preserve ALL thinking blocks —
+    DeepSeek creates and can validate its own signatures.  The match is
+    pinned to the ``/anthropic`` path so the OpenAI-compatible
+    ``api.deepseek.com`` base URL (which never reaches this adapter) is
+    not misclassified.
     See hermes-agent#16748.
     """
     if not base_url_host_matches(base_url or "", "api.deepseek.com"):
@@ -1909,12 +1910,20 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _preserve_unsigned_thinking:
-            # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
-            # thinking server-side and require unsigned thinking blocks on
-            # replayed assistant tool-call messages.  Strip signed Anthropic
-            # blocks (neither upstream can validate Anthropic signatures) but
-            # preserve the unsigned ones we synthesised from reasoning_content.
+        if _is_deepseek_anthropic_endpoint(base_url):
+            # DeepSeek's /anthropic endpoint creates and validates its own
+            # thinking blocks (UUID signatures, not Anthropic crypto sigs).
+            # Preserve ALL thinking blocks as-is — DeepSeek requires them to
+            # round-trip on subsequent turns when thinking is enabled.
+            # See hermes-agent#16748.
+            pass
+        elif _preserve_unsigned_thinking:
+            # Kimi's /coding endpoint enables thinking server-side and
+            # requires unsigned thinking blocks on replayed assistant
+            # tool-call messages.  Strip signed Anthropic blocks (Kimi
+            # can't validate Anthropic signatures) but preserve the
+            # unsigned ones we synthesised from reasoning_content.
+            # See hermes-agent#13848.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:

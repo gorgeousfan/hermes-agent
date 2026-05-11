@@ -8505,7 +8505,17 @@ class AIAgent:
                                 "stream" in _err_lower
                                 and "not supported" in _err_lower
                             )
-                            if _is_stream_unsupported:
+                            # jiter (fast JSON parser) raises plain ValueError
+                            # for malformed SSE data — the provider returned a
+                            # non-JSON stream body.  Fall back to non-streaming
+                            # rather than retrying the same broken stream.
+                            _is_sse_parse_error = (
+                                isinstance(e, ValueError)
+                                and not isinstance(e, (UnicodeEncodeError, json.JSONDecodeError))
+                                and "at line" in _err_lower
+                                and "column" in _err_lower
+                            )
+                            if _is_stream_unsupported or _is_sse_parse_error:
                                 self._disable_streaming = True
                                 self._safe_print(
                                     "\n⚠  Streaming is not supported for this "
@@ -14281,11 +14291,26 @@ class AIAgent:
                     # provider/network failure (malformed response body,
                     # truncated stream, routing layer corruption), not a
                     # local programming bug, and should be retried (#14782).
+                    #
+                    # Also exclude jiter (fast JSON parser) ValueError.
+                    # jiter raises plain ValueError (not JSONDecodeError)
+                    # for malformed JSON from SSE stream parsing.  These are
+                    # semantically identical to JSONDecodeError — the
+                    # provider returned a non-JSON response body and the
+                    # parser choked.  jiter errors follow the serde_json
+                    # format: "expected ident at line 1 column 29".
+                    _is_jiter_parse_error = (
+                        isinstance(api_error, ValueError)
+                        and not isinstance(api_error, json.JSONDecodeError)
+                        and "at line" in str(api_error)
+                        and "column" in str(api_error)
+                    )
                     is_local_validation_error = (
                         isinstance(api_error, (ValueError, TypeError))
                         and not isinstance(
                             api_error, (UnicodeEncodeError, json.JSONDecodeError)
                         )
+                        and not _is_jiter_parse_error
                         # ssl.SSLError (and its subclass SSLCertVerificationError)
                         # inherits from OSError *and* ValueError via Python MRO,
                         # so the isinstance(ValueError) check above would
