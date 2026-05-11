@@ -19,13 +19,20 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import mimetypes
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
+    normalize_image_size,
     resolve_aspect_ratio,
     save_b64_image,
     success_response,
@@ -64,10 +71,28 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "gpt-image-2-medium"
 
 _SIZES = {
+    # Legacy compatibility presets.
     "landscape": "1536x1024",
     "square": "1024x1024",
     "portrait": "1024x1536",
+    # Explicit aspect-ratio presets.
+    "16:9": "1824x1024",
+    "5:4": "1280x1024",
+    "4:3": "1360x1024",
+    "3:2": "1536x1024",
+    "1:1": "1024x1024",
+    "2:3": "1024x1536",
+    "3:4": "1024x1360",
+    "4:5": "1024x1280",
+    "9:16": "1024x1824",
 }
+
+
+def _resolve_openai_size(aspect_ratio: str, requested_size: Any) -> Optional[str]:
+    explicit = normalize_image_size(requested_size)
+    if requested_size is not None:
+        return explicit
+    return _SIZES.get(aspect_ratio, _SIZES[DEFAULT_ASPECT_RATIO])
 
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
@@ -78,6 +103,110 @@ _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
 )
+_CODEX_EDIT_INSTRUCTIONS = (
+    "You are an assistant that must edit the provided reference image by "
+    "using the image_generation tool when provided. Preserve visual details "
+    "the user did not ask to change."
+)
+
+_ALLOWED_REFERENCE_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+}
+_REFERENCE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_DATA_URL_HEADER_RE = re.compile(r"^data:([^;,]+)(?:;[^,]*)*$", re.IGNORECASE)
+
+
+def _normalize_reference_image_mime(mime: Optional[str]) -> Optional[str]:
+    if not isinstance(mime, str):
+        return None
+    normalized = mime.split(";", 1)[0].strip().lower()
+    if normalized == "image/jpg":
+        normalized = "image/jpeg"
+    return normalized if normalized in _ALLOWED_REFERENCE_IMAGE_MIME_TYPES else None
+
+
+def _detect_reference_image_mime(raw: bytes) -> Optional[str]:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _validate_data_image_url(value: str) -> str:
+    header, sep, payload = value.partition(",")
+    if not sep:
+        raise ValueError("Reference image data URL is missing a payload")
+    match = _DATA_URL_HEADER_RE.match(header)
+    if not match:
+        raise ValueError("Reference image data URL is malformed")
+    mime = _normalize_reference_image_mime(match.group(1))
+    if mime is None:
+        raise ValueError("Reference image data URL must use PNG, JPEG, WebP, or GIF")
+    if ";base64" not in header.lower():
+        raise ValueError("Reference image data URL must be base64-encoded")
+
+    compact_payload = "".join(payload.split())
+    approx_bytes = max(0, (len(compact_payload) * 3) // 4 - compact_payload.count("="))
+    if approx_bytes > _REFERENCE_IMAGE_MAX_BYTES:
+        raise ValueError(
+            f"Reference image is too large ({approx_bytes} bytes); max is {_REFERENCE_IMAGE_MAX_BYTES} bytes"
+        )
+    try:
+        raw = base64.b64decode(compact_payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Reference image data URL contains invalid base64") from exc
+    detected = _detect_reference_image_mime(raw)
+    if detected != mime:
+        raise ValueError("Reference image data URL payload is not a valid PNG, JPEG, WebP, or GIF")
+    return f"data:{mime};base64,{compact_payload}"
+
+
+def _allowed_local_reference_roots() -> Tuple[Path, ...]:
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+    except Exception:
+        home = Path.home() / ".hermes"
+    return (
+        (home / "cache" / "images").resolve(strict=False),
+        (home / "image_cache").resolve(strict=False),
+    )
+
+
+def _resolve_allowed_local_reference_path(path: Path) -> Path:
+    resolved = path.resolve(strict=True)
+    roots = _allowed_local_reference_roots()
+    if any(resolved.is_relative_to(root) for root in roots):
+        return resolved
+    roots_display = ", ".join(str(root) for root in roots)
+    raise ValueError(
+        "Local reference image paths must be under the Hermes image cache "
+        f"({roots_display}); use an HTTP(S) URL or data:image URL otherwise"
+    )
+
+
+def _read_local_reference_image(path: Path) -> Tuple[bytes, str]:
+    size = path.stat().st_size
+    if size > _REFERENCE_IMAGE_MAX_BYTES:
+        raise ValueError(
+            f"Reference image is too large ({size} bytes); max is {_REFERENCE_IMAGE_MAX_BYTES} bytes"
+        )
+    raw = path.read_bytes()
+    detected = _detect_reference_image_mime(raw)
+    if detected is None:
+        guessed = _normalize_reference_image_mime(mimetypes.guess_type(str(path))[0])
+        hint = f" (guessed {guessed})" if guessed else ""
+        raise ValueError(f"Reference image must be a PNG, JPEG, WebP, or GIF{hint}")
+    return raw, detected
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +227,21 @@ def _load_image_gen_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which tier to use and return ``(model_id, meta)``."""
+def _resolve_model(model: Optional[str] = None, quality_tier: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Decide which tier to use and return ``(model_id, meta)``.
+
+    Explicit call-level overrides win over environment/config defaults.
+    """
     import os
+
+    if isinstance(model, str) and model in _MODELS:
+        return model, _MODELS[model]
+
+    if isinstance(quality_tier, str):
+        tier = quality_tier.strip().lower()
+        if tier in {"low", "medium", "high"}:
+            model_id = f"gpt-image-2-{tier}"
+            return model_id, _MODELS[model_id]
 
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
     if env_override and env_override in _MODELS:
@@ -122,6 +263,22 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         return candidate, _MODELS[candidate]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _resolve_requested_model(kwargs: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    explicit_model = kwargs.get("model")
+    if isinstance(explicit_model, str) and explicit_model in _MODELS:
+        return explicit_model, _MODELS[explicit_model]
+
+    quality_tier = kwargs.get("quality_tier")
+    if isinstance(quality_tier, str):
+        normalized_tier = quality_tier.strip().lower()
+        if normalized_tier and normalized_tier != "auto":
+            candidate = f"gpt-image-2-{normalized_tier}"
+            if candidate in _MODELS:
+                return candidate, _MODELS[candidate]
+
+    return _resolve_model()
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -163,26 +320,49 @@ def _build_codex_client():
 
 def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
+    return _collect_image_b64_from_content(
+        client,
+        content=[{"type": "input_text", "text": prompt}],
+        size=size,
+        quality=quality,
+        instructions=_CODEX_INSTRUCTIONS,
+        action=None,
+    )
+
+
+def _collect_image_b64_from_content(
+    client: Any,
+    *,
+    content: List[Dict[str, Any]],
+    size: str,
+    quality: str,
+    instructions: str,
+    action: Optional[str] = None,
+) -> Optional[str]:
+    """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if action:
+        tool["action"] = action
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
         store=False,
-        instructions=_CODEX_INSTRUCTIONS,
+        instructions=instructions,
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
-        tools=[{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        tools=[tool],
         tool_choice={
             "type": "allowed_tools",
             "mode": "required",
@@ -212,6 +392,53 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
                 image_b64 = result
 
     return image_b64
+
+
+def _image_to_input_image_part(image: str) -> Dict[str, str]:
+    """Convert a local path, HTTP(S) URL, or data URL into Responses input_image."""
+    value = (image or "").strip()
+    if not value:
+        raise ValueError("image is required")
+
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        return {"type": "input_image", "image_url": value}
+    if parsed.scheme == "data":
+        return {"type": "input_image", "image_url": _validate_data_image_url(value)}
+    if parsed.scheme:
+        raise ValueError(f"Unsupported reference image URL scheme: {parsed.scheme}")
+
+    path = Path(value).expanduser()
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"Reference image not found: {value}")
+    path = _resolve_allowed_local_reference_path(path)
+
+    raw, mime = _read_local_reference_image(path)
+    encoded = base64.b64encode(raw).decode("ascii")
+    return {"type": "input_image", "image_url": f"data:{mime};base64,{encoded}"}
+
+
+def _collect_edited_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    image: str,
+    size: str,
+    quality: str,
+) -> Optional[str]:
+    """Stream a Codex Responses image edit call and return the b64 image."""
+    content = [
+        {"type": "input_text", "text": prompt},
+        _image_to_input_image_part(image),
+    ]
+    return _collect_image_b64_from_content(
+        client,
+        content=content,
+        size=size,
+        quality=quality,
+        instructions=_CODEX_EDIT_INSTRUCTIONS,
+        action="edit",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +493,9 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             ),
         }
 
+    def supports_edit(self) -> bool:
+        return True
+
     def generate(
         self,
         prompt: str,
@@ -304,8 +534,22 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
-        size = _SIZES.get(aspect, _SIZES["square"])
+        tier_id, meta = _resolve_requested_model(kwargs)
+        requested_size = kwargs.get("size")
+        size = _resolve_openai_size(aspect, requested_size)
+        if requested_size is not None and size is None:
+            return error_response(
+                error=(
+                    "Invalid size. Use <width>x<height> with dimensions that are "
+                    "multiples of 16, max side < 3840, aspect ratio <= 3:1, and "
+                    "total pixels between 655,360 and 8,294,400."
+                ),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
 
         client = _build_codex_client()
         if client is None:
@@ -317,6 +561,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 aspect_ratio=aspect,
             )
+
+        assert size is not None
 
         try:
             b64 = _collect_image_b64(
@@ -365,6 +611,152 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             aspect_ratio=aspect,
             provider="openai-codex",
             extra={"size": size, "quality": meta["quality"]},
+        )
+
+    def edit(
+        self,
+        prompt: str,
+        image: Any,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        prompt = (prompt or "").strip()
+        aspect = resolve_aspect_ratio(aspect_ratio)
+
+        if not prompt:
+            return error_response(
+                error="Prompt is required and must be a non-empty string",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                aspect_ratio=aspect,
+            )
+        if not isinstance(image, str) or not image.strip():
+            return error_response(
+                error="A reference image path or URL is required",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        if not _read_codex_access_token():
+            return error_response(
+                error=(
+                    "No Codex/ChatGPT OAuth credentials available. Run "
+                    "`hermes auth codex` (or `hermes setup` → Codex) to sign in."
+                ),
+                error_type="auth_required",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        try:
+            import openai  # noqa: F401
+        except ImportError:
+            return error_response(
+                error="openai Python package not installed (pip install openai)",
+                error_type="missing_dependency",
+                provider="openai-codex",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        tier_id, meta = _resolve_requested_model(kwargs)
+        requested_size = kwargs.get("size")
+        size = _resolve_openai_size(aspect, requested_size)
+        if requested_size is not None and size is None:
+            return error_response(
+                error=(
+                    "Invalid size. Use <width>x<height> with dimensions that are "
+                    "multiples of 16, max side < 3840, aspect ratio <= 3:1, and "
+                    "total pixels between 655,360 and 8,294,400."
+                ),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        client = _build_codex_client()
+        if client is None:
+            return error_response(
+                error="Could not initialize Codex image client",
+                error_type="auth_required",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        assert size is not None
+
+        try:
+            b64 = _collect_edited_image_b64(
+                client,
+                prompt=prompt,
+                image=image,
+                size=size,
+                quality=meta["quality"],
+            )
+        except FileNotFoundError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="not_found",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        except Exception as exc:
+            logger.debug("Codex image edit failed", exc_info=True)
+            return error_response(
+                error=f"OpenAI image edit via Codex auth failed: {exc}",
+                error_type="api_error",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        if not b64:
+            return error_response(
+                error="Codex response contained no image_generation_call result",
+                error_type="empty_response",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        try:
+            saved_path = save_b64_image(b64, prefix=f"openai_codex_edit_{tier_id}")
+        except Exception as exc:
+            return error_response(
+                error=f"Could not save image to cache: {exc}",
+                error_type="io_error",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        return success_response(
+            image=str(saved_path),
+            model=tier_id,
+            prompt=prompt,
+            aspect_ratio=aspect,
+            provider="openai-codex",
+            extra={"size": size, "quality": meta["quality"], "source_image": image},
         )
 
 

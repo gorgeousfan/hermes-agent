@@ -283,6 +283,9 @@ class TestLegacyToolsetMap:
         for name in expected:
             assert name in _LEGACY_TOOLSET_MAP, f"Missing legacy toolset: {name}"
 
+    def test_image_tools_alias_includes_image_edit(self):
+        assert _LEGACY_TOOLSET_MAP["image_tools"] == ["image_generate", "image_edit"]
+
     def test_values_are_lists_of_strings(self):
         for name, tools in _LEGACY_TOOLSET_MAP.items():
             assert isinstance(tools, list), f"{name} is not a list"

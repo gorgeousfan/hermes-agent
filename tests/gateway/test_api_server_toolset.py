@@ -34,6 +34,7 @@ class TestHermesApiServerToolset:
         ]
         for tool in expected:
             assert tool in tools, f"Missing expected tool: {tool}"
+        assert "image_edit" not in tools
 
     def test_toolset_includes_browser_tools(self):
         tools = resolve_toolset("hermes-api-server")
