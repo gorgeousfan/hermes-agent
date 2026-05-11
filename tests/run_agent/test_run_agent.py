@@ -4341,6 +4341,16 @@ def test_quiet_spinner_suppressed_on_non_tty_without_print_fn(agent):
         assert agent._should_start_quiet_spinner() is False
 
 
+def test_safe_print_tolerates_bare_stub_without_output_lock(capsys):
+    agent = AIAgent.__new__(AIAgent)
+    agent._print_fn = None
+
+    agent._safe_print("hello from bare stub")
+
+    captured = capsys.readouterr()
+    assert "hello from bare stub" in captured.out
+
+
 def test_is_openai_client_closed_honors_custom_client_flag():
     assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=True)) is True
     assert AIAgent._is_openai_client_closed(SimpleNamespace(is_closed=False)) is False

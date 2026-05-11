@@ -1347,7 +1347,11 @@ class AIAgent:
         # their tids explicitly.
         self._tool_worker_threads: set[int] = set()
         self._tool_worker_threads_lock = threading.Lock()
-        
+
+        # Serializes console output from concurrent tool worker threads so
+        # lines from different tools don't interleave mid-line.
+        self._output_lock = threading.Lock()
+
         # Subagent delegation state
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
@@ -2718,12 +2722,25 @@ class AIAgent:
         ``print``) so callers such as the CLI can inject a renderer that
         handles ANSI escape sequences properly (e.g. prompt_toolkit's
         ``print_formatted_text(ANSI(...))``) without touching this method.
+
+        Acquires ``_output_lock`` so concurrent tool worker threads cannot
+        interleave their output lines with each other or with the main thread.
         """
-        try:
-            fn = self._print_fn or print
-            fn(*args, **kwargs)
-        except (OSError, ValueError):
-            pass
+        lock = getattr(self, "_output_lock", None)
+        if lock is None:
+            try:
+                fn = self._print_fn or print
+                fn(*args, **kwargs)
+            except (OSError, ValueError):
+                pass
+            return
+
+        with lock:
+            try:
+                fn = self._print_fn or print
+                fn(*args, **kwargs)
+            except (OSError, ValueError):
+                pass
 
     def _vprint(self, *args, force: bool = False, **kwargs):
         """Verbose print — suppressed when actively streaming tokens.
@@ -4114,6 +4131,30 @@ class AIAgent:
                 actions.append(f"{label} updated")
         return actions
 
+    def _prune_messages_for_review(
+        self, messages: List[Dict]
+    ) -> List[Dict]:
+        """Return a token-lean copy of *messages* fit for the background review agent.
+
+        The review agent only needs to understand what happened in the session —
+        what the user asked, what the assistant decided, which tools were called —
+        not the full byte-for-byte content of every file read or terminal output.
+        Passing the raw snapshot to a 16-iteration review agent on a large coding
+        session wastes the same input tokens as the session itself.
+
+        Strategy: keep all user/assistant text intact; replace every tool result
+        with an informative 1-liner (the same summaries used by full compression).
+        The last two messages are protected at full fidelity so the review agent
+        sees the final state.
+        """
+        compressor = getattr(self, "context_compressor", None)
+        if not messages or compressor is None or not hasattr(compressor, "_prune_old_tool_results"):
+            return messages
+        pruned, _ = compressor._prune_old_tool_results(
+            messages, protect_tail_count=2
+        )
+        return pruned
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -4199,7 +4240,9 @@ class AIAgent:
 
                     review_agent.run_conversation(
                         user_message=prompt,
-                        conversation_history=messages_snapshot,
+                        conversation_history=self._prune_messages_for_review(
+                            messages_snapshot
+                        ),
                     )
 
                 # Scan the review agent's messages for successful tool actions
@@ -5614,9 +5657,11 @@ class AIAgent:
         """
         Assemble the full system prompt from all layers.
         
-        Called once per session (cached on self._cached_system_prompt) and only
-        rebuilt after context compression events. This ensures the system prompt
-        is stable across all turns in a session, maximizing prefix cache hits.
+        Called once per session (cached on self._cached_system_prompt). The
+        prompt normally stays stable across compression events to maximize
+        prefix cache hits, but compression may selectively rebuild it when the
+        physical session rotates and the prompt contains session-scoped data
+        such as Session ID lines or external memory-provider blocks.
         """
         # Layers (in order):
         #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
@@ -6174,6 +6219,16 @@ class AIAgent:
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
+
+    def _should_refresh_system_prompt_after_compression(self) -> bool:
+        """Return True when a compression split invalidates session-scoped prompt state.
+
+        Keep the cached prompt stable by default so Anthropic/OpenAI prefix
+        caches survive context compression. Rebuild only when the prompt
+        contains content that is tied to the physical session row and must
+        follow the child session created by compression.
+        """
+        return bool(self.pass_session_id)
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -10065,9 +10120,27 @@ class AIAgent:
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
-        self._invalidate_system_prompt()
-        new_system_prompt = self._build_system_prompt(system_message)
-        self._cached_system_prompt = new_system_prompt
+        # Keep the system prompt stable across compression events by default.
+        #
+        # The old approach called _invalidate_system_prompt() here, which
+        # reloaded memory from disk and rebuilt the prompt — producing a
+        # different string every time and busting the Anthropic prefix cache
+        # on every compression event. The cache miss costs the same as a
+        # full uncached turn, wiping out the ~75% savings prompt caching
+        # normally provides.
+        #
+        # Most prompt content is safe to keep stable because it is session-
+        # invariant guidance or state the model already knows from this
+        # conversation. If compression rotates to a child session and the
+        # prompt contains session-scoped data (e.g. Session ID or external
+        # memory-provider blocks), we rebuild selectively after the rotation.
+        new_system_prompt = self._cached_system_prompt
+        if new_system_prompt is None:
+            new_system_prompt = self._build_system_prompt(system_message)
+            self._cached_system_prompt = new_system_prompt
+
+        old_session_id = ""
+        created_new_session_row = False
 
         if self._session_db:
             try:
@@ -10089,6 +10162,7 @@ class AIAgent:
                     parent_session_id=old_session_id,
                 )
                 self._session_db_created = True
+                created_new_session_row = True
                 # Auto-number the title for the continuation session
                 if old_title:
                     try:
@@ -10096,7 +10170,6 @@ class AIAgent:
                         self._session_db.set_session_title(self.session_id, new_title)
                     except (ValueError, Exception) as e:
                         logger.debug("Could not propagate title on compression: %s", e)
-                self._session_db.update_system_prompt(self.session_id, new_system_prompt)
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
             except Exception as e:
@@ -10108,12 +10181,11 @@ class AIAgent:
         # rollover instead of re-initializing fresh per-session state.
         # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
         try:
-            _old_sid = locals().get("old_session_id")
-            if _old_sid and hasattr(self.context_compressor, "on_session_start"):
+            if old_session_id and hasattr(self.context_compressor, "on_session_start"):
                 self.context_compressor.on_session_start(
                     self.session_id or "",
                     boundary_reason="compression",
-                    old_session_id=_old_sid,
+                    old_session_id=old_session_id,
                 )
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)
@@ -10124,16 +10196,25 @@ class AIAgent:
         # the logical conversation continues; only the id and DB row rolled
         # over. See #6672.
         try:
-            _old_sid = locals().get("old_session_id")
-            if _old_sid and self._memory_manager:
+            if old_session_id and self._memory_manager:
                 self._memory_manager.on_session_switch(
                     self.session_id or "",
-                    parent_session_id=_old_sid,
+                    parent_session_id=old_session_id,
                     reset=False,
                     reason="compression",
                 )
         except Exception as _me_err:
             logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+
+        if old_session_id and self._should_refresh_system_prompt_after_compression():
+            new_system_prompt = self._build_system_prompt(system_message)
+            self._cached_system_prompt = new_system_prompt
+
+        if created_new_session_row and self._session_db:
+            try:
+                self._session_db.update_system_prompt(self.session_id, new_system_prompt)
+            except Exception as e:
+                logger.warning("Session DB update_system_prompt after compression failed: %s", e)
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count
@@ -11613,9 +11694,10 @@ class AIAgent:
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
 
-        # Track memory nudge trigger (turn-based, checked here).
-        # Skill trigger is checked AFTER the agent loop completes, based on
-        # how many tool iterations THIS turn used.
+        # Track memory and skill nudge triggers (both turn-based).
+        # Counting skill nudges by tool iterations (old approach) caused the
+        # review to fire on every single turn in heavy coding / experiment
+        # sessions (15+ tool calls/turn easily exceeds the interval=10 default).
         _should_review_memory = False
         if (self._memory_nudge_interval > 0
                 and "memory" in self.valid_tool_names
@@ -11624,6 +11706,10 @@ class AIAgent:
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True
                 self._turns_since_memory = 0
+
+        if (self._skill_nudge_interval > 0
+                and "skill_manage" in self.valid_tool_names):
+            self._iters_since_skill += 1
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
@@ -11896,12 +11982,6 @@ class AIAgent:
                 except Exception as _step_err:
                     logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
-            # Track tool-calling iterations for skill nudge.
-            # Counter resets whenever skill_manage is actually used.
-            if (self._skill_nudge_interval > 0
-                    and "skill_manage" in self.valid_tool_names):
-                self._iters_since_skill += 1
-            
             # ── Pre-API-call /steer drain ──────────────────────────────────
             # If a /steer arrived during the previous API call (while the model
             # was thinking), drain it now — before we build api_messages — so
@@ -14516,6 +14596,14 @@ class AIAgent:
                     # execution so a single truncation doesn't poison the
                     # entire conversation.
                     truncated_tool_call_retries = 0
+
+                    # Per-turn lightweight pruning: replace old tool outputs
+                    # with 1-line summaries without an LLM call. Prevents
+                    # context from growing unboundedly between full compression
+                    # events — essential for long coding / experiment loops
+                    # where file reads and terminal outputs accumulate fast.
+                    if self.compression_enabled and hasattr(self.context_compressor, "prune_turn"):
+                        messages = self.context_compressor.prune_turn(messages)
 
                     # Signal that a paragraph break is needed before the next
                     # streamed text.  We don't emit it immediately because
