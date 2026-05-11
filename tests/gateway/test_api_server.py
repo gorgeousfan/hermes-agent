@@ -353,6 +353,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/.well-known/agent.json", adapter._handle_agent_card)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
@@ -3061,4 +3062,73 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+
+
+# ---------------------------------------------------------------------------
+# A2A Agent Card Endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestAgentCard:
+    """Tests for the A2A Agent Card endpoint (/.well-known/agent.json)."""
+
+    @pytest.mark.asyncio
+    async def test_agent_card_endpoint_exists(self, adapter):
+        """GET /.well-known/agent.json returns a valid Agent Card."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/.well-known/agent.json")
+            assert resp.status == 200
+            # Check content type
+            assert "application/json" in resp.headers.get("Content-Type", "")
+            # Parse JSON
+            data = await resp.json()
+            # Verify required A2A fields
+            assert "name" in data
+            assert "description" in data
+            assert "version" in data
+            assert "url" in data
+            assert "capabilities" in data
+            assert "supported_interfaces" in data
+            assert "skills" in data
+            # Verify Hermes-specific content
+            assert data["name"] == "Hermes Agent"
+            assert "memory" in data["description"].lower() or "persistent" in data["description"].lower()
+            assert data["capabilities"]["streaming"] is True
+
+    @pytest.mark.asyncio
+    async def test_agent_card_cors_headers(self, adapter):
+        """Agent Card endpoint has CORS headers for cross-origin access."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/.well-known/agent.json")
+            assert resp.status == 200
+            # CORS should allow all origins for agent discovery
+            assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+    @pytest.mark.asyncio
+    async def test_agent_card_cache_control(self, adapter):
+        """Agent Card has cache headers to reduce server load."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/.well-known/agent.json")
+            assert resp.status == 200
+            cache_control = resp.headers.get("Cache-Control", "")
+            assert "public" in cache_control
+            assert "max-age" in cache_control
+
+    @pytest.mark.asyncio
+    async def test_agent_card_skills_list(self, adapter):
+        """Agent Card includes Hermes tools as A2A skills."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/.well-known/agent.json")
+            assert resp.status == 200
+            data = await resp.json()
+            skills = data.get("skills", [])
+            skill_ids = [s["id"] for s in skills]
+            # Core Hermes skills should be present
+            assert "hermes_memory" in skill_ids or any("memory" in s["id"] for s in skills)
+            # Should have multiple skills
+            assert len(skills) > 5, f"Expected more than 5 skills, got {len(skills)}"
 

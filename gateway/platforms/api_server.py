@@ -866,6 +866,46 @@ class APIServerAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
+    async def _handle_agent_card(self, request: "web.Request") -> "web.Response":
+        """GET /.well-known/agent.json — A2A Agent Card for inter-agent discovery.
+
+        Returns the A2A (Agent-to-Agent) protocol Agent Card that describes
+        this Hermes Agent's capabilities, skills, and endpoints. This enables
+        other A2A-compliant agents to discover and communicate with Hermes.
+
+        Reference: https://a2a-protocol.org/latest/specification/
+        Issue: https://github.com/NousResearch/hermes-agent/issues/514
+        """
+        try:
+            from agent.a2a.agent_card import (
+                generate_agent_card,
+                get_agent_card_json,
+            )
+            # Generate the card with current configuration
+            # The config is accessed via self._config if available
+            config = getattr(self, "_config", None)
+            card_json = get_agent_card_json(config=config)
+            return web.Response(
+                text=card_json,
+                content_type="application/json",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                },
+            )
+        except ImportError as e:
+            logger.error("A2A agent_card module not available: %s", e)
+            return web.json_response(
+                {"error": "A2A support not available", "code": "not_implemented"},
+                status=501,
+            )
+        except Exception as e:
+            logger.exception("Error generating Agent Card: %s", e)
+            return web.json_response(
+                {"error": "Internal server error", "code": "internal_error"},
+                status=500,
+            )
+
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
 
@@ -3336,6 +3376,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
+            self._app.router.add_get("/.well-known/agent.json", self._handle_agent_card)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
