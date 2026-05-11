@@ -2048,6 +2048,21 @@ def delegate_task(
             # Model precedence: per-task model > top-level model > delegation.model
             # (creds["model"]). A None at any level falls through to the next.
             task_model = t.get("model") or model or creds["model"]
+            # When task_model differs from the model used to compute the
+            # outer creds, re-resolve runtime so provider transport selection
+            # (Azure Foundry api_mode, openai-codex codex_responses vs
+            # chat_completions, OpenCode routes) uses the per-task target_model
+            # rather than delegation.model from config. Skip the re-resolve
+            # when the model is unchanged to keep the common path cheap.
+            if task_model != creds["model"]:
+                try:
+                    task_creds = _resolve_delegation_credentials(
+                        cfg, parent_agent, override_model=task_model
+                    )
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2057,17 +2072,17 @@ def delegate_task(
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2332,7 +2347,9 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict, parent_agent, override_model: Optional[str] = None
+) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -2351,9 +2368,20 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
 
+    ``override_model`` lets a per-call or per-task ``model`` value drive
+    runtime resolution instead of ``delegation.model`` from config. This
+    matters for providers whose transport (api_mode / base_url) depends on
+    target_model — Azure Foundry routes gpt-5.x / codex / o-series to
+    Responses API vs Chat Completions, and openai-codex picks codex_responses
+    vs chat_completions based on the model slug. Without this, a caller
+    saying ``delegate_task(model="gpt-5.3-codex")`` would inherit api_mode
+    resolved against the configured default model and the child would run
+    over the wrong transport.
+
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
+    effective_model_raw = override_model if override_model is not None else cfg.get("model")
+    configured_model = str(effective_model_raw or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None

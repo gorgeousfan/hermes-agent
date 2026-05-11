@@ -608,6 +608,67 @@ class TestDelegateModelArg(unittest.TestCase):
 
     @patch("tools.delegate_tool._run_single_child")
     @patch("tools.delegate_tool._build_child_agent")
+    def test_per_call_model_drives_runtime_resolution(self, mock_build, mock_run):
+        """For providers whose transport depends on target_model (Azure
+        Foundry, openai-codex, OpenCode), a per-call ``model`` must drive
+        ``_resolve_delegation_credentials`` so the child runs over the right
+        api_mode/base_url — not the transport resolved for ``delegation.model``
+        from config.
+
+        Without per-task re-resolution, ``delegate_task(model="gpt-5.3-codex")``
+        with ``delegation.model=gpt-5.3`` would inherit api_mode from the
+        config model and run the requested codex model over chat_completions
+        instead of codex_responses.
+        """
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed",
+            "summary": "ok", "api_calls": 1, "duration_seconds": 0.1,
+        }
+        mock_child = MagicMock()
+        mock_child._delegate_saved_tool_names = []
+        mock_build.return_value = mock_child
+
+        parent = _make_mock_parent(depth=0)
+
+        # Simulate Azure-Foundry-style resolution: api_mode depends on
+        # target_model. gpt-5 → chat_completions; gpt-5-codex → responses.
+        def fake_resolve(_cfg, _parent, override_model=None):
+            model_arg = override_model or _cfg.get("model")
+            if model_arg and "codex" in model_arg:
+                return {
+                    "model": model_arg,
+                    "provider": "azure-foundry",
+                    "base_url": "https://example.azure.com/openai/v1/",
+                    "api_key": "key",
+                    "api_mode": "responses",
+                }
+            return {
+                "model": model_arg,
+                "provider": "azure-foundry",
+                "base_url": "https://example.azure.com/openai/v1/",
+                "api_key": "key",
+                "api_mode": "chat_completions",
+            }
+
+        cfg_with_default_model = {"provider": "azure-foundry", "model": "gpt-5"}
+        with patch("tools.delegate_tool._load_config", return_value=cfg_with_default_model):
+            with patch(
+                "tools.delegate_tool._resolve_delegation_credentials",
+                side_effect=fake_resolve,
+            ):
+                delegate_task(
+                    goal="x", model="gpt-5-codex", parent_agent=parent,
+                )
+
+        _, kwargs = mock_build.call_args
+        # The override_api_mode passed to the child must come from the
+        # re-resolution that used the per-call model, NOT from the initial
+        # pre-loop resolution that used delegation.model.
+        self.assertEqual(kwargs["model"], "gpt-5-codex")
+        self.assertEqual(kwargs["override_api_mode"], "responses")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
     def test_delegation_config_model_used_when_no_per_call_override(self, mock_build, mock_run):
         """When neither top-level nor per-task ``model`` is given, the
         ``delegation.model`` config value (resolved via creds["model"])
