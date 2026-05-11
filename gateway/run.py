@@ -9915,7 +9915,11 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                text_to_speech_tool,
+                _is_telegram_voice_artifact,
+                _strip_markdown_for_tts,
+            )
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
@@ -9941,6 +9945,16 @@ class GatewayRunner:
                 return
 
             adapter = self.adapters.get(event.source.platform)
+            platform = getattr(event.source.platform, "value", event.source.platform)
+            if str(platform).lower() == "telegram" and (
+                not result.get("voice_compatible")
+                or not _is_telegram_voice_artifact(actual_path)
+            ):
+                logger.warning(
+                    "Auto voice reply TTS did not produce valid Telegram voice audio: %s",
+                    actual_path,
+                )
+                return
 
             # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
