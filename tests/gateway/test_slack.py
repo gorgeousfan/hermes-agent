@@ -1326,7 +1326,28 @@ class TestSendTyping:
             thread_ts="parent_ts",
             status="",
         )
-        assert "C123" not in adapter._active_status_threads
+        # Thread stays tracked when the clear fails so a later stop_typing
+        # can retry — the typing indicator is still set on Slack's side.
+        assert adapter._active_status_threads["C123"] == {"parent_ts"}
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_partial_failure_keeps_failed_thread_tracked(self, adapter):
+        """Mixed success/failure: cleared threads are discarded, failures stay tracked."""
+        adapter._active_status_threads["C123"] = {"thread_ok", "thread_fail"}
+
+        async def setstatus(channel_id, thread_ts, status):
+            if thread_ts == "thread_fail":
+                raise Exception("network blip")
+            return None
+
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(side_effect=setstatus)
+
+        await adapter.stop_typing("C123")
+
+        # Both threads were attempted.
+        assert adapter._app.client.assistant_threads_setStatus.call_count == 2
+        # Only the failed thread remains; the successful one was cleared.
+        assert adapter._active_status_threads["C123"] == {"thread_fail"}
 
     @pytest.mark.asyncio
     async def test_send_clears_status_after_final_post(self, adapter):

@@ -988,7 +988,6 @@ class SlackAdapter(BasePlatformAdapter):
 
         client = self._get_client(chat_id)
         for ts in to_clear:
-            tracked.discard(ts)
             try:
                 await client.assistant_threads_setStatus(
                     channel_id=chat_id,
@@ -996,7 +995,12 @@ class SlackAdapter(BasePlatformAdapter):
                     status="",
                 )
             except Exception as e:
+                # Leave the thread tracked so a later stop_typing call can
+                # retry the clear; the typing indicator is still set on
+                # Slack's side until cleared successfully.
                 logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+                continue
+            tracked.discard(ts)
 
         if not tracked:
             self._active_status_threads.pop(chat_id, None)
