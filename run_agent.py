@@ -6032,7 +6032,15 @@ class AIAgent:
             stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        # Only inject when skill_view is loaded; otherwise the directive tells the agent
+        # to call a tool that doesn't exist. The HERMES_AGENT_HELP_GUIDANCE env var
+        # appends additional guidance text for custom deployments (documented in
+        # website/docs/reference/environment-variables.md).
+        if "skill_view" in self.valid_tool_names:
+            stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        _help_guidance_extra = os.environ.get("HERMES_AGENT_HELP_GUIDANCE", "").strip()
+        if _help_guidance_extra:
+            stable_parts.append(_help_guidance_extra)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
