@@ -468,6 +468,47 @@ class TestMatrixDmDetection:
         assert self.adapter._dm_rooms["!room_b:ex.org"] is True
         assert self.adapter._dm_rooms["!room_c:ex.org"] is False
 
+    @pytest.mark.asyncio
+    async def test_is_dm_room_uses_m_direct_cache_only(self):
+        """A room flagged True in _dm_rooms is reported as DM."""
+        self.adapter._dm_rooms = {"!dm:ex.org": True}
+        assert await self.adapter._is_dm_room("!dm:ex.org") is True
+
+    @pytest.mark.asyncio
+    async def test_is_dm_room_two_member_group_is_not_dm(self):
+        """Regression for #24114: a 2-member group room (not in m.direct)
+        must not be classified as a DM via member-count fallback."""
+        self.adapter._dm_rooms = {"!group2:ex.org": False}
+
+        state_store = MagicMock()
+        state_store.get_members = AsyncMock(
+            return_value=["@alice:ex.org", "@bot:ex.org"]
+        )
+        mock_client = MagicMock()
+        mock_client.state_store = state_store
+        self.adapter._client = mock_client
+
+        assert await self.adapter._is_dm_room("!group2:ex.org") is False
+        state_store.get_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_is_dm_room_unknown_room_defaults_to_false(self):
+        """Rooms missing from _dm_rooms (cache not refreshed yet) default to
+        not-DM. The conservative default keeps MATRIX_REQUIRE_MENTION effective
+        rather than silently disabling it via a member-count guess."""
+        self.adapter._dm_rooms = {}
+
+        state_store = MagicMock()
+        state_store.get_members = AsyncMock(
+            return_value=["@alice:ex.org", "@bot:ex.org"]
+        )
+        mock_client = MagicMock()
+        mock_client.state_store = state_store
+        self.adapter._client = mock_client
+
+        assert await self.adapter._is_dm_room("!unknown:ex.org") is False
+        state_store.get_members.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Reply fallback stripping
