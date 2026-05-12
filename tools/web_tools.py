@@ -1096,23 +1096,40 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
 
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
+_PARALLEL_LEGACY_TO_GA_MODE = {"fast": "basic", "one-shot": "basic", "agentic": "advanced"}
+_PARALLEL_GA_TO_LEGACY_MODE = {"basic": "fast", "advanced": "agentic"}
+_PARALLEL_ALLOWED_SEARCH_MODES = {"fast", "one-shot", "agentic", "basic", "advanced"}
+
 def _parallel_search(query: str, limit: int = 5) -> dict:
     """Search using the Parallel SDK and return results as a dict."""
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return {"error": "Interrupted", "success": False}
 
-    mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
-    if mode not in {"fast", "one-shot", "agentic"}:
-        mode = "agentic"
+    requested_mode = os.getenv("PARALLEL_SEARCH_MODE", "agentic").lower().strip()
+    if requested_mode not in _PARALLEL_ALLOWED_SEARCH_MODES:
+        requested_mode = "agentic"
 
-    logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
-    response = _get_parallel_client().beta.search(
-        search_queries=[query],
-        objective=query,
-        mode=mode,
-        max_results=min(limit, 20),
-    )
+    client = _get_parallel_client()
+    max_results = min(limit, 20)
+    if hasattr(client, "search"):
+        api_mode = _PARALLEL_LEGACY_TO_GA_MODE.get(requested_mode, requested_mode)
+        logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, api_mode, limit)
+        response = client.search(
+            search_queries=[query],
+            objective=query,
+            mode=api_mode,
+            advanced_settings={"max_results": max_results},
+        )
+    else:
+        api_mode = _PARALLEL_GA_TO_LEGACY_MODE.get(requested_mode, requested_mode)
+        logger.info("Parallel beta search: '%s' (mode=%s, limit=%d)", query, api_mode, limit)
+        response = client.beta.search(
+            search_queries=[query],
+            objective=query,
+            mode=api_mode,
+            max_results=max_results,
+        )
 
     web_results = []
     for i, result in enumerate(response.results or []):
@@ -1138,10 +1155,17 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
         return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
     logger.info("Parallel extract: %d URL(s)", len(urls))
-    response = await _get_async_parallel_client().beta.extract(
-        urls=urls,
-        full_content=True,
-    )
+    client = _get_async_parallel_client()
+    if hasattr(client, "extract"):
+        response = await client.extract(
+            urls=urls,
+            advanced_settings={"full_content": True},
+        )
+    else:
+        response = await client.beta.extract(
+            urls=urls,
+            full_content=True,
+        )
 
     results = []
     for result in response.results or []:

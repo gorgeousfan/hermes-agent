@@ -448,6 +448,109 @@ class TestParallelClientConfig:
             assert client1 is client2
 
 
+class TestParallelSearchAndExtractCompatibility:
+    """Parallel SDK compatibility across beta and GA clients."""
+
+    def test_parallel_search_uses_ga_client_and_maps_agentic_to_advanced(self):
+        import tools.web_tools
+
+        calls = {}
+
+        class FakeClient:
+            def search(self, **kwargs):
+                calls.update(kwargs)
+                return types.SimpleNamespace(
+                    results=[
+                        types.SimpleNamespace(
+                            title="Parallel docs",
+                            url="https://docs.parallel.ai",
+                            excerpts=["Excerpt"],
+                        )
+                    ]
+                )
+
+        with patch("tools.web_tools._get_parallel_client", return_value=FakeClient()), \
+             patch.dict(os.environ, {"PARALLEL_SEARCH_MODE": "agentic"}), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = tools.web_tools._parallel_search("Parallel SDK", limit=3)
+
+        assert calls["mode"] == "advanced"
+        assert calls["advanced_settings"] == {"max_results": 3}
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Parallel docs"
+
+    def test_parallel_search_falls_back_to_beta_client_and_maps_advanced_to_agentic(self):
+        import tools.web_tools
+
+        calls = {}
+
+        class FakeClient:
+            class beta:
+                @staticmethod
+                def search(**kwargs):
+                    calls.update(kwargs)
+                    return types.SimpleNamespace(results=[])
+
+        with patch("tools.web_tools._get_parallel_client", return_value=FakeClient()), \
+             patch.dict(os.environ, {"PARALLEL_SEARCH_MODE": "advanced"}), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = tools.web_tools._parallel_search("Parallel SDK", limit=3)
+
+        assert calls["mode"] == "agentic"
+        assert calls["max_results"] == 3
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_parallel_extract_uses_ga_client_with_advanced_settings(self):
+        import tools.web_tools
+
+        calls = {}
+
+        class FakeAsyncClient:
+            async def extract(self, **kwargs):
+                calls.update(kwargs)
+                return types.SimpleNamespace(
+                    results=[
+                        types.SimpleNamespace(
+                            title="Parallel docs",
+                            url="https://docs.parallel.ai",
+                            full_content="Full content",
+                            excerpts=["Excerpt"],
+                        )
+                    ],
+                    errors=[],
+                )
+
+        with patch("tools.web_tools._get_async_parallel_client", return_value=FakeAsyncClient()), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = await tools.web_tools._parallel_extract(["https://docs.parallel.ai"])
+
+        assert calls["advanced_settings"] == {"full_content": True}
+        assert result[0]["content"] == "Full content"
+
+    @pytest.mark.asyncio
+    async def test_parallel_extract_falls_back_to_beta_client(self):
+        import tools.web_tools
+
+        calls = {}
+
+        class Beta:
+            @staticmethod
+            async def extract(**kwargs):
+                calls.update(kwargs)
+                return types.SimpleNamespace(results=[], errors=[])
+
+        class FakeAsyncClient:
+            beta = Beta()
+
+        with patch("tools.web_tools._get_async_parallel_client", return_value=FakeAsyncClient()), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = await tools.web_tools._parallel_extract(["https://docs.parallel.ai"])
+
+        assert calls == {"urls": ["https://docs.parallel.ai"], "full_content": True}
+        assert result == []
+
+
 class TestWebSearchSchema:
     """Test suite for web_search tool schema and handler wiring."""
 
