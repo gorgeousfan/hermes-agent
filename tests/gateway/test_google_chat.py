@@ -14,6 +14,7 @@ We shim the imports at module load so collection doesn't fail.
 import asyncio
 import json
 import os
+import re
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2500,6 +2501,84 @@ class TestFormatMessage:
         """
         out = GoogleChatAdapter.format_message("rate is ** TBD")
         assert "**" in out  # not converted
+
+    # ------------------------------------------------------------------
+    # Nested placeholder restore (#24567)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "src,expected",
+        [
+            # Bold span around inline code: outer `\x00GC1\x00` value
+            # embeds the inner `\x00GC0\x00` key.  Forward restore would
+            # iterate the inner first (no-op — it's only inside the value
+            # dict, not yet in `text`), then substitute the outer
+            # `*Use \x00GC0\x00 mode*` into `text`, leaving the inner
+            # marker visible.
+            ("**Use `active` mode**", "*Use `active` mode*"),
+            # Bold-italic compound around inline code.
+            ("***Use `mode` here***", "*_Use `mode` here_*"),
+            # Markdown link with bold in the link text.
+            ("[See **important** docs](https://x.com)",
+             "<https://x.com|See *important* docs>"),
+            # Markdown link with inline code in the link text.
+            ("[Run `cmd`](https://x.com)", "<https://x.com|Run `cmd`>"),
+            # Header containing inline code.
+            ("## Status: `active`", "*Status: `active`*"),
+            # Three-deep nesting: link → bold → inline code.
+            ("[See **`cmd` mode**](https://x.com)",
+             "<https://x.com|See *`cmd` mode*>"),
+        ],
+    )
+    def test_nested_placeholder_values_are_fully_restored(self, src, expected):
+        """Nested markdown constructs must not leak the raw `\\x00GC<n>\\x00` sentinel.
+
+        Every captured-group transformation in ``format_message`` is
+        stored as a placeholder whose value can contain *earlier*
+        placeholder keys (e.g. inline-code-within-bold, bold-within-link,
+        inline-code-within-header).  The restore loop must visit
+        placeholders in reverse insertion order so the outer key is
+        substituted *before* the inner — otherwise the inner key sits
+        unreplaced in the value that the outer substitution writes back
+        into ``text``, and downstream JSON / Google Chat API stripping
+        of the NUL boundary bytes surfaces the bare ``GC<n>`` token to
+        the user (#24567).
+        """
+        out = GoogleChatAdapter.format_message(src)
+        assert out == expected
+        # Belt-and-braces: no NUL-flanked sentinel anywhere in the output
+        # even if the user pastes the literal sentinel form.
+        assert "\x00" not in out
+        # And no bare `GC<digit>` token survived a NUL strip downstream.
+        assert not re.search(r"\bGC\d+\b", out), (
+            f"Bare placeholder token leaked into output: {out!r}"
+        )
+
+    def test_user_reported_sales_pipeline_message(self):
+        """Reproduces the symptom from #24567 verbatim shape.
+
+        The reporter saw ``Status moved from Abandoned to GC6.`` in
+        rendered Chat output — meaning at least 7 placeholders were
+        generated for the surrounding message and at least one outer
+        value embedded an earlier inner key.  This locks the
+        end-to-end restore behavior for the realistic mixed-markdown
+        shape an agent would emit on a sales-update turn.
+        """
+        src = (
+            "## Sales Pipeline Update\n"
+            "* Reactivated [Copper Opportunity XXXX](https://copper.com/x) "
+            "(Status moved from `Abandoned` to **Reactivated**).\n"
+            "* Owner is **John Doe**, Acme `Inc.`\n"
+            "* Stage moved from **Discovery** to **Proposal**\n"
+        )
+        out = GoogleChatAdapter.format_message(src)
+        assert "\x00" not in out
+        assert not re.search(r"\bGC\d+\b", out)
+        # Spot-check a couple of conversions to ensure we didn't
+        # over-protect: bold did flip to single asterisk, link did
+        # become anglebracket-form.
+        assert "*Reactivated*" in out
+        assert "<https://copper.com/x|Copper Opportunity XXXX>" in out
 
 
 class TestADCFallback:
