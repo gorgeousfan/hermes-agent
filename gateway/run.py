@@ -14221,10 +14221,13 @@ class GatewayRunner:
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
-            user_id = data.get("user_id") or chat_id
-            chat_type = data.get("chat_type") or "dm"
+            user_id = data.get("user_id")
+            chat_type = data.get("chat_type")
 
-            if not platform_str or not chat_id:
+            if not platform_str or not chat_id or not user_id or not chat_type:
+                logger.debug(
+                    "Restart notification skipped: stale marker missing routing identity"
+                )
                 return None
 
             platform = Platform(platform_str)
@@ -14254,7 +14257,7 @@ class GatewayRunner:
                     platform=platform,
                     chat_id=str(chat_id),
                     chat_type=str(chat_type),
-                    user_id=str(user_id) if user_id else "",
+                    user_id=str(user_id) if user_id else None,
                     thread_id=str(thread_id) if thread_id else None,
                 )
                 if not self._is_user_authorized(source):
