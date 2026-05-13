@@ -200,6 +200,12 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
+
+    "lcm": {
+        "description": "Read-only exact recall over Hermes state.db: status, grep, describe, extractive recall",
+        "tools": ["lcm_status", "lcm_grep", "lcm_describe", "lcm_expand_query", "lcm_recall"],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
