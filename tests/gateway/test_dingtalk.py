@@ -1140,3 +1140,135 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Reconnect circuit breaker (#24851)
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectCircuitBreaker:
+    """Regression tests for the reconnection storm guard.
+
+    The SDK-side ``DingTalkStreamClient.start()`` can raise an immediate
+    coroutine-as-context-manager TypeError every iteration when the installed
+    dingtalk-stream SDK version is incompatible. Without a circuit breaker the
+    reconnect loop spins forever and produces hundreds of MB of error log
+    (#24851). The breaker trips after N consecutive *startup* failures; a
+    stream that ran for a while before failing resets the counter so genuine
+    mid-session disconnects keep retrying.
+    """
+
+    @pytest.mark.asyncio
+    async def test_trips_after_max_consecutive_startup_failures(self):
+        from gateway.platforms import dingtalk as dt_mod
+        from gateway.platforms.dingtalk import (
+            DingTalkAdapter,
+            MAX_CONSECUTIVE_RECONNECT_FAILURES,
+        )
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        # Every start() raises immediately — no time elapses on the clock.
+        start_calls = 0
+
+        async def failing_start():
+            nonlocal start_calls
+            start_calls += 1
+            raise TypeError(
+                "'coroutine' object does not support the asynchronous context manager protocol"
+            )
+
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = failing_start
+
+        async def no_sleep(_delay):
+            return None
+
+        with patch.object(dt_mod.asyncio, "sleep", no_sleep), \
+             patch.object(dt_mod.time, "monotonic", return_value=1000.0):
+            await adapter._run_stream()
+
+        assert start_calls == MAX_CONSECUTIVE_RECONNECT_FAILURES
+        # Breaker should leave the adapter in a stopped state so the gateway
+        # doesn't keep the dead task around indefinitely.
+        assert adapter._running is False
+
+    @pytest.mark.asyncio
+    async def test_long_lived_failure_resets_counter(self):
+        from gateway.platforms import dingtalk as dt_mod
+        from gateway.platforms.dingtalk import (
+            DingTalkAdapter,
+            MAX_CONSECUTIVE_RECONNECT_FAILURES,
+            RECONNECT_HEALTHY_THRESHOLD_S,
+        )
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        async def failing_start():
+            raise RuntimeError("websocket dropped")
+
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = failing_start
+
+        async def no_sleep(_delay):
+            return None
+
+        # Simulate a clock that advances well past the healthy threshold
+        # between every start() entry and exit, so each failure looks like a
+        # transient mid-session disconnect.  After more than the trip count
+        # has accumulated we manually stop the loop and assert the breaker
+        # never fired.
+        attempts = {"n": 0}
+        monotonic_values: list[float] = []
+        max_attempts = MAX_CONSECUTIVE_RECONNECT_FAILURES + 3
+
+        def fake_monotonic():
+            # Per iteration the loop reads the clock twice: once before
+            # start() and once after the exception.  Step the second read
+            # forward by 2× the healthy threshold so the reset branch fires.
+            monotonic_values.append(0.0)
+            attempts["n"] += 1
+            if attempts["n"] >= max_attempts * 2:
+                # Stop the loop after enough iterations to confirm it would
+                # have tripped if the reset wasn't working.
+                adapter._running = False
+            base = (attempts["n"] // 2) * 100.0
+            if attempts["n"] % 2 == 1:
+                return base
+            return base + 2 * RECONNECT_HEALTHY_THRESHOLD_S
+
+        with patch.object(dt_mod.asyncio, "sleep", no_sleep), \
+             patch.object(dt_mod.time, "monotonic", side_effect=fake_monotonic):
+            await adapter._run_stream()
+
+        # The loop exited because we flipped _running, not because the
+        # breaker tripped.  We should have seen at least one more attempt
+        # than the trip threshold.
+        assert attempts["n"] // 2 >= MAX_CONSECUTIVE_RECONNECT_FAILURES + 1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_exits_without_tripping_breaker(self):
+        from gateway.platforms import dingtalk as dt_mod
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+
+        async def cancelling_start():
+            raise asyncio.CancelledError()
+
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = cancelling_start
+
+        async def no_sleep(_delay):
+            return None
+
+        with patch.object(dt_mod.asyncio, "sleep", no_sleep):
+            await adapter._run_stream()
+
+        # CancelledError is a normal shutdown signal; the breaker must not
+        # treat it as a startup failure.  _running stays as the caller set it.
+        assert adapter._running is True
