@@ -85,6 +85,32 @@ def _add_accept_hooks_flag(parser) -> None:
     )
 
 
+def _format_acp_import_error(exc: ImportError) -> list[str]:
+    """Map an ImportError raised while starting the ACP adapter to
+    user-facing message lines.
+
+    The acp adapter imports the third-party ``acp`` package (provided by
+    ``agent-client-protocol``) lazily inside ``acp_adapter.entry.main``.
+    Any ImportError raised from there used to be reported as "ACP
+    dependencies not installed", even when the failing module was
+    unrelated — masking real install corruption behind a "reinstall the
+    extra" suggestion that doesn't actually fix the problem.
+    """
+    missing = getattr(exc, "name", None) or ""
+    if missing == "acp" or missing.startswith("acp."):
+        return [
+            "ACP dependencies not installed.",
+            "Install them with:  pip install -e '.[acp]'",
+        ]
+    detail = f" ({missing})" if missing else ""
+    return [
+        f"hermes acp failed to start: {exc}",
+        f"An unrelated module{detail} could not be imported — this is not "
+        "an ACP packaging issue.",
+        "Check your hermes install with:  pip install -e '.[acp]'",
+    ]
+
+
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
 
@@ -11426,9 +11452,9 @@ Examples:
             from acp_adapter.entry import main as acp_main
 
             acp_main()
-        except ImportError:
-            print("ACP dependencies not installed.")
-            print("Install them with:  pip install -e '.[acp]'")
+        except ImportError as e:
+            for line in _format_acp_import_error(e):
+                print(line)
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)
