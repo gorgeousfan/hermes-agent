@@ -56,7 +56,11 @@ else:
 
 def prepare_token_span_full(full_tokens: List[int]) -> Optional["np.ndarray"]:
     """Prepare a reusable array for repeated span searches on one rollout."""
-    if not NUMBA_TOKEN_SPAN_AVAILABLE or not full_tokens:
+    if (
+        not NUMBA_TOKEN_SPAN_AVAILABLE
+        or not full_tokens
+        or len(full_tokens) < MIN_NUMBA_FULL_LEN
+    ):
         return None
     return np.asarray(full_tokens, dtype=np.int64)
 
