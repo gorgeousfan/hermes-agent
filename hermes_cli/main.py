@@ -11550,10 +11550,19 @@ def main():
     # =========================================================================
     # login command
     # =========================================================================
+    # `hermes login` was removed in favor of `hermes auth` (see PR #5670 and
+    # the runtime in `hermes_cli/auth.py::login_command`).  The subparser
+    # itself is kept so old scripts that invoke `hermes login [--flags]` get
+    # the actionable deprecation message instead of an argparse error, but
+    # ``help=argparse.SUPPRESS`` hides the entry from ``hermes --help`` so
+    # users don't discover and try a command that no longer works (#24756).
     login_parser = subparsers.add_parser(
         "login",
-        help="Authenticate with an inference provider",
-        description="Run OAuth device authorization flow for Hermes CLI",
+        help=argparse.SUPPRESS,
+        description=(
+            "Deprecated. Use `hermes auth` to manage credentials, "
+            "`hermes model` to select a provider, or `hermes setup` for full setup."
+        ),
     )
     login_parser.add_argument(
         "--provider",
