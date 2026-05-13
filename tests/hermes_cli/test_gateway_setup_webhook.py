@@ -52,3 +52,37 @@ class TestWebhookSetupSurfaces:
             "webhook entry must use WEBHOOK_ENABLED as its sentinel "
             "env var to match the gateway/config.py bridge"
         )
+
+
+class TestWebhookPlatformStatus:
+    """``WEBHOOK_ENABLED`` is a boolean env var (see ``gateway/config.py``
+    where the value is parsed against ``{"true", "1", "yes"}``). The picker's
+    ``_platform_status`` must mirror that truthy check so users don't see
+    ``WEBHOOK_ENABLED=false`` reported as ``configured``.
+    """
+
+    def _webhook_entry(self):
+        from hermes_cli.gateway import _all_platforms
+
+        return next(p for p in _all_platforms() if p["key"] == "webhook")
+
+    def test_status_false_value_is_not_configured(self, monkeypatch):
+        from hermes_cli import gateway as g
+
+        monkeypatch.setattr(g, "get_env_value", lambda _k: "false")
+        assert g._platform_status(self._webhook_entry()) == "not configured"
+
+    def test_status_empty_value_is_not_configured(self, monkeypatch):
+        from hermes_cli import gateway as g
+
+        monkeypatch.setattr(g, "get_env_value", lambda _k: "")
+        assert g._platform_status(self._webhook_entry()) == "not configured"
+
+    def test_status_truthy_value_is_configured(self, monkeypatch):
+        from hermes_cli import gateway as g
+
+        for truthy in ("true", "1", "yes", "TRUE", " true "):
+            monkeypatch.setattr(g, "get_env_value", lambda _k, v=truthy: v)
+            assert g._platform_status(self._webhook_entry()) == "configured", (
+                f"WEBHOOK_ENABLED={truthy!r} should be reported as configured"
+            )

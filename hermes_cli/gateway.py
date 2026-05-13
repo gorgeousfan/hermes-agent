@@ -3692,7 +3692,7 @@ _PLATFORMS = [
         "emoji": "🔗",
         "token_var": "WEBHOOK_ENABLED",
         "setup_instructions": [
-            "1. Define webhook routes (per service) in config.yaml under platforms.webhook.routes",
+            "1. Define webhook routes (per service) in config.yaml under platforms.webhook.extra.routes",
             "2. Point your service (GitHub, GitLab, Stripe, etc.) at",
             "   http://<your-server>:<WEBHOOK_PORT>/webhooks/<route-name>",
             "3. Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/",
@@ -3796,6 +3796,14 @@ def _platform_status(platform: dict) -> str:
             if session_file.exists():
                 return "configured + paired"
             return "enabled, not paired"
+        return "not configured"
+    if token_var == "WEBHOOK_ENABLED":
+        # Match gateway/config.py:1429 — the runtime only honors the platform
+        # when WEBHOOK_ENABLED parses truthy. Without this branch the picker
+        # would mark WEBHOOK_ENABLED=false as "configured" because the
+        # fallthrough below treats any non-empty value as truthy.
+        if val and val.strip().lower() in {"true", "1", "yes"}:
+            return "configured"
         return "not configured"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")
