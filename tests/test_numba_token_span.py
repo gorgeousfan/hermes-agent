@@ -25,6 +25,11 @@ def test_find_token_span_falls_back_to_python(monkeypatch) -> None:
     assert numba_token_span.find_token_span(full_tokens, sub_tokens) == 800
 
 
+def test_prepare_token_span_full_skips_short_sequences(monkeypatch) -> None:
+    monkeypatch.setattr(numba_token_span, "NUMBA_TOKEN_SPAN_AVAILABLE", True)
+    assert numba_token_span.prepare_token_span_full(list(range(128))) is None
+
+
 def test_find_token_span_uses_prepared_full_tokens() -> None:
     full_tokens = list(range(900)) + [10, 11, 12]
     prepared = numba_token_span.prepare_token_span_full(full_tokens)
