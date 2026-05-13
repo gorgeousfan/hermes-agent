@@ -126,8 +126,10 @@ def get_process_start_time(pid: int) -> Optional[int]:
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string.
 
-    On Linux, reads /proc/<pid>/cmdline directly.  On macOS and other
-    platforms without /proc, falls back to ``ps -p <pid> -o command=``.
+    On Linux, reads /proc/<pid>/cmdline directly. On Windows, asks WMI for
+    the Win32 command line because MSYS ``ps`` reports only the image path for
+    native Win32 processes. On macOS and other platforms without /proc, falls
+    back to ``ps -p <pid> -o command=``.
     """
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
@@ -137,6 +139,33 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     else:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+
+    if _IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                [
+                    "wmic",
+                    "process",
+                    "where",
+                    f"ProcessId={int(pid)}",
+                    "get",
+                    "CommandLine",
+                    "/FORMAT:LIST",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if line.startswith("CommandLine="):
+                        value = line.split("=", 1)[1].strip()
+                        if value:
+                            return value
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pass
 
     try:
         result = subprocess.run(

@@ -503,32 +503,29 @@ class TestSendToPlatformChunking:
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
 
-    def test_matrix_media_uses_native_adapter_helper(self):
+    def test_matrix_media_uses_native_adapter_helper(self, tmp_path):
 
-        doc_path = Path("/tmp/test-send-message-matrix.pdf")
+        doc_path = tmp_path / "test-send-message-matrix.pdf"
         doc_path.write_bytes(b"%PDF-1.4 test")
 
-        try:
-            helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:example.com", "message_id": "$evt"})
-            with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
-                result = asyncio.run(
-                    _send_to_platform(
-                        Platform.MATRIX,
-                        SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
-                        "!room:example.com",
-                        "here you go",
-                        media_files=[(str(doc_path), False)],
-                    )
+        helper = AsyncMock(return_value={"success": True, "platform": "matrix", "chat_id": "!room:example.com", "message_id": "$evt"})
+        with patch("tools.send_message_tool._send_matrix_via_adapter", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.MATRIX,
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:example.com",
+                    "here you go",
+                    media_files=[(str(doc_path), False)],
                 )
+            )
 
-            assert result["success"] is True
-            helper.assert_awaited_once()
-            call = helper.await_args
-            assert call.args[1] == "!room:example.com"
-            assert call.args[2] == "here you go"
-            assert call.kwargs["media_files"] == [(str(doc_path), False)]
-        finally:
-            doc_path.unlink(missing_ok=True)
+        assert result["success"] is True
+        helper.assert_awaited_once()
+        call = helper.await_args
+        assert call.args[1] == "!room:example.com"
+        assert call.args[2] == "here you go"
+        assert call.kwargs["media_files"] == [(str(doc_path), False)]
 
     def test_matrix_text_only_uses_lightweight_path(self):
         """Text-only Matrix sends should NOT go through the heavy adapter path."""
