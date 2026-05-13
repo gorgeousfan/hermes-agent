@@ -3683,6 +3683,21 @@ _PLATFORMS = [
              "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
         ],
     },
+    {
+        # Bespoke setup flow lives in ``hermes_cli.setup._setup_webhooks`` —
+        # ``_builtin_setup_fn`` dispatches on this key, so no ``vars`` schema
+        # is needed here.
+        "key": "webhook",
+        "label": "Webhook",
+        "emoji": "🔗",
+        "token_var": "WEBHOOK_ENABLED",
+        "setup_instructions": [
+            "1. Define webhook routes (per service) in config.yaml under platforms.webhook.routes",
+            "2. Point your service (GitHub, GitLab, Stripe, etc.) at",
+            "   http://<your-server>:<WEBHOOK_PORT>/webhooks/<route-name>",
+            "3. Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/",
+        ],
+    },
 ]
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.
@@ -4754,6 +4769,12 @@ def _builtin_setup_fn(key: str):
         # plugins/platforms/mattermost/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
         "bluebubbles": _s._setup_bluebubbles,
+        # ``webhook`` is the canonical key (matches ``Platform.WEBHOOK`` and the
+        # entry in ``_PLATFORMS``). ``webhooks`` is kept as a defensive alias —
+        # the platform key has historically been singular everywhere else, but
+        # leaving the plural in place costs nothing and avoids surprising any
+        # external caller that happens to use it.
+        "webhook": _s._setup_webhooks,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
         "whatsapp": _setup_whatsapp,
