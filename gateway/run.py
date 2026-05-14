@@ -1027,8 +1027,12 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    # Support both old format (agent:main:platform:type:chat) and
+    # profile-routed format (agent:PROFILE:platform:type:chat)
+    if len(parts) >= 5 and parts[0] == "agent":
+        profile = parts[1]
         result = {
+            "profile": profile,
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
@@ -1684,11 +1688,13 @@ class GatewayRunner:
     def exit_code(self) -> Optional[int]:
         return self._exit_code
 
-    def _session_key_for_source(self, source: SessionSource) -> str:
+    def _session_key_for_source(self, source: SessionSource, *, profile_name: str | None = None) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
+        if profile_name is None:
+            profile_name = self._profile_name_for_source(source)
         if hasattr(self, "session_store") and self.session_store is not None:
             try:
-                session_key = self.session_store._generate_session_key(source)
+                session_key = self.session_store._generate_session_key(source, profile_name=profile_name)
                 if isinstance(session_key, str) and session_key:
                     return session_key
             except Exception:
@@ -1696,9 +1702,110 @@ class GatewayRunner:
         config = getattr(self, "config", None)
         return build_session_key(
             source,
+            profile_name=profile_name,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+
+    def _profile_name_for_source(self, source: SessionSource) -> str | None:
+        """Resolve the profile name for a source using profile routing config."""
+        routes = getattr(self, "_profile_routes_cache", None)
+        if routes is None:
+            config = getattr(self, "config", None)
+            raw_routes = getattr(config, "profile_routes", None) if config else None
+            if raw_routes:
+                from gateway.profile_routing import parse_profile_routes
+                routes = parse_profile_routes(raw_routes)
+            else:
+                routes = []
+            self._profile_routes_cache = routes
+        if not routes:
+            return None
+        from gateway.profile_routing import match_profile_route
+        logger.info("profile routing: source guild_id=%s chat_id=%s thread_id=%s, %d routes loaded",
+                    source.guild_id, source.chat_id, source.thread_id, len(routes))
+        route = match_profile_route(source, routes)
+        if route:
+            logger.info("profile routing: matched route %s -> profile %s", route.name, route.profile)
+        else:
+            logger.info("profile routing: no route matched")
+        return route.profile if route else None
+
+    def _load_profile_personality(self, profile_name: str) -> str | None:
+        """Load personality from a named profile's config.yaml."""
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            profile_dir = get_profile_dir(profile_name)
+            config_path = profile_dir / "config.yaml"
+            if not config_path.is_file():
+                logger.debug("profile routing: no config.yaml for profile '%s'", profile_name)
+                return None
+            import yaml
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f) or {}
+            personality = cfg.get("personality")
+            if personality and isinstance(personality, str) and personality.strip():
+                logger.info("profile routing: loaded personality for profile '%s' (%d chars)", profile_name, len(personality))
+                return personality.strip()
+        except Exception as e:
+            logger.warning("profile routing: failed to load personality for profile '%s': %s", profile_name, e)
+        return None
+
+    def _load_profile_resources(self, profile_name: str) -> str | None:
+        """Load SOUL.md from a named profile directory and ensure resource files exist. MEMORY.md and USER.md are loaded by MemoryStore via profile_memory_dir."""
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            profile_dir = get_profile_dir(profile_name)
+            if not profile_dir.is_dir():
+                return None
+            # Ensure memories directory and core files exist
+            mem_dir = profile_dir / "memories"
+            mem_dir.mkdir(parents=True, exist_ok=True)
+            for fname in ("MEMORY.md", "USER.md"):
+                fp = mem_dir / fname
+                if not fp.exists():
+                    fp.write_text("")
+            soul_path = profile_dir / "SOUL.md"
+            if not soul_path.exists():
+                soul_path.write_text("")
+            parts = []
+            # SOUL.md
+            if soul_path.is_file():
+                soul = soul_path.read_text().strip()
+                if soul:
+                    parts.append(soul)
+            # personality from config.yaml (already loaded separately, skip here)
+            # MEMORY.md / USER.md loaded by MemoryStore via profile_memory_dir
+            if parts:
+                result = "\n\n".join(parts)
+                logger.info("profile routing: loaded %d resource(s) for profile '%s' (%d chars)",
+                            len(parts), profile_name, len(result))
+                return result
+        except Exception as e:
+            logger.warning("profile routing: failed to load resources for profile '%s': %s", profile_name, e)
+        return None
+
+    def _resolve_profile_context(self, profile_name):
+        if not profile_name:
+            return False, None
+        from hermes_cli.profiles import get_profile_dir
+        profile_dir = get_profile_dir(profile_name)
+        mem_dir = str(profile_dir / "memories")
+        personality = self._load_profile_personality(profile_name)
+        resources = self._load_profile_resources(profile_name)
+        return bool(personality or resources), mem_dir
+
+    @staticmethod
+    def _apply_profile_overrides(profile_name: str | None, config: "GatewayConfig") -> dict | None:
+        """Apply profile-specific model/tool overrides from config."""
+        if not profile_name:
+            return None
+        profile_overrides = getattr(config, "profile_overrides", None)
+        if not profile_overrides:
+            return None
+        override = profile_overrides.get(profile_name)
+        return override if isinstance(override, dict) else None
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
@@ -6725,7 +6832,8 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            profile_name = self._profile_name_for_source(source)
+            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation, profile_name=profile_name)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -7015,7 +7123,7 @@ class GatewayRunner:
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int, *, profile_name: str | None = None):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
@@ -7027,7 +7135,9 @@ class GatewayRunner:
         )
 
         # Get or create session
-        session_entry = self.session_store.get_or_create_session(source)
+        if profile_name is None:
+            profile_name = self._profile_name_for_source(source)
+        session_entry = self.session_store.get_or_create_session(source, profile_name=profile_name)
         session_key = session_entry.session_key
         self._cache_session_source(session_key, source)
         if self._is_telegram_topic_lane(source):
@@ -7599,6 +7709,18 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            _profile_skip_defaults, _profile_mem_dir = self._resolve_profile_context(profile_name)
+            if profile_name and _profile_skip_defaults:
+                _personality = self._load_profile_personality(profile_name)
+                _resources = self._load_profile_resources(profile_name)
+                _parts = []
+                if _personality:
+                    _parts.append(_personality)
+                if _resources:
+                    _parts.append(_resources)
+                context_prompt = "\n\n".join(_parts) + "\n\n" + context_prompt
+                logger.info("profile routing: profile=%s skip_defaults=True personality=%d resources=%d",
+                            profile_name, len(_personality or ""), 1 if _resources else 0)
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -7610,6 +7732,8 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                _profile_skip_defaults=_profile_skip_defaults,
+                _profile_memory_dir=_profile_mem_dir,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -10415,6 +10539,8 @@ class GatewayRunner:
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
+            _bg_profile = self._profile_name_for_source(source)
+            _bg_skip_defaults, _bg_mem_dir = self._resolve_profile_context(_bg_profile)
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
@@ -10443,6 +10569,9 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    skip_memory=False,
+                    skip_context_files=_bg_skip_defaults,
+                    profile_memory_dir=_bg_mem_dir,
                 )
                 try:
                     return agent.run_conversation(
@@ -14298,6 +14427,8 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        _profile_skip_defaults: bool = False,
+        _profile_memory_dir: str | None = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15064,6 +15195,9 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    skip_memory=False,  # profile: memory enabled, uses profile dir
+                    skip_context_files=_profile_skip_defaults,
+                    profile_memory_dir=_profile_memory_dir,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

@@ -3430,6 +3430,8 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            parent_chat_id=str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "") or None,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -3512,6 +3514,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            guild_id=str(interaction.guild_id) if interaction.guild_id else None,
         )
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
@@ -4554,7 +4557,14 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Key for grouping split Discord messages (text batching).
+
+        Uses ``build_session_key`` for consistency with the gateway's
+        session key format.  Note: ``profile_name`` is not available at
+        the adapter layer, so the key always uses the default ``main``
+        prefix.  This is fine because batching only needs per-channel
+        isolation — it does not need profile-scoped isolation.
+        """
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
