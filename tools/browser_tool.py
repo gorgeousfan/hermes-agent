@@ -678,6 +678,73 @@ def _copy_fallback_warning(target: Dict[str, Any], result: Dict[str, Any]) -> Di
     return target
 
 
+def _cdp_override_fallback_reason(
+    session_info: Dict[str, Any],
+    command: str,
+    result: Dict[str, Any],
+) -> Optional[str]:
+    """Return the user-visible reason a CDP-override result needs Chrome fallback.
+
+    ``None`` means no fallback should run.  The returned string is copied into
+    the fallback result so CLI/TUI/gateway users can see when Hermes silently
+    switched from the CDP override engine to Chrome for reliability.
+    """
+    # Only trigger fallback for CDP override sessions.
+    features = session_info.get("features", {})
+    if not isinstance(features, dict) or not features.get("cdp_override"):
+        return None
+
+    # Only retry commands where Chrome can meaningfully produce a different
+    # result. Session-management commands are tied to the original engine.
+    _FALLBACK_ELIGIBLE = {"open", "snapshot", "screenshot", "eval", "click",
+                          "fill", "scroll", "back", "press", "console", "errors"}
+    if command not in _FALLBACK_ELIGIBLE:
+        return None
+
+    # Explicit failure — the CDP engine couldn't handle this operation.
+    if not result.get("success"):
+        error = str(result.get("error") or "command failed").strip()
+        return f"CDP override {command!r} failed ({error}); retried with Chrome."
+
+    return None
+
+
+def _needs_cdp_override_fallback(
+    session_info: Dict[str, Any],
+    command: str,
+    result: Dict[str, Any],
+) -> bool:
+    """Check if a CDP-override result should trigger an automatic Chrome fallback."""
+    return _cdp_override_fallback_reason(session_info, command, result) is not None
+
+
+def _annotate_cdp_fallback(result: Dict[str, Any], reason: str) -> Dict[str, Any]:
+    """Add a user-visible Chrome fallback warning to a CDP override result."""
+    warning = (
+        "⚠ CDP override fallback: Chrome was used for this browser action. "
+        f"{reason}"
+    )
+    annotated = dict(result)
+    annotated["fallback_warning"] = warning
+    annotated["browser_engine"] = "chrome"
+    annotated["browser_engine_fallback"] = {
+        "from": "cdp_override",
+        "to": "chrome",
+        "reason": reason,
+    }
+    data = annotated.get("data")
+    if isinstance(data, dict):
+        data = dict(data)
+        data.setdefault("fallback_warning", warning)
+        data.setdefault("browser_engine", "chrome")
+        data.setdefault(
+            "browser_engine_fallback",
+            {"from": "cdp_override", "to": "chrome", "reason": reason},
+        )
+        annotated["data"] = data
+    return annotated
+
+
 def _run_chrome_fallback_command(
     task_id: str,
     command: str,
@@ -748,6 +815,33 @@ def _run_chrome_fallback_command(
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
         browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
+
+    # Inject --no-sandbox when needed (issue #15765):
+    # - Running as root: Chromium always refuses to start without it
+    # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
+    #   are restricted, causing Chromium to exit with "No usable sandbox"
+    #   even for non-root users running under systemd or containers.
+    if "AGENT_BROWSER_ARGS" not in browser_env:
+        _needs_sandbox_bypass = False
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            _needs_sandbox_bypass = True
+            logger.debug("browser fallback: running as root — injecting --no-sandbox")
+        else:
+            _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+            try:
+                with open(_userns_restrict, encoding="utf-8") as _f:
+                    if _f.read().strip() == "1":
+                        _needs_sandbox_bypass = True
+                        logger.debug(
+                            "browser fallback: AppArmor userns restrictions detected — "
+                            "injecting --no-sandbox"
+                        )
+            except OSError:
+                pass
+        if _needs_sandbox_bypass:
+            browser_env["AGENT_BROWSER_ARGS"] = (
+                "--no-sandbox,--disable-dev-shm-usage"
+            )
 
     def _run_tmp(cmd: str, cmd_args: List[str]) -> Dict[str, Any]:
         full = base_args + [cmd] + cmd_args
@@ -1873,7 +1967,7 @@ def _run_browser_command(
         # - Ubuntu 23.10+ / AppArmor systems: unprivileged user namespaces
         #   are restricted, causing Chromium to exit with "No usable sandbox"
         #   even for non-root users running under systemd or containers.
-        if "AGENT_BROWSER_CHROME_FLAGS" not in browser_env:
+        if "AGENT_BROWSER_ARGS" not in browser_env:
             _needs_sandbox_bypass = False
             if hasattr(os, "geteuid") and os.geteuid() == 0:
                 _needs_sandbox_bypass = True
@@ -1892,8 +1986,8 @@ def _run_browser_command(
                 except OSError:
                     pass
             if _needs_sandbox_bypass:
-                browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
-                    "--no-sandbox --disable-dev-shm-usage"
+                browser_env["AGENT_BROWSER_ARGS"] = (
+                    "--no-sandbox,--disable-dev-shm-usage"
                 )
 
         # Use temp files for stdout/stderr instead of pipes.
@@ -2046,6 +2140,23 @@ def _run_browser_command(
         else:
             fallback_result = _run_chrome_fallback_command(task_id, command, args, timeout)
         return _annotate_lightpanda_fallback(fallback_result, fallback_reason)
+
+    # --- CDP override automatic Chrome fallback ---
+    # If the session uses a user-supplied CDP endpoint (e.g. Obscura) that
+    # fails on an operation, retry with Chrome.
+    cdp_fallback_reason = _cdp_override_fallback_reason(session_info, command, result)
+    if cdp_fallback_reason:
+        logger.info(
+            "CDP override fallback: retrying '%s' with Chrome (task=%s): %s",
+            command,
+            task_id,
+            cdp_fallback_reason,
+        )
+        if command == "screenshot":
+            fallback_result = _chrome_fallback_screenshot(task_id, args or [], timeout)
+        else:
+            fallback_result = _run_chrome_fallback_command(task_id, command, args, timeout)
+        return _annotate_cdp_fallback(fallback_result, cdp_fallback_reason)
 
     return result
 
