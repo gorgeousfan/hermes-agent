@@ -358,9 +358,12 @@ def _compute_tool_definitions(
             else:
                 # Surface unresolved entries through the logger so cron / gateway
                 # / oneshot sessions (which all run with quiet_mode=True) don't
-                # silently drop misnamed toolsets. The cache key includes
-                # registry._generation, so this only fires once per unique
-                # (config, registry-state) pair — not on every turn. (#23997)
+                # silently drop misnamed toolsets. Under quiet_mode, the cache
+                # in get_tool_definitions() collapses repeat calls to once per
+                # unique (config, registry-state) pair; in interactive mode
+                # (quiet_mode=False) the cache is bypassed and the warning may
+                # repeat per call, which is acceptable because the print()
+                # below is also visible there. (#23997)
                 logger.warning(
                     "Unknown toolset '%s' in enabled_toolsets — dropping. "
                     "Check spelling against `hermes tools list` (MCP servers "
