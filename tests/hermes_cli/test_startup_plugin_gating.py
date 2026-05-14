@@ -111,8 +111,6 @@ def test_first_positional_argv(argv, expected):
     "argv",
     [
         ["hermes"],                          # bare → chat
-        ["hermes", "--help"],                # top-level help
-        ["hermes", "-h"],
         ["hermes", "version"],               # known built-in
         ["hermes", "logs"],
         ["hermes", "gateway", "run"],
@@ -126,6 +124,12 @@ def test_first_positional_argv(argv, expected):
 def test_discovery_skipped_for_builtins(argv):
     with patch.object(sys, "argv", argv):
         assert _plugin_cli_discovery_needed() is False
+
+
+@pytest.mark.parametrize("argv", [["hermes", "--help"], ["hermes", "-h"]])
+def test_root_help_keeps_plugin_cli_discovery_enabled(argv):
+    with patch.object(sys, "argv", argv):
+        assert _plugin_cli_discovery_needed() is True
 
 
 @pytest.mark.parametrize(
