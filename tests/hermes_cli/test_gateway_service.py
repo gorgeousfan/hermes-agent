@@ -580,6 +580,38 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
+    def test_launchd_restart_cli_deadline_exceeds_gateway_drain_budget(self, monkeypatch):
+        """CLI deadline must exceed gateway drain budget so a drain that uses
+        its full budget still has time for cleanup tail (adapter disconnect /
+        SessionDB close / atexit) without false-firing the timeout warning.
+        Mirrors the +5s buffer applied on the systemd path. Regression for
+        #25966 — equal deadlines false-fire on every full-budget drain."""
+        wait_calls = []
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 60.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+
+        def fake_wait_for_gateway_exit(timeout, force_after=None):
+            wait_calls.append({"timeout": timeout, "force_after": force_after})
+            return True
+
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", fake_wait_for_gateway_exit)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *a, **kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert len(wait_calls) == 1
+        assert wait_calls[0]["timeout"] > 60.0, (
+            f"CLI timeout {wait_calls[0]['timeout']} must exceed drain budget "
+            "to cover gateway cleanup tail; got equal deadlines."
+        )
+
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []
 
