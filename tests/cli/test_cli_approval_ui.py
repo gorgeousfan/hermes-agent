@@ -177,6 +177,138 @@ class TestCliApprovalUi:
         assert "keyring.gpg" in rendered
         assert "status=progress" in rendered
 
+    def test_sudo_prompt_marshals_buffer_reset_to_loop_thread(self):
+        """Regression for #25707: buffer mutations from a worker thread can be
+        silently dropped by some terminals (WSL2 + VSCode Windows Terminal), so
+        ``_sudo_password_callback`` must route snapshot capture + state setup
+        through the prompt_toolkit event-loop thread via ``call_soon_threadsafe``.
+        """
+
+        cli = _make_cli_stub()
+
+        # _FakeLoop captures call_soon_threadsafe callbacks so the test can
+        # drive them on a chosen "loop thread", mirroring what prompt_toolkit
+        # does in production.
+        scheduled: list = []
+        scheduled_lock = threading.Lock()
+        mutation_thread_ids: list = []
+
+        class _FakeLoop:
+            def is_running(self):
+                return True
+
+            def call_soon_threadsafe(self, cb, *args):
+                with scheduled_lock:
+                    scheduled.append((cb, args))
+
+        class _TrackingBuffer(_FakeBuffer):
+            def reset(self, append_to_history=False):
+                mutation_thread_ids.append(threading.get_ident())
+                super().reset(append_to_history=append_to_history)
+
+        cli._app = SimpleNamespace(
+            invalidate=MagicMock(),
+            current_buffer=_TrackingBuffer("draft command", cursor_position=5),
+            loop=_FakeLoop(),
+        )
+        loop_thread_id = threading.get_ident()
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        with patch.object(cli_module, "_cprint"):
+            worker = threading.Thread(target=_run_callback, daemon=True)
+            worker.start()
+
+            # Setup must NOT have happened on the worker yet — the worker is
+            # blocked waiting on the scheduled callback to run on the loop
+            # thread.  Poll the schedule queue instead of the state field.
+            deadline = time.time() + 2
+            while not scheduled and time.time() < deadline:
+                time.sleep(0.005)
+            assert scheduled, "setup was not scheduled via call_soon_threadsafe"
+            assert cli._sudo_state is None, (
+                "_sudo_state was assigned on the worker thread before the loop "
+                "ran the scheduled setup — the marshalling regressed."
+            )
+            assert cli._app.current_buffer.text == "draft command", (
+                "Buffer was reset on the worker thread before the loop ran the "
+                "scheduled setup — the marshalling regressed."
+            )
+
+            # Drive the loop on this (test main) thread.
+            with scheduled_lock:
+                setup_cb, _args = scheduled.pop(0)
+            setup_cb()
+
+            # After the loop ran setup, the modal state and reset buffer are
+            # both visible to the worker.
+            assert cli._sudo_state is not None
+            assert cli._app.current_buffer.text == ""
+            assert mutation_thread_ids == [loop_thread_id], (
+                "buf.reset() must execute on the loop thread, not the worker"
+            )
+
+            # Worker is now waiting on the response_queue.  Deliver password.
+            cli._app.current_buffer.text = "secret"
+            cli._app.current_buffer.cursor_position = len("secret")
+            cli._sudo_state["response_queue"].put("secret")
+
+            # Teardown is scheduled via the same call_soon_threadsafe path.
+            deadline = time.time() + 2
+            while not scheduled and time.time() < deadline:
+                time.sleep(0.005)
+            assert scheduled, "teardown was not scheduled via call_soon_threadsafe"
+            with scheduled_lock:
+                teardown_cb, _args = scheduled.pop(0)
+            teardown_cb()
+
+            worker.join(timeout=2)
+
+        assert result["value"] == "secret"
+        assert cli._sudo_state is None
+        assert cli._app.current_buffer.text == "draft command"
+        assert cli._app.current_buffer.cursor_position == 5
+
+    def test_run_on_loop_thread_runs_inline_without_app(self):
+        """Fallback path: callers without a live prompt_toolkit app (tests,
+        shutdown, pre-init) still get ``_run_on_loop_thread`` to execute the
+        callable inline instead of blocking indefinitely on an Event."""
+
+        cli = _make_cli_stub()
+        cli._app = None
+        ran = []
+
+        cli._run_on_loop_thread(lambda: ran.append(threading.get_ident()))
+
+        assert ran == [threading.get_ident()]
+
+    def test_run_on_loop_thread_runs_inline_when_loop_not_running(self):
+        """If the app exists but its loop is not running, fall back to inline
+        execution rather than scheduling a callback that nothing will drive."""
+
+        cli = _make_cli_stub()
+
+        class _IdleLoop:
+            def is_running(self):
+                return False
+
+            def call_soon_threadsafe(self, cb, *args):  # pragma: no cover
+                raise AssertionError("must not schedule when loop is idle")
+
+        cli._app = SimpleNamespace(
+            invalidate=MagicMock(),
+            current_buffer=_FakeBuffer(),
+            loop=_IdleLoop(),
+        )
+        ran = []
+
+        cli._run_on_loop_thread(lambda: ran.append(True))
+
+        assert ran == [True]
+
     def test_approval_display_preserves_command_and_choices_with_long_description(self):
         """Regression: long tirith descriptions used to push approve/deny off-screen.
 
