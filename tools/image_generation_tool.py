@@ -326,7 +326,31 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
 
 DEFAULT_ASPECT_RATIO = "landscape"
-VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
+VALID_ASPECT_RATIOS = (
+    "landscape",
+    "square",
+    "portrait",
+    "16:9",
+    "5:4",
+    "4:3",
+    "3:2",
+    "1:1",
+    "2:3",
+    "3:4",
+    "4:5",
+    "9:16",
+)
+_ASPECT_RATIO_FALLBACKS = {
+    "16:9": "landscape",
+    "5:4": "landscape",
+    "4:3": "landscape",
+    "3:2": "landscape",
+    "1:1": "square",
+    "2:3": "portrait",
+    "3:4": "portrait",
+    "4:5": "portrait",
+    "9:16": "portrait",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +601,7 @@ def _build_fal_payload(
 
     aspect = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
     if aspect not in sizes:
-        aspect = DEFAULT_ASPECT_RATIO
+        aspect = _ASPECT_RATIO_FALLBACKS.get(aspect, DEFAULT_ASPECT_RATIO)
 
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
@@ -661,6 +685,7 @@ def image_generate_tool(
     num_images: Optional[int] = None,
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
+    size: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
@@ -684,6 +709,7 @@ def image_generate_tool(
             "num_images": num_images,
             "output_format": output_format,
             "seed": seed,
+            "size": size,
         },
         "error": None,
         "success": False,
@@ -721,6 +747,10 @@ def image_generate_tool(
         if output_format is not None:
             overrides["output_format"] = output_format
 
+        # Explicit pixel sizes are intentionally handled only by plugin-backed
+        # providers (OpenAI / Codex OAuth). The in-tree FAL path keeps its
+        # existing preset behavior to avoid sending unsupported literals to
+        # non-OpenAI models.
         arguments = _build_fal_payload(
             model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
         )
@@ -896,7 +926,9 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
+        "Generate high-quality images from text prompts only when no reference image is provided. "
+        "Mandatory: if the user provides, uploads, links, or names any reference/source/product/person image, "
+        "do NOT use this text-to-image tool; it cannot preserve or edit a provided source image. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
@@ -912,8 +944,22 @@ IMAGE_GENERATE_SCHEMA = {
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                "description": (
+                    "Preferred aspect ratio. Legacy presets landscape/square/portrait "
+                    "keep their historical sizes; explicit ratios like 16:9, 4:3, 3:2, "
+                    "1:1, 2:3, 3:4, 4:5, 5:4, and 9:16 are also accepted."
+                ),
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "size": {
+                "type": "string",
+                "pattern": "^[0-9]+x[0-9]+$",
+                "description": (
+                    "Optional explicit output size in pixels, e.g. 1024x1824 for 9:16. "
+                    "When supported by the active provider, this overrides aspect_ratio. "
+                    "For gpt-image-2 sizes, both sides must be multiples of 16 and stay "
+                    "within the model's documented limits."
+                ),
             },
         },
         "required": ["prompt"],
@@ -957,7 +1003,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, size: Optional[str] = None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1013,6 +1059,8 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        if size is not None:
+            kwargs["size"] = size
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1040,16 +1088,18 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    size = args.get("size")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, size=size)
     if dispatched is not None:
         return dispatched
 
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        size=size,
     )
 
 

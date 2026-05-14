@@ -33,6 +33,12 @@ def _b64_png() -> str:
     return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
 
 
+def _cached_reference_path(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / "cache" / "images" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class _FakeStream:
     def __init__(self, events, final_response):
         self._events = list(events)
@@ -85,6 +91,9 @@ class TestMetadata:
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
         assert schema["badge"] == "free"
+
+    def test_supports_edit(self, provider):
+        assert provider.supports_edit() is True
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -199,6 +208,55 @@ class TestGenerate:
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
 
+    @pytest.mark.parametrize("aspect,expected_size", [
+        ("16:9", "1824x1024"),
+        ("9:16", "1024x1824"),
+        ("4:3", "1360x1024"),
+        ("3:4", "1024x1360"),
+    ])
+    def test_codex_aspect_ratio_mapping(self, provider, monkeypatch, aspect, expected_size):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a cat", aspect_ratio=aspect)
+        assert result["success"] is True
+        assert captured["tools"][0]["size"] == expected_size
+
+    def test_codex_explicit_size_overrides_aspect_ratio(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate("a cat", aspect_ratio="square", size="1024x1824")
+        assert result["success"] is True
+        assert result["size"] == "1024x1824"
+        assert captured["tools"][0]["size"] == "1024x1824"
+
+    def test_codex_invalid_explicit_size_returns_error(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: object())
+
+        result = provider.generate("a cat", size="1000x1000")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
     def test_partial_image_event_used_when_done_missing(self, provider, monkeypatch):
         """If the stream never emits output_item.done, fall back to the
         partial_image event so users at least get the latest preview frame."""
@@ -281,6 +339,325 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
+
+
+# ── Edit ────────────────────────────────────────────────────────────────────
+
+
+class TestEdit:
+    def test_edit_uses_input_image_content(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = _cached_reference_path(tmp_path, "source.png")
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_edit",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.edit("make the background blue", str(source), aspect_ratio="square")
+
+        assert result["success"] is True
+        assert result["provider"] == "openai-codex"
+        assert result["source_image"] == str(source)
+        assert Path(result["image"]).exists()
+        assert Path(result["image"]).name.startswith("openai_codex_edit_")
+
+        content = captured["input"][0]["content"]
+        assert content[0] == {"type": "input_text", "text": "make the background blue"}
+        assert content[1]["type"] == "input_image"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+
+        tool = captured["tools"][0]
+        assert tool["type"] == "image_generation"
+        assert tool["model"] == "gpt-image-2"
+        assert tool["action"] == "edit"
+        assert tool["size"] == "1024x1024"
+        assert tool["quality"] == "medium"
+
+    def test_edit_accepts_http_image_url(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", "https://example.com/cat.png")
+
+        assert result["success"] is True
+        assert captured["input"][0]["content"][1] == {
+            "type": "input_image",
+            "image_url": "https://example.com/cat.png",
+        }
+
+    def test_edit_model_kwarg_overrides_env_selected_tier(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-low")
+        source = _cached_reference_path(tmp_path, "source.png")
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit(
+            "add a hat",
+            str(source),
+            model="gpt-image-2-high",
+        )
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-high"
+        assert result["quality"] == "high"
+        assert captured["tools"][0]["quality"] == "high"
+
+    def test_edit_quality_tier_kwarg_overrides_env_selected_tier(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-high")
+        source = _cached_reference_path(tmp_path, "source.png")
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit(
+            "add a hat",
+            str(source),
+            quality_tier="low",
+        )
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-low"
+        assert result["quality"] == "low"
+        assert captured["tools"][0]["quality"] == "low"
+
+    def test_edit_rejects_local_reference_outside_image_cache_before_api_call(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = tmp_path / "outside.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for local files outside the image cache")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", str(source))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Hermes image cache" in result["error"]
+
+    def test_edit_rejects_cached_symlink_to_outside_image_before_api_call(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        target = tmp_path / "outside.png"
+        target.write_bytes(bytes.fromhex(_PNG_HEX))
+        source = _cached_reference_path(tmp_path, "link.png")
+        try:
+            source.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlink not available: {exc}")
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for symlinks escaping the image cache")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", str(source))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Hermes image cache" in result["error"]
+
+    def test_edit_missing_reference_image_returns_not_found(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=lambda **kwargs: None)),
+        )
+
+        result = provider.edit("add a hat", "/definitely/missing.png")
+        assert result["success"] is False
+        assert result["error_type"] == "not_found"
+        assert "Reference image not found" in result["error"]
+
+    def test_edit_rejects_non_image_local_file_before_api_call(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = _cached_reference_path(tmp_path, "secret.txt")
+        source.write_text("TOPSECRET", encoding="utf-8")
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for invalid local files")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", str(source))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "PNG, JPEG, WebP, or GIF" in result["error"]
+
+    def test_edit_rejects_mislabelled_local_image_before_api_call(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        source = _cached_reference_path(tmp_path, "source.png")
+        source.write_text("not actually a png", encoding="utf-8")
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for invalid local files")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", str(source))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "PNG, JPEG, WebP, or GIF" in result["error"]
+
+    def test_edit_rejects_oversized_local_image_before_api_call(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_REFERENCE_IMAGE_MAX_BYTES", 4)
+        source = _cached_reference_path(tmp_path, "source.png")
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for oversized local files")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", str(source))
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "too large" in result["error"]
+
+    def test_edit_rejects_unsupported_reference_url_scheme_before_api_call(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for unsupported reference URL schemes")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", "ftp://example.com/source.png")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Unsupported reference image URL scheme" in result["error"]
+
+    def test_edit_rejects_non_image_data_url_before_api_call(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for invalid data URLs")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", "data:text/plain;base64,VE9QU0VDUkVU")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "must use PNG, JPEG, WebP, or GIF" in result["error"]
+
+    def test_edit_rejects_fake_image_data_url_before_api_call(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        def _stream(**kwargs):
+            raise AssertionError("network stream should not be called for invalid data URLs")
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", "data:image/png;base64,VE9QU0VDUkVU")
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "payload is not a valid" in result["error"]
+
+    def test_edit_normalizes_valid_data_image_url(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        expected_data_url = f"data:image/png;base64,{_b64_png()}"
+        data_url = f"data:image/png;base64,{_b64_png()[:16]}\n{_b64_png()[16:]}"
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(type="image_generation_call", result=_b64_png())
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            return _FakeStream([done_event], SimpleNamespace(output=[]))
+
+        monkeypatch.setattr(
+            codex_plugin,
+            "_build_codex_client",
+            lambda: SimpleNamespace(responses=SimpleNamespace(stream=_stream)),
+        )
+
+        result = provider.edit("add a hat", data_url)
+        assert result["success"] is True
+        content = captured["input"][0]["content"]
+        assert content[1] == {"type": "input_image", "image_url": expected_data_url}
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

@@ -52,6 +52,9 @@ class TestToolKindMap:
     def test_tool_kind_execute_code(self):
         assert get_tool_kind("execute_code") == "execute"
 
+    def test_tool_kind_image_edit(self):
+        assert get_tool_kind("image_edit") == "execute"
+
     def test_tool_kind_todo(self):
         assert get_tool_kind("todo") == "other"
 
@@ -115,6 +118,10 @@ class TestBuildToolTitle:
     def test_web_search_title(self):
         title = build_tool_title("web_search", {"query": "python asyncio"})
         assert "python asyncio" in title
+
+    def test_image_edit_title(self):
+        title = build_tool_title("image_edit", {"prompt": "change background to blue", "image": "/tmp/source.png"})
+        assert title == "edit image: change background to blue"
 
     def test_skill_view_title_includes_skill_name(self):
         title = build_tool_title("skill_view", {"name": "github-pitfalls"})
@@ -314,6 +321,29 @@ class TestBuildToolComplete:
         text = result.content[0].content.text
         assert "Exit code: 0" in text
         assert "hello" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_image_edit_formats_image_path_without_raw_json(self):
+        result = build_tool_complete(
+            "tc-image-edit",
+            "image_edit",
+            '{"success":true,"image":"/tmp/edited.png","provider":"openai-codex","model":"gpt-image-2-high"}',
+        )
+        text = result.content[0].content.text
+        assert "✅ image_edit completed" in text
+        assert "/tmp/edited.png" in text
+        assert "{\"success\"" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_image_generate_formats_image_path_without_raw_json(self):
+        result = build_tool_complete(
+            "tc-image-generate",
+            "image_generate",
+            '{"success":true,"image":"/tmp/generated.png","provider":"openai-codex"}',
+        )
+        text = result.content[0].content.text
+        assert "✅ image_generate completed" in text
+        assert "/tmp/generated.png" in text
         assert result.raw_output is None
 
     def test_build_tool_complete_for_skill_manage_summarizes_without_raw_json(self):
