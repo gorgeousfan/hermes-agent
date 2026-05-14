@@ -112,8 +112,12 @@ class TestExecQuickCommandBypassesBusySession:
         runner.adapters[event.source.platform] = adapter
 
         fake_proc = _FakeProc(stdout=b"note saved\n")
+        # Patch the two cross-module imports the helper does lazily so the test
+        # stays hermetic — it should pass even if those modules misbehave.
         with patch("gateway.run.asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_spawn, \
-             patch("gateway.run.merge_pending_message_event") as mock_merge:
+             patch("gateway.run.merge_pending_message_event") as mock_merge, \
+             patch("tools.environments.local._sanitize_subprocess_env", return_value={}), \
+             patch("agent.redact.redact_sensitive_text", side_effect=lambda x: x):
             result = await runner._handle_active_session_busy_message(event, sk)
 
         assert result is True

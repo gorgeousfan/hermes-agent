@@ -2921,6 +2921,17 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    def _busy_ack_reply_to(self, event: MessageEvent, reply_anchor: Optional[str]) -> Optional[str]:
+        # Pick the right ``reply_to`` for a busy-path acknowledgment. Telegram
+        # has three sub-cases (DM-in-thread, group-in-thread, everything else)
+        # and the rule is duplicated in three sibling send sites in this
+        # function; this centralizes it so the branches can't drift.
+        if event.source.platform == Platform.TELEGRAM and event.source.thread_id:
+            if event.source.chat_type == "dm":
+                return reply_anchor
+            return None
+        return event.message_id
+
     async def _try_execute_exec_quick_command(self, command: Optional[str]) -> Optional[str]:
         # Run an exec-type quick command inline and return its output (already
         # redacted) when ``command`` matches one. Returns ``None`` when no
@@ -2997,13 +3008,7 @@ class GatewayRunner:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=self._busy_ack_reply_to(event, reply_anchor),
                 metadata=thread_meta,
             )
             return True
@@ -3029,13 +3034,7 @@ class GatewayRunner:
                     await adapter._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=exec_output,
-                        reply_to=(
-                            reply_anchor
-                            if event.source.platform == Platform.TELEGRAM
-                            and event.source.chat_type == "dm"
-                            and event.source.thread_id
-                            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                        ),
+                        reply_to=self._busy_ack_reply_to(event, reply_anchor),
                         metadata=thread_meta,
                     )
                 except Exception as exc:
@@ -3180,13 +3179,7 @@ class GatewayRunner:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=self._busy_ack_reply_to(event, reply_anchor),
                 metadata=thread_meta,
             )
         except Exception as e:
