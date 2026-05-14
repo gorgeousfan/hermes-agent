@@ -36,6 +36,14 @@ describe('external link helpers', () => {
     )
   })
 
+  it('falls back to host+path when every slug segment is generic or too short', () => {
+    // Google OAuth path: every segment is generic ("auth", "oauth2") or single-char ("o").
+    // Falling through to hostPathLabel keeps the destination visible instead of returning "Auth".
+    expect(urlSlugTitleLabel('https://accounts.google.com/o/oauth2/auth')).toBe('accounts.google.com/o/oauth2/auth')
+    // HN item links: "item" alone is generic; the meaningful id is in the query string.
+    expect(urlSlugTitleLabel('https://news.ycombinator.com/item')).toBe('news.ycombinator.com/item')
+  })
+
   it('normalizes scheme-less links', () => {
     expect(normalizeExternalUrl(' expedia.com/things-to-do/puerto-rico-el-yunque ')).toBe(
       'https://expedia.com/things-to-do/puerto-rico-el-yunque'
