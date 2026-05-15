@@ -624,13 +624,27 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    # Structured side-channel so plugin adapters can recover cron context
+    # without regex-parsing the envelope text. Invariant across targets, so
+    # built once before the loop; only thread_id varies per target.
+    # Filter on `is not None` rather than truthiness so falsy-but-meaningful
+    # values (e.g. an explicitly empty schedule) reach adapters.
+    origin = _resolve_origin(job) or {}
+    cron_meta_full = {
+        "job_id": job.get("id", ""),
+        "job_name": job.get("name") or job.get("id", ""),
+        "schedule": job.get("schedule"),
+        "deliver": job.get("deliver"),
+        "origin": origin or None,
+    }
+    cron_meta = {k: v for k, v in cron_meta_full.items() if v is not None}
+
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
-        origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
             logger.warning(
@@ -660,19 +674,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
-
-        # Structured side-channel so plugin adapters can recover cron context
-        # without regex-parsing the envelope text. `thread_id` was the only
-        # existing key; nested under "cron" we expose job_id/job_name/schedule/
-        # deliver/origin. Adapters that ignore unknown keys are unaffected.
-        cron_meta = {
-            "job_id": job.get("id", ""),
-            "job_name": job.get("name") or job.get("id", ""),
-            "schedule": job.get("schedule"),
-            "deliver": job.get("deliver"),
-            "origin": origin or None,
-        }
-        cron_meta = {k: v for k, v in cron_meta.items() if v}
 
         send_metadata: Optional[dict] = None
         if thread_id:
