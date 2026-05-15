@@ -61,6 +61,7 @@ class TestBraveSearchAvailability:
         from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
         from plugins.web.brave_search.provider import BraveSearchWebProvider
 
+        original_providers = list(web_search_registry.list_providers())
         web_search_registry._reset_for_tests()
         web_search_registry.register_provider(BraveFreeWebSearchProvider())
         web_search_registry.register_provider(BraveSearchWebProvider())
@@ -71,6 +72,8 @@ class TestBraveSearchAvailability:
             assert provider.name == "brave-free"
         finally:
             web_search_registry._reset_for_tests()
+            for provider in original_providers:
+                web_search_registry.register_provider(provider)
 
 
 class TestBraveSearchProviderSearch:
@@ -132,6 +135,7 @@ class TestBraveSearchProviderSearch:
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"search_backend": "brave-search"})
+        original_providers = list(web_search_registry.list_providers())
         web_search_registry._reset_for_tests()
         web_search_registry.register_provider(BraveSearchWebProvider())
 
@@ -140,6 +144,8 @@ class TestBraveSearchProviderSearch:
                 result = json.loads(web_tools.web_search_tool("query", limit=1))
         finally:
             web_search_registry._reset_for_tests()
+            for provider in original_providers:
+                web_search_registry.register_provider(provider)
 
         assert result["success"] is True
         assert result["data"]["web"][0]["title"] == "A"
