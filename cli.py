@@ -13133,6 +13133,23 @@ class HermesCLI:
         def process_loop():
             while not self._should_exit:
                 try:
+                    # Drain background process notifications (completions
+                    # and watch pattern matches) on every iteration so they
+                    # aren't missed when the user sends a message.
+                    try:
+                        from tools.process_registry import process_registry
+                        if not process_registry.completion_queue.empty():
+                            evt = process_registry.completion_queue.get_nowait()
+                            _evt_sid = evt.get("session_id", "")
+                            if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+                                pass  # already delivered via tool result
+                            else:
+                                _synth = _format_process_notification(evt)
+                                if _synth:
+                                    self._pending_input.put(_synth)
+                    except Exception:
+                        pass
+
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
@@ -13140,22 +13157,6 @@ class HermesCLI:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
-                            # Check for background process notifications (completions
-                            # and watch pattern matches) while agent is idle.
-                            try:
-                                from tools.process_registry import process_registry
-                                if not process_registry.completion_queue.empty():
-                                    evt = process_registry.completion_queue.get_nowait()
-                                    # Skip if the agent already consumed this via wait/poll/log
-                                    _evt_sid = evt.get("session_id", "")
-                                    if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-                                        pass  # already delivered via tool result
-                                    else:
-                                        _synth = _format_process_notification(evt)
-                                        if _synth:
-                                            self._pending_input.put(_synth)
-                            except Exception:
-                                pass
                         continue
                     
                     if not user_input:
