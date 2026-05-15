@@ -2261,6 +2261,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
+
+    # Generic api_key providers (Cloudflare, DeepSeek, xAI, etc.)
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    pconfig = PROVIDER_REGISTRY.get(normalized)
+    if pconfig and pconfig.auth_type == "api_key":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials(normalized)
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

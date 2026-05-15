@@ -4894,12 +4894,11 @@ def _model_flow_cloudflare(config, current_model=""):
             selected = None
 
     if selected:
-        _save_model_choice(
-            config,
+        from hermes_cli.auth import _update_config_for_provider
+        _update_config_for_provider(
             provider_id,
-            selected,
-            base_url=effective_base,
-            api_key=api_token,
+            effective_base,
+            default_model=selected,
         )
         print()
         print_success(f"Default model set to: {selected} (via {provider_id})")
