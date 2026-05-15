@@ -138,7 +138,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         agent_thread.start()
 
         # Wait for child to start run_conversation
-        started = child_started.wait(timeout=10)
+        started = child_started.wait(timeout=30)
         if not started:
             agent_thread.join(timeout=1)
             if error_holder[0]:

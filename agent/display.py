@@ -183,7 +183,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
         "browser_click": "ref", "browser_type": "text",
-        "image_generate": "prompt", "text_to_speech": "text",
+        "image_generate": "prompt", "image_edit": "prompt", "video_generate": "prompt",
+        "text_to_speech": "text",
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
@@ -949,6 +950,11 @@ def get_cute_tool_message(
         return _wrap(f"┊ 📚 skill     {_trunc(args.get('name', ''), 30)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
+    if tool_name == "image_edit":
+        return _wrap(f"┊ 🖼️  edit      {_trunc(args.get('prompt', ''), 35)}  {dur}")
+    if tool_name == "video_generate":
+        op = args.get("operation") or "generate"
+        return _wrap(f"┊ 🎬 video     {op} {_trunc(args.get('prompt', ''), 30)}  {dur}")
     if tool_name == "text_to_speech":
         return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
@@ -983,5 +989,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

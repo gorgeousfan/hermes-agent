@@ -49,6 +49,32 @@ class _RecordingProvider(VideoGenProvider):
             "provider": self._name,
         }
 
+    def edit(self, prompt, **kwargs):
+        self.last_kwargs = {"prompt": prompt, **kwargs}
+        return {
+            "success": True,
+            "video": "https://example.com/edit.mp4",
+            "model": kwargs.get("model") or "model-a",
+            "prompt": prompt,
+            "modality": "edit",
+            "aspect_ratio": "",
+            "duration": 0,
+            "provider": self._name,
+        }
+
+    def extend(self, prompt, **kwargs):
+        self.last_kwargs = {"prompt": prompt, **kwargs}
+        return {
+            "success": True,
+            "video": "https://example.com/extend.mp4",
+            "model": kwargs.get("model") or "model-a",
+            "prompt": prompt,
+            "modality": "extend",
+            "aspect_ratio": "",
+            "duration": kwargs.get("duration") or 0,
+            "provider": self._name,
+        }
+
 
 class _RaisingProvider(VideoGenProvider):
     @property
@@ -101,10 +127,58 @@ class TestUnifiedDispatch:
         result = self._run({
             "prompt": "animate this",
             "image_url": "https://example.com/img.png",
+            "duration": 5,
+            "aspect_ratio": "9:16",
+            "resolution": "720p",
+            "audio": True,
+            "model": "grok-imagine-video",
         })
         assert result["success"] is True
         assert result["modality"] == "image"
+        assert provider.last_kwargs["model"] == "grok-imagine-video"
         assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
+        assert provider.last_kwargs["duration"] == 5
+        assert provider.last_kwargs["aspect_ratio"] == "9:16"
+        assert provider.last_kwargs["resolution"] == "720p"
+        assert provider.last_kwargs["audio"] is True
+
+    def test_image_to_video_omitted_aspect_uses_auto_not_landscape_default(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "animate this",
+            "image_url": "https://example.com/img.png",
+        })
+        assert result["success"] is True
+        assert provider.last_kwargs["aspect_ratio"] == "auto"
+
+    def test_edit_operation_routes_to_provider_edit(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "operation": "edit",
+            "prompt": "colorize this clip",
+            "video_url": "https://example.com/source.mp4",
+            "reference_image_urls": ["https://example.com/ref.png"],
+        })
+        assert result["success"] is True
+        assert result["modality"] == "edit"
+        assert provider.last_kwargs["video_url"] == "https://example.com/source.mp4"
+        assert provider.last_kwargs["reference_image_urls"] == ["https://example.com/ref.png"]
+
+    def test_extend_operation_routes_to_provider_extend(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "operation": "extend",
+            "prompt": "camera pulls back",
+            "video_url": "https://example.com/source.mp4",
+            "duration": 6,
+        })
+        assert result["success"] is True
+        assert result["modality"] == "extend"
+        assert provider.last_kwargs["video_url"] == "https://example.com/source.mp4"
+        assert provider.last_kwargs["duration"] == 6
 
     def test_prompt_required(self):
         provider = _RecordingProvider("rec")
@@ -119,8 +193,10 @@ class TestUnifiedDispatch:
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
 
-    def test_operation_field_not_in_schema(self):
-        """Make sure we removed the operation field from the schema."""
+    def test_operation_fields_in_schema(self):
+        """The unified surface now includes generate/edit/extend."""
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
-        assert "operation" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        assert "video_url" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        assert props["operation"]["enum"] == ["generate", "edit", "extend"]
+        assert "video_url" in props
+        assert "end_image_url" in props

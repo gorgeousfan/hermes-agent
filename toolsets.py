@@ -34,9 +34,9 @@ _HERMES_CORE_TOOLS = [
     # Terminal + process management
     "terminal", "process",
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    "read_file", "write_file", "patch", "search_files", "public_file_upload",
+    # Vision + media generation
+    "vision_analyze", "image_generate", "image_edit", "video_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -102,8 +102,8 @@ TOOLSETS = {
     },
     
     "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "description": "Creative generation tools (images and image edits)",
+        "tools": ["image_generate", "image_edit"],
         "includes": []
     },
 
@@ -172,8 +172,8 @@ TOOLSETS = {
 
     
     "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), search, and public upload",
+        "tools": ["read_file", "write_file", "patch", "search_files", "public_file_upload"],
         "includes": []
     },
     

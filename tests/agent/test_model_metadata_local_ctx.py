@@ -597,3 +597,21 @@ class TestGetModelContextLengthLocalFallback:
             result = get_model_context_length("unknown-xyz-model", "")
 
         mock_query.assert_not_called()
+
+    def test_empty_model_falls_back_without_endpoint_probe(self):
+        """Blank model names cannot match arbitrary endpoint metadata."""
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+
+        with patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={
+            "tiny-model": {"context_length": 15000},
+        }) as mock_fetch, \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length(
+                "",
+                "https://inference-api.nousresearch.com/v1",
+                provider="nous",
+            )
+
+        assert result == DEFAULT_FALLBACK_CONTEXT
+        mock_fetch.assert_not_called()
+        mock_save.assert_not_called()

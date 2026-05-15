@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import struct
+import zlib
+
 import pytest
 
 from agent import video_gen_registry
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    rows = b"".join(b"\x00" + (b"\x00\x00\x00" * width) for _ in range(height))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +53,9 @@ def test_fal_family_catalog():
         # cheap
         "ltx-2.3", "pixverse-v6",
         # premium
-        "veo3.1", "seedance-2.0", "kling-v3-4k", "happy-horse",
+        "veo3.1", "grok-imagine-video", "seedance-2.0",
+        "kling-v3-standard", "kling-v3-pro", "kling-v3-4k",
+        "happy-horse",
     }
     assert expected.issubset(set(FAL_FAMILIES.keys())), (
         f"missing families: {expected - set(FAL_FAMILIES.keys())}"
@@ -77,7 +96,7 @@ def test_fal_list_models_advertises_both_modalities():
 
     models = FALVideoGenProvider().list_models()
     for m in models:
-        assert set(m["modalities"]) == {"text", "image"}, (
+        assert {"text", "image"}.issubset(set(m["modalities"])), (
             f"{m['id']} doesn't advertise both modalities — every family "
             f"should have t2v + i2v"
         )
@@ -116,6 +135,11 @@ class TestFamilyRouting:
             captured["arguments"] = arguments
             return {"video": {"url": "https://fake/out.mp4"}}
         fake.subscribe = _subscribe  # type: ignore
+        fake.uploads = []  # type: ignore
+        def _upload_file(path):
+            fake.uploads.append(path)
+            return f"https://fake/uploads/{getattr(path, 'name', 'file')}"
+        fake.upload_file = _upload_file  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         # Reset the lazy global so it picks up our stub
@@ -210,6 +234,219 @@ class TestFamilyRouting:
         assert with_fake_fal["arguments"].get("start_image_url") == "https://example.com/frame.png"
         assert "image_url" not in with_fake_fal["arguments"]
 
+    def test_kling_3_alias_routes_to_pro_image_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "x",
+            model="kling-3",
+            image_url="https://example.com/frame.png",
+            audio=True,
+            duration=4,
+        )
+        assert result["success"] is True
+        assert result["model"] == "kling-v3-pro"
+        assert with_fake_fal["endpoint"] == "fal-ai/kling-video/v3/pro/image-to-video"
+        assert with_fake_fal["arguments"]["start_image_url"] == "https://example.com/frame.png"
+        assert with_fake_fal["arguments"]["generate_audio"] is True
+
+    def test_grok_imagine_video_routes_to_xai_i2v_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "make it move",
+            model="grok-imagine-video",
+            image_url="https://example.com/frame.png",
+            duration=5,
+            aspect_ratio="9:16",
+            resolution="720p",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "xai/grok-imagine-video/image-to-video"
+        assert with_fake_fal["arguments"]["image_url"] == "https://example.com/frame.png"
+        assert with_fake_fal["arguments"]["duration"] == 5
+        assert isinstance(with_fake_fal["arguments"]["duration"], int)
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
+        assert with_fake_fal["arguments"]["resolution"] == "720p"
+
+    def test_local_image_url_is_uploaded_before_i2v(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "frame.png"
+        source.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().generate(
+            "make it move",
+            model="grok-imagine-video",
+            image_url=str(source),
+            duration=5,
+            aspect_ratio="9:16",
+            resolution="720p",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["image_url"] == "https://fake/uploads/frame.png"
+        assert with_fake_fal["arguments"]["duration"] == 5
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
+        assert with_fake_fal["arguments"]["resolution"] == "720p"
+
+    def test_portrait_source_with_auto_aspect_infers_portrait_ar(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "portrait.png"
+        source.write_bytes(_png_bytes(9, 16))
+
+        result = FALVideoGenProvider().generate(
+            "animate this vertical still",
+            model="grok-imagine-video",
+            image_url=str(source),
+            aspect_ratio="auto",
+            duration=5,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "9:16"
+        assert result["aspect_ratio"] == "9:16"
+
+    def test_explicit_landscape_aspect_is_not_rewritten(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "portrait.png"
+        source.write_bytes(_png_bytes(9, 16))
+
+        result = FALVideoGenProvider().generate(
+            "animate this vertical still as landscape",
+            model="grok-imagine-video",
+            image_url=str(source),
+            aspect_ratio="16:9",
+            duration=5,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["aspect_ratio"] == "16:9"
+
+    def test_happy_horse_uses_alibaba_image_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "bring the scene to life",
+            model="happy-horse",
+            image_url="https://example.com/frame.png",
+            resolution="1080p",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "alibaba/happy-horse/image-to-video"
+        assert with_fake_fal["arguments"]["image_url"] == "https://example.com/frame.png"
+        assert with_fake_fal["arguments"]["resolution"] == "1080p"
+
+    def test_seedance_reference_to_video_uses_image_urls(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "animate @Image1",
+            model="seedance-2.0",
+            reference_image_urls=["https://example.com/ref.png"],
+        )
+        assert result["success"] is True
+        assert result["modality"] == "reference"
+        assert with_fake_fal["endpoint"] == "bytedance/seedance-2.0/reference-to-video"
+        assert with_fake_fal["arguments"]["image_urls"] == ["https://example.com/ref.png"]
+
+    def test_local_reference_images_are_uploaded_before_reference_to_video(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().generate(
+            "animate @Image1",
+            model="seedance-2.0",
+            reference_image_urls=[str(ref)],
+        )
+        assert result["success"] is True
+        assert result["modality"] == "reference"
+        assert with_fake_fal["arguments"]["image_urls"] == ["https://fake/uploads/ref.png"]
+
+    def test_local_start_and_end_frames_are_uploaded_before_i2v(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        start = tmp_path / "start.png"
+        end = tmp_path / "end.png"
+        start.write_bytes(_png_bytes(16, 9))
+        end.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().generate(
+            "move from start to end frame",
+            model="seedance-2.0",
+            image_url=str(start),
+            end_image_url=str(end),
+            duration=5,
+            aspect_ratio="16:9",
+            resolution="720p",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["image_url"] == "https://fake/uploads/start.png"
+        assert with_fake_fal["arguments"]["end_image_url"] == "https://fake/uploads/end.png"
+        assert with_fake_fal["arguments"]["duration"] == 5
+
+    def test_happy_horse_video_edit_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().edit(
+            "recolor the sky",
+            model="happy-horse",
+            video_url="https://example.com/source.mp4",
+            resolution="1080p",
+            reference_image_urls=["https://example.com/ref.png"],
+        )
+        assert result["success"] is True
+        assert result["modality"] == "edit"
+        assert with_fake_fal["endpoint"] == "alibaba/happy-horse/video-edit"
+        assert with_fake_fal["arguments"]["video_url"] == "https://example.com/source.mp4"
+        assert with_fake_fal["arguments"]["reference_image_urls"] == ["https://example.com/ref.png"]
+
+    def test_local_video_edit_inputs_are_uploaded_before_edit(self, tmp_path, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        source = tmp_path / "source.mp4"
+        ref = tmp_path / "ref.png"
+        source.write_bytes(b"fake mp4 bytes")
+        ref.write_bytes(_png_bytes(16, 9))
+
+        result = FALVideoGenProvider().edit(
+            "recolor the sky",
+            model="happy-horse",
+            video_url=str(source),
+            resolution="720p",
+            reference_image_urls=[str(ref)],
+        )
+        assert result["success"] is True
+        assert result["modality"] == "edit"
+        assert with_fake_fal["arguments"]["video_url"] == "https://fake/uploads/source.mp4"
+        assert with_fake_fal["arguments"]["reference_image_urls"] == ["https://fake/uploads/ref.png"]
+
+    def test_grok_video_extend_endpoint(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().extend(
+            "camera pulls back",
+            model="grok-imagine-video",
+            video_url="https://example.com/source.mp4",
+            duration=30,
+        )
+        assert result["success"] is True
+        assert result["modality"] == "extend"
+        assert with_fake_fal["endpoint"] == "xai/grok-imagine-video/extend-video"
+        assert with_fake_fal["arguments"]["duration"] == 10
+
+    def test_veo_duration_payload_keeps_response_duration_numeric(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "a dog",
+            model="veo3.1",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["arguments"]["duration"] == "4s"
+        assert result["duration"] == 4
+
 
 class TestPayloadBuilder:
     def test_drops_unsupported_keys(self):
@@ -229,7 +466,7 @@ class TestPayloadBuilder:
             seed=42,
         )
         assert p["prompt"] == "x"
-        assert p["duration"] == "8"  # FAL queue API uses strings
+        assert p["duration"] == "8s"
         assert p["aspect_ratio"] == "16:9"
         assert p["resolution"] == "720p"
         assert p["generate_audio"] is True
@@ -251,7 +488,7 @@ class TestPayloadBuilder:
             audio=None,
             seed=None,
         )
-        assert p["duration"] == "15"
+        assert p["duration"] == 15
 
     def test_kling_4k_clamps_below_min(self):
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
@@ -268,7 +505,7 @@ class TestPayloadBuilder:
             audio=None,
             seed=None,
         )
-        assert p["duration"] == "3"
+        assert p["duration"] == 3
 
     def test_ltx_omits_duration_aspect_resolution(self):
         """LTX 2.3 doesn't declare duration/aspect/resolution enums —
@@ -294,8 +531,8 @@ class TestPayloadBuilder:
         assert p["generate_audio"] is True
         assert p["negative_prompt"] == "ugly"
 
-    def test_happy_horse_minimal_payload(self):
-        """Happy Horse has sparse docs — payload should be minimal."""
+    def test_happy_horse_payload_uses_documented_controls(self):
+        """Happy Horse docs now expose duration/aspect/resolution."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         meta = FAL_FAMILIES["happy-horse"]
@@ -310,5 +547,9 @@ class TestPayloadBuilder:
             audio=True,
             seed=None,
         )
-        # Only prompt — no payload bloat for fields we can't verify
-        assert p == {"prompt": "a horse galloping"}
+        assert p == {
+            "prompt": "a horse galloping",
+            "duration": 8,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+        }

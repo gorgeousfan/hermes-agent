@@ -91,20 +91,15 @@ class TestDynamicSchemaBuilder:
         assert "No video backend is configured" in desc
         assert "hermes tools" in desc
 
-    def test_does_not_mention_edit_or_extend(self, cfg_home):
-        """The simplified surface only does text→video and image→video.
-        The description must not mention edit/extend anywhere."""
+    def test_mentions_edit_and_extend(self, cfg_home):
+        """The unified surface covers generation, edit, and extend."""
         from tools.video_generation_tool import _build_dynamic_video_schema, _GENERIC_DESCRIPTION
 
         desc = _build_dynamic_video_schema()["description"]
-        # Block words that would suggest functionality we removed
-        assert "edit" not in desc.lower() or "audio" in desc.lower()  # 'audio' contains 'audi' not 'edit'
-        # Stronger: no occurrence of the words "edit" or "extend" as standalone
-        for forbidden in (" edit ", " edits ", " extend ", " extends "):
-            assert forbidden not in desc.lower(), f"description leaks '{forbidden.strip()}'"
-        # Sanity: the generic blurb itself is also clean
-        for forbidden in ("edit", "extend"):
-            assert forbidden not in _GENERIC_DESCRIPTION.lower()
+        assert "operation=edit" in desc
+        assert "operation=extend" in desc
+        assert "edit" in _GENERIC_DESCRIPTION.lower()
+        assert "extend" in _GENERIC_DESCRIPTION.lower()
 
     def test_both_modalities_advertises_auto_routing(self, cfg_home):
         from tools.video_generation_tool import _build_dynamic_video_schema

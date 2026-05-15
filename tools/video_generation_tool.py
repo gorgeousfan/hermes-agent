@@ -80,21 +80,48 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
             "image_url": {
                 "type": "string",
                 "description": (
-                    "Optional public URL of a still image. When provided, "
+                    "Optional public URL or local file path of a still image. When provided, "
                     "the active backend routes to its image-to-video "
                     "endpoint (animate the image); when omitted, it routes "
-                    "to text-to-video. Pass either a URL the user supplied "
-                    "or a path/URL from the conversation."
+                    "to text-to-video. FAL uploads local paths to FAL storage "
+                    "before generation."
+                ),
+            },
+            "end_image_url": {
+                "type": "string",
+                "description": (
+                    "Optional public URL of an ending frame for backends "
+                    "that support start-to-end image-to-video transitions "
+                    "(Seedance/Kling). Ignored elsewhere."
+                ),
+            },
+            "operation": {
+                "type": "string",
+                "enum": ["generate", "edit", "extend"],
+                "description": (
+                    "Video operation. Use generate for text/image-to-video, "
+                    "edit to modify an existing video_url, or extend to "
+                    "continue an existing video_url."
+                ),
+                "default": "generate",
+            },
+            "video_url": {
+                "type": "string",
+                "description": (
+                    "Source video URL or local file path for operation=edit "
+                    "or operation=extend. FAL uploads local paths to FAL "
+                    "storage before generation."
                 ),
             },
             "reference_image_urls": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Optional list of reference image URLs (style or "
+                    "Optional list of reference image URLs or local file paths (style or "
                     "character refs). Only supported by some backends; "
                     "the active backend's description below indicates whether "
-                    "this is honored and what the max is."
+                    "this is honored and what the max is. FAL uploads local "
+                    "paths to FAL storage before generation."
                 ),
             },
             "duration": {
@@ -109,10 +136,10 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": list(COMMON_ASPECT_RATIOS),
                 "description": (
-                    "Output aspect ratio. Providers clamp to their supported "
-                    "set."
+                    "Output aspect ratio. For image-to-video, omit this "
+                    "to preserve or infer the source image aspect ratio. "
+                    "Providers clamp to their supported set."
                 ),
-                "default": DEFAULT_ASPECT_RATIO,
             },
             "resolution": {
                 "type": "string",
@@ -309,10 +336,22 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
 
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
+    operation = (args.get("operation") or "generate").strip().lower()
     image_url = (args.get("image_url") or "").strip() or None
+    end_image_url = (args.get("end_image_url") or "").strip() or None
+    video_url = (args.get("video_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
     duration = _coerce_int(args.get("duration"))
-    aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
+    raw_aspect_ratio = args.get("aspect_ratio")
+    if isinstance(raw_aspect_ratio, str) and raw_aspect_ratio.strip():
+        aspect_ratio = raw_aspect_ratio.strip()
+    elif image_url:
+        # Do not inject the text-to-video landscape default into image-to-video
+        # calls. Providers that support source-preserving behavior can map this
+        # to their native "auto" handling or infer from the input image.
+        aspect_ratio = "auto"
+    else:
+        aspect_ratio = DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
     negative_prompt = (args.get("negative_prompt") or "").strip() or None
     audio = _coerce_bool(args.get("audio"))
@@ -324,6 +363,10 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # endpoint but our surface always needs a prompt.
     if not prompt:
         return tool_error("prompt is required for video generation")
+    if operation not in {"generate", "edit", "extend"}:
+        return tool_error("operation must be one of: generate, edit, extend")
+    if operation in {"edit", "extend"} and not video_url:
+        return tool_error("video_url is required for video edit/extend")
 
     # Resolve the active provider.
     configured = _read_configured_video_provider()
@@ -337,6 +380,7 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     kwargs: Dict[str, Any] = {
         "model": model,
         "image_url": image_url,
+        "end_image_url": end_image_url,
         "reference_image_urls": reference_image_urls,
         "duration": duration,
         "aspect_ratio": aspect_ratio,
@@ -349,7 +393,30 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
-        result = provider.generate(prompt=prompt, **kwargs)
+        if operation == "generate":
+            result = provider.generate(prompt=prompt, **kwargs)
+        else:
+            method = getattr(provider, operation, None)
+            if method is None:
+                return json.dumps(error_response(
+                    error=(
+                        f"Provider '{getattr(provider, 'name', '?')}' does "
+                        f"not support video {operation}."
+                    ),
+                    error_type="operation_unsupported",
+                    provider=getattr(provider, "name", ""),
+                    model=model or "",
+                    prompt=prompt,
+                ))
+            result = method(
+                prompt=prompt,
+                video_url=video_url,
+                model=model,
+                duration=duration,
+                resolution=resolution,
+                reference_image_urls=reference_image_urls,
+                seed=seed,
+            )
     except TypeError as exc:
         # A provider that hasn't widened its signature is a bug, not a
         # caller error — log and surface a clear contract message.
@@ -412,10 +479,12 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 
 _GENERIC_DESCRIPTION = (
     "Generate a video from a text prompt (text-to-video) or animate a "
-    "still image (image-to-video) using the user's configured video "
-    "generation backend. Pass `image_url` to animate that image; omit it "
-    "to generate from text alone. The backend auto-routes to the right "
-    "endpoint. The backend and model family are user-configured via "
+    "still image (image-to-video), edit a source video, or extend a source "
+    "video using the user's configured video generation backend. Pass "
+    "`image_url` to animate that image; omit it to generate from text "
+    "alone. Use `operation=edit` or `operation=extend` with `video_url` "
+    "when the backend supports video-to-video routes. The backend "
+    "auto-routes to the right endpoint. The backend and model family are user-configured via "
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "
     "the call blocks until the video is ready. Returns either an HTTP "
@@ -523,9 +592,16 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "- supports both text-to-video (omit image_url) and "
             "image-to-video (pass image_url) — routes automatically"
         )
+    if "reference" in modalities:
+        parts.append("- reference-to-video: pass reference_image_urls when supported")
+    if "edit" in modalities:
+        parts.append("- video edit: pass operation=edit with video_url")
+    if "extend" in modalities:
+        parts.append("- video extend: pass operation=extend with video_url")
 
     if caps.get("aspect_ratios"):
         parts.append(f"- aspect_ratio choices: {', '.join(caps['aspect_ratios'])}")
+        parts.append("- image-to-video: omit aspect_ratio to preserve/infer the source image aspect")
     if caps.get("resolutions"):
         parts.append(f"- resolution choices: {', '.join(caps['resolutions'])}")
     if caps.get("min_duration") and caps.get("max_duration"):

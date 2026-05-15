@@ -70,6 +70,7 @@ DIAGNOSTICS_DOCUMENT_WAIT = 5.0
 DIAGNOSTICS_FULL_WAIT = 10.0
 DIAGNOSTICS_REQUEST_TIMEOUT = 3.0
 PUSH_DEBOUNCE = 0.15
+EXIT_NOTIFICATION_GRACE = 0.2
 SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
 
 # Retry policy for transient ContentModified errors.
@@ -428,6 +429,11 @@ class LSPClient:
         if proc is None:
             return
         if proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=EXIT_NOTIFICATION_GRACE)
+                return
+            except asyncio.TimeoutError:
+                pass
             try:
                 proc.terminate()
                 try:

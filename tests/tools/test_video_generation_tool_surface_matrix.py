@@ -251,3 +251,75 @@ def test_tool_model_arg_with_image_url_routes_to_override_image_endpoint(matrix_
     # Kling 4K uses start_image_url
     assert fal_calls[0]["arguments"].get("start_image_url") == "https://example.com/i.png"
     assert "image_url" not in fal_calls[0]["arguments"]
+
+
+def test_fal_grok_i2v_preserves_video_generation_arguments(matrix_env):
+    home, fal_calls, _ = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": "grok-imagine-video"}},
+        {
+            "prompt": "animate this exact frame",
+            "image_url": "https://example.com/i.png",
+            "duration": 5,
+            "aspect_ratio": "9:16",
+            "resolution": "720p",
+            "audio": True,
+        },
+    )
+
+    assert result["success"] is True
+    assert fal_calls[0]["endpoint"] == "xai/grok-imagine-video/image-to-video"
+    payload = fal_calls[0]["arguments"]
+    assert payload["image_url"] == "https://example.com/i.png"
+    assert payload["duration"] == 5
+    assert isinstance(payload["duration"], int)
+    assert payload["aspect_ratio"] == "9:16"
+    assert payload["resolution"] == "720p"
+    assert "generate_audio" not in payload
+
+
+def test_agent_tool_dispatch_coerces_grok_i2v_arguments(matrix_env, monkeypatch):
+    """Drive the same path agents use: model_tools.handle_function_call."""
+    home, fal_calls, _ = matrix_env
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "video_gen": {"provider": "fal", "model": "grok-imagine-video"}
+    }))
+    import hermes_cli.config as cfg_mod
+    if hasattr(cfg_mod, "_invalidate_load_config_cache"):
+        cfg_mod._invalidate_load_config_cache()
+
+    import hermes_cli.plugins as plugins_module
+    monkeypatch.setattr(
+        plugins_module,
+        "get_pre_tool_call_block_message",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(plugins_module, "invoke_hook", lambda *args, **kwargs: [])
+
+    from model_tools import handle_function_call
+
+    result = json.loads(handle_function_call(
+        "video_generate",
+        {
+            "prompt": "animate this exact frame",
+            "image_url": "https://example.com/i.png",
+            "duration": "5",
+            "aspect_ratio": "9:16",
+            "resolution": "720p",
+            "audio": "true",
+            "seed": "123",
+        },
+    ))
+
+    assert result["success"] is True
+    assert fal_calls[0]["endpoint"] == "xai/grok-imagine-video/image-to-video"
+    payload = fal_calls[0]["arguments"]
+    assert payload["image_url"] == "https://example.com/i.png"
+    assert payload["duration"] == 5
+    assert isinstance(payload["duration"], int)
+    assert payload["aspect_ratio"] == "9:16"
+    assert payload["resolution"] == "720p"
+    assert payload["seed"] == 123
+    assert "generate_audio" not in payload
