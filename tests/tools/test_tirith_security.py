@@ -1067,6 +1067,77 @@ class TestDiskFailureMarker:
 
 
 # ---------------------------------------------------------------------------
+# Termux native (Bionic libc) skip
+# ---------------------------------------------------------------------------
+
+class TestTermuxNativeSkip:
+    """Issue #26275: tirith binary spawned on Termux native (no proot) fails
+    with `[Errno 2] No such file or directory` because the unknown-linux-gnu
+    binary embeds /lib/ld-linux-aarch64.so.1 as its dynamic interpreter,
+    which doesn't exist on Termux's Bionic-libc filesystem. The auto-installer
+    must skip this environment so we don't write a binary that can't run."""
+
+    def test_is_termux_native_true_when_prefix_set(self):
+        from tools.tirith_security import _is_termux_native
+        with patch.dict(os.environ, {"PREFIX": "/data/data/com.termux/files/usr"}):
+            assert _is_termux_native() is True
+
+    def test_is_termux_native_false_when_prefix_unset(self):
+        from tools.tirith_security import _is_termux_native
+        env = {k: v for k, v in os.environ.items() if k != "PREFIX"}
+        with patch.dict(os.environ, env, clear=True):
+            assert _is_termux_native() is False
+
+    def test_is_termux_native_false_for_unrelated_prefix(self):
+        """A non-Termux PREFIX (e.g. Conda's $PREFIX) must NOT match."""
+        from tools.tirith_security import _is_termux_native
+        with patch.dict(os.environ, {"PREFIX": "/opt/conda/envs/dev"}):
+            assert _is_termux_native() is False
+
+    def test_detect_target_returns_none_on_termux_native(self):
+        """Even on Linux/aarch64 (which would otherwise resolve to
+        aarch64-unknown-linux-gnu), Termux native must short-circuit to None
+        so the unsupported_platform path is taken in _install_tirith."""
+        from tools.tirith_security import _detect_target
+        with patch.dict(os.environ, {"PREFIX": "/data/data/com.termux/files/usr"}), \
+             patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="aarch64"):
+            assert _detect_target() is None
+
+    def test_detect_target_returns_none_when_termux_reports_android(self):
+        """Some Python builds on Termux report platform.system() == 'Android'
+        instead of 'Linux'. The Termux PREFIX check must catch both."""
+        from tools.tirith_security import _detect_target
+        with patch.dict(os.environ, {"PREFIX": "/data/data/com.termux/files/usr"}), \
+             patch("tools.tirith_security.platform.system", return_value="Android"), \
+             patch("tools.tirith_security.platform.machine", return_value="aarch64"):
+            assert _detect_target() is None
+
+    def test_detect_target_proot_ubuntu_inside_termux_still_works(self):
+        """Inside a proot Ubuntu on Termux, PREFIX is rewritten away from
+        /data/data/com.termux/files/, so a real glibc is available and the
+        Linux-gnu binaries work normally. Must NOT return None."""
+        from tools.tirith_security import _detect_target
+        with patch.dict(os.environ, {"PREFIX": "/usr"}), \
+             patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="aarch64"):
+            assert _detect_target() == "aarch64-unknown-linux-gnu"
+
+    def test_install_returns_termux_native_unsupported_reason(self):
+        """The install entrypoint must return a distinct failure reason on
+        Termux so the disk marker / log message can be specific. A generic
+        unsupported_platform tag would also be retried whenever a binary
+        appears, but Termux native NEVER works — keep the marker sticky."""
+        from tools.tirith_security import _install_tirith
+        with patch.dict(os.environ, {"PREFIX": "/data/data/com.termux/files/usr"}), \
+             patch("tools.tirith_security.platform.system", return_value="Linux"), \
+             patch("tools.tirith_security.platform.machine", return_value="aarch64"):
+            path, reason = _install_tirith()
+        assert path is None
+        assert reason == "termux_native_unsupported"
+
+
+# ---------------------------------------------------------------------------
 # HERMES_HOME isolation
 # ---------------------------------------------------------------------------
 

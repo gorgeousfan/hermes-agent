@@ -213,6 +213,19 @@ def _hermes_bin_dir() -> str:
     return d
 
 
+def _is_termux_native() -> bool:
+    """Detect a non-proot Termux environment on Android.
+
+    Termux sets PREFIX=/data/data/com.termux/files/usr and ships Bionic
+    libc with shared objects under that prefix — there is no glibc and
+    no /lib/ld-linux-*.so.* dynamic linker. Inside a proot Ubuntu (or
+    similar chroot) running on top of Termux, PREFIX is rewritten to
+    the chroot's /usr and a real glibc is available, so this check
+    returns False there.
+    """
+    return os.environ.get("PREFIX", "").startswith("/data/data/com.termux/files/")
+
+
 def _detect_target() -> str | None:
     """Return the Rust target triple for the current platform, or None.
 
@@ -223,7 +236,19 @@ def _detect_target() -> str | None:
     system = platform.system()
     machine = platform.machine().lower()
 
-    # Android (Termux) is ABI-compatible with Linux — reuse Linux binaries.
+    # Termux native (Bionic libc) is NOT ABI-compatible with the
+    # unknown-linux-gnu binaries — the prebuilt tirith ELF embeds
+    # /lib/ld-linux-aarch64.so.1 (or x86_64 equivalent) as its dynamic
+    # interpreter, which doesn't exist on Termux's filesystem. Spawning
+    # the binary then fails with ENOENT and a misleading message that
+    # points at the tirith path itself even though only the interpreter
+    # is missing. Skip auto-install and let the user run inside a proot
+    # Ubuntu chroot or set TIRITH_ENABLED=false.
+    if _is_termux_native():
+        return None
+
+    # Android Python outside Termux native (proot Ubuntu, Pydroid w/ glibc)
+    # is ABI-compatible with Linux — reuse Linux binaries.
     if system == "Darwin":
         plat = "apple-darwin"
     elif system in {"Linux", "Android"}:
@@ -338,6 +363,14 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
 
     target = _detect_target()
     if not target:
+        if _is_termux_native():
+            logger.info(
+                "tirith auto-install: Termux native (Bionic libc) is unsupported; "
+                "the linux-gnu binary's dynamic interpreter (/lib/ld-linux-*.so.*) "
+                "is not present on Termux. Run inside a proot Ubuntu chroot, "
+                "install tirith manually, or set TIRITH_ENABLED=false."
+            )
+            return None, "termux_native_unsupported"
         logger.info("tirith auto-install: unsupported platform %s/%s",
                      platform.system(), platform.machine())
         return None, "unsupported_platform"
