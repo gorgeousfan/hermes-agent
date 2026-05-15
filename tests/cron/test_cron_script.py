@@ -88,6 +88,113 @@ class TestJobScriptField:
         assert updated.get("script") is None
 
 
+class TestScriptPathNormalization:
+    """Regression guard for issue #26595 — leading ``scripts/`` prefix.
+
+    The scheduler resolves relative paths against ``HERMES_HOME/scripts/``,
+    so a user-supplied ``scripts/foo.py`` would otherwise resolve to
+    ``HERMES_HOME/scripts/scripts/foo.py`` and silently fail at runtime.
+    """
+
+    def test_create_job_strips_leading_scripts_prefix(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="scripts/monitor.py",
+        )
+        assert job["script"] == "monitor.py"
+
+    def test_create_job_strips_leading_scripts_prefix_for_nested_path(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="scripts/sub/monitor.py",
+        )
+        assert job["script"] == str(Path("sub") / "monitor.py")
+
+    def test_create_job_preserves_unprefixed_relative_path(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="monitor.py",
+        )
+        assert job["script"] == "monitor.py"
+
+    def test_create_job_preserves_absolute_path(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="/abs/path/scripts/monitor.py",
+        )
+        assert job["script"] == "/abs/path/scripts/monitor.py"
+
+    def test_create_job_preserves_tilde_prefixed_path(self, cron_env):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="~/scripts/monitor.py",
+        )
+        assert job["script"] == "~/scripts/monitor.py"
+
+    def test_create_job_preserves_lone_scripts_segment(self, cron_env):
+        """A relative path of just ``scripts`` (no trailing segment) is left
+        alone — there is nothing to strip, and treating it as a script-name
+        could mask a genuine misconfiguration at runtime."""
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="Hello",
+            schedule="every 1h",
+            script="scripts",
+        )
+        assert job["script"] == "scripts"
+
+    def test_update_job_strips_leading_scripts_prefix(self, cron_env):
+        from cron.jobs import create_job, update_job
+
+        job = create_job(prompt="Hello", schedule="every 1h")
+        updated = update_job(job["id"], {"script": "scripts/foo.py"})
+        assert updated["script"] == "foo.py"
+
+    def test_update_job_clears_script_with_empty_string(self, cron_env):
+        from cron.jobs import create_job, update_job
+
+        job = create_job(prompt="Hello", schedule="every 1h", script="monitor.py")
+        updated = update_job(job["id"], {"script": "   "})
+        assert updated.get("script") is None
+
+    def test_normalized_script_resolves_to_real_file_at_runtime(self, cron_env):
+        """End-to-end regression guard: a job created with ``scripts/foo.py``
+        must actually execute when the scheduler resolves its script path.
+        Before the fix, the runtime resolution path was
+        ``HERMES_HOME/scripts/scripts/foo.py`` and the script ran nothing."""
+        from cron.jobs import create_job
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "monitor.py"
+        script.write_text('print("ran via normalized path")\n')
+
+        job = create_job(
+            prompt="Analyze",
+            schedule="every 30m",
+            script="scripts/monitor.py",
+        )
+
+        success, output = _run_job_script(job["script"])
+        assert success is True
+        assert output == "ran via normalized path"
+
+
 class TestRunJobScript:
     """Test the _run_job_script() function."""
 
