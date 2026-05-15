@@ -1301,15 +1301,6 @@ class WeComAdapter(BasePlatformAdapter):
             },
         }
 
-        # Tests patch the legacy request helper to inspect payloads without a
-        # live websocket; production must avoid that helper because it waits for
-        # a response that partial stream frames do not reliably send.
-        mocked_request = getattr(self._send_reply_request, "mock", None)
-        if mocked_request is not None or self._send_reply_request.__class__.__module__.startswith("unittest.mock"):
-            response = await self._send_reply_request(normalized_req_id, body)
-            self._raise_for_wecom_error(response, "send reply stream")
-            return response
-
         if not self._ws or self._ws.closed:
             raise RuntimeError("WeCom websocket is not connected")
         await self._send_json(

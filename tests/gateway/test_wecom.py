@@ -229,14 +229,13 @@ class TestWeComReplyMode:
 
     @pytest.mark.asyncio
     async def test_send_draft_uses_native_stream_payload_from_metadata_reply_context(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-1"] = "req-1"
         adapter._last_chat_req_ids["chat-123"] = "stale-req"
-        adapter._send_reply_request = AsyncMock(
-            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
-        )
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._send_json = AsyncMock()
 
         result = await adapter.send_draft(
             chat_id="chat-123",
@@ -247,10 +246,11 @@ class TestWeComReplyMode:
 
         assert result.success is True
         assert result.message_id == "stream-42"
-        adapter._send_reply_request.assert_awaited_once()
-        args = adapter._send_reply_request.await_args.args
-        assert args[0] == "req-1"
-        assert args[1] == {
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["headers"]["req_id"] == "req-1"
+        assert frame["body"] == {
             "msgtype": "stream",
             "stream": {
                 "id": "stream-42",
@@ -262,22 +262,22 @@ class TestWeComReplyMode:
 
     @pytest.mark.asyncio
     async def test_final_send_closes_existing_native_stream(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-1"] = "req-1"
         adapter._active_stream_replies["req-1"] = "stream-42"
-        adapter._send_reply_request = AsyncMock(
-            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
-        )
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._send_json = AsyncMock()
 
         result = await adapter.send("chat-123", "final answer", reply_to="msg-1")
 
         assert result.success is True
-        adapter._send_reply_request.assert_awaited_once()
-        args = adapter._send_reply_request.await_args.args
-        assert args[0] == "req-1"
-        assert args[1] == {
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["headers"]["req_id"] == "req-1"
+        assert frame["body"] == {
             "msgtype": "stream",
             "stream": {
                 "id": "stream-42",
@@ -326,14 +326,13 @@ class TestWeComReplyMode:
 
     @pytest.mark.asyncio
     async def test_stream_consumer_drives_wecom_native_stream_to_final_frame(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
         from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-1"] = "req-1"
-        adapter._send_reply_request = AsyncMock(
-            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
-        )
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._send_json = AsyncMock()
         cfg = StreamConsumerConfig(
             transport="draft",
             chat_type="group",
@@ -359,10 +358,14 @@ class TestWeComReplyMode:
 
         assert consumer.final_response_sent is True
         assert adapter._active_stream_replies == {}
-        calls = adapter._send_reply_request.await_args_list
-        assert len(calls) >= 2
-        first_payload = calls[0].args[1]
-        final_payload = calls[-1].args[1]
+        stream_frames = [
+            call.args[0]
+            for call in adapter._send_json.await_args_list
+            if call.args and call.args[0].get("cmd") == APP_CMD_RESPONSE
+        ]
+        assert len(stream_frames) >= 2
+        first_payload = stream_frames[0]["body"]
+        final_payload = stream_frames[-1]["body"]
         assert first_payload["msgtype"] == "stream"
         assert first_payload["stream"]["finish"] is False
         assert final_payload == {
@@ -373,7 +376,6 @@ class TestWeComReplyMode:
                 "content": "hello world",
             },
         }
-
 
 class TestExtractText:
     def test_extracts_plain_text(self):
