@@ -751,10 +751,72 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_error is not None
         # Default mode: abort flag must NOT fire.
         assert c._last_compress_aborted is False
-        assert any(
-            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+        # Result must still be well-formed and carry an actionable fallback handoff.
+        summary_contents = [
+            m.get("content")
             for m in result
-        )
+            if isinstance(m.get("content"), str)
+            and "Summary generation was unavailable" in m["content"]
+        ]
+        assert summary_contents
+        assert "Pre-compaction Fallback Handoff" in summary_contents[0]
+        assert "Recent User Requests in Dropped Window" in summary_contents[0]
+        assert "msg 3" in summary_contents[0]
+
+    def test_summary_failure_fallback_preserves_tool_path_and_redacts_secret_context(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        secret = "ghp_" + ("a" * 36)
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": f"Fix /tmp/project/app.py with OPENAI_API_KEY={secret} then run pytest"},
+            {
+                "role": "assistant",
+                "content": "I will inspect it.",
+                "tool_calls": [
+                    {"id": "call-1", "function": {"name": "read_file", "arguments": '{"path":"/tmp/project/app.py"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": f"read /tmp/project/app.py with OPENAI_API_KEY={secret}: line 10 has bug"},
+            {"role": "assistant", "content": "Found the bug in /tmp/project/app.py"},
+            {"role": "user", "content": "Patch it after this"},
+            {"role": "assistant", "content": "Ready to patch"},
+            {"role": "user", "content": "current live request should stay in tail"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Pre-compaction Fallback Handoff" in m.get("content", ""))
+        assert "tool calls: read_file" in fallback
+        assert "/tmp/project/app.py" in fallback
+        assert secret not in fallback
+        assert "ghp_" not in fallback
+        assert "OPENAI_API_KEY" in fallback
+
+    def test_summary_failure_fallback_is_bounded(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        long_text = "important detail " * 2000
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "head user"},
+            {"role": "assistant", "content": "head assistant"},
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": "tail"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Pre-compaction Fallback Handoff" in m.get("content", ""))
+        assert len(fallback) <= 7000
+        assert "...[truncated]" in fallback or "[fallback handoff truncated]" in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
