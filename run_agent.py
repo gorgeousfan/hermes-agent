@@ -10914,6 +10914,10 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _tool_routing_kwargs(self) -> dict:
+        """Return provider/model kwargs so tool dispatch follows the active thread backend."""
+        return {"provider": self.provider or None, "model": self.model or None}
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,
                      pre_tool_block_checked: bool = False) -> str:
@@ -10999,6 +11003,7 @@ class AIAgent:
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                 skip_pre_tool_call_hook=True,
+                **self._tool_routing_kwargs(),
             )
 
     @staticmethod
@@ -11716,6 +11721,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        **self._tool_routing_kwargs(),
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -11736,6 +11742,7 @@ class AIAgent:
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                         skip_pre_tool_call_hook=True,
+                        **self._tool_routing_kwargs(),
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
