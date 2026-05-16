@@ -4353,6 +4353,55 @@ class TestSafeWriter:
 
 
 
+class TestSaveSessionLogTypeMetadata:
+    """Trajectory JSON must carry session_type and parent_session_id so a
+    review fork, delegate_task subagent, and primary user conversation are
+    distinguishable from the payload alone (#26952)."""
+
+    def _capture_payload(self, agent, tmp_path):
+        agent.session_log_file = tmp_path / "session.json"
+        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
+            agent._save_session_log([{"role": "user", "content": "hi"}])
+        return mock_atomic_write.call_args.args[1]
+
+    def test_primary_session_is_labeled_primary(self, agent, tmp_path):
+        payload = self._capture_payload(agent, tmp_path)
+        assert payload["session_type"] == "primary"
+        assert payload["parent_session_id"] is None
+
+    def test_background_review_fork_is_labeled_via_write_origin(self, agent, tmp_path):
+        agent._memory_write_origin = "background_review"
+        agent._memory_write_context = "background_review"
+        agent._parent_session_id = "parent-abc"
+        payload = self._capture_payload(agent, tmp_path)
+        assert payload["session_type"] == "background_review"
+        assert payload["parent_session_id"] == "parent-abc"
+
+    def test_subagent_detected_via_subagent_id(self, agent, tmp_path):
+        agent._subagent_id = "delegate-1"
+        agent._parent_session_id = "parent-xyz"
+        payload = self._capture_payload(agent, tmp_path)
+        assert payload["session_type"] == "subagent"
+        assert payload["parent_session_id"] == "parent-xyz"
+
+    def test_subagent_detected_via_delegate_depth(self, agent, tmp_path):
+        agent._delegate_depth = 1
+        agent._parent_session_id = "parent-xyz"
+        payload = self._capture_payload(agent, tmp_path)
+        assert payload["session_type"] == "subagent"
+        assert payload["parent_session_id"] == "parent-xyz"
+
+    def test_review_label_wins_over_delegate_depth(self, agent, tmp_path):
+        agent._memory_write_origin = "background_review"
+        agent._delegate_depth = 1
+        payload = self._capture_payload(agent, tmp_path)
+        assert payload["session_type"] == "background_review"
+
+    def test_classify_safe_for_init_skipping_stubs(self):
+        stub = AIAgent.__new__(AIAgent)
+        assert stub._classify_session_type() == "primary"
+
+
 # ===================================================================
 # Anthropic adapter integration fixes
 # ===================================================================

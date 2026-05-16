@@ -1516,6 +1516,25 @@ class AIAgent:
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
 
+    def _classify_session_type(self) -> str:
+        """Return the trajectory-file label for this agent instance.
+
+        Background-review forks and ``delegate_task`` subagents otherwise
+        produce JSON payloads structurally identical to a normal user
+        conversation, which forces post-mortem classification by inspecting
+        message content.  The agent already carries unambiguous lineage
+        attributes — surface them as a single label so trajectories are
+        self-describing.  ``getattr`` keeps this safe for the ``object.__new__``
+        test stubs that skip ``__init__``.
+        """
+        write_origin = getattr(self, "_memory_write_origin", "") or ""
+        write_context = getattr(self, "_memory_write_context", "") or ""
+        if "background_review" in (write_origin, write_context):
+            return "background_review"
+        if getattr(self, "_subagent_id", None) or getattr(self, "_delegate_depth", 0) > 0:
+            return "subagent"
+        return "primary"
+
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.
 
@@ -1571,6 +1590,8 @@ class AIAgent:
 
             entry = {
                 "session_id": self.session_id,
+                "session_type": self._classify_session_type(),
+                "parent_session_id": getattr(self, "_parent_session_id", None) or None,
                 "model": self.model,
                 "base_url": self.base_url,
                 "platform": self.platform,
