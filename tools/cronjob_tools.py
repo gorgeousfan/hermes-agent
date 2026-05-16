@@ -73,17 +73,16 @@ _CRON_INVISIBLE_CHARS = {
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    github_auth_header = re.search(
+    # Allow the bundled GitHub skill fallback shape: curl with token auth to api.github.com.
+    # Handles both inline and backslash-continued multi-line curl commands, and replaces ALL
+    # occurrences (skills contain many examples) before running exfil checks.
+    prompt_to_scan = re.sub(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        r'(?:\s*\\\s*\n\s*)*\s*["\']?https://api\.github\.com(?:/|\b)[^\n]*',
+        'curl https://api.github.com/...',
         prompt,
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
-    prompt_to_scan = prompt
-    if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_to_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
