@@ -5,7 +5,10 @@ no stderr chatter.  Just the agent's final text to stdout.
 
 Toolsets = explicit --toolsets when provided, otherwise whatever the user has
 configured for "cli" in `hermes tools`.
-Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
+Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn,
+unless --ignore-rules (or HERMES_IGNORE_RULES=1) is set — then
+AGENTS.md / SOUL.md / .cursorrules auto-injection and persistent memory are
+skipped, mirroring the `hermes chat --ignore-rules` semantic.
 Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
 Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
 
@@ -127,6 +130,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    ignore_rules: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +141,9 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        ignore_rules: When True (or HERMES_IGNORE_RULES=1 in the environment),
+            skip auto-injection of SOUL.md, AGENTS.md, .cursorrules, and
+            persistent memory — mirroring `hermes chat --ignore-rules`.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -176,6 +183,8 @@ def run_oneshot(
     real_stdout = sys.stdout
     devnull = open(os.devnull, "w", encoding="utf-8")
 
+    effective_ignore_rules = bool(ignore_rules) or os.environ.get("HERMES_IGNORE_RULES") == "1"
+
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             response = _run_agent(
@@ -184,6 +193,7 @@ def run_oneshot(
                 provider=provider,
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
+                ignore_rules=effective_ignore_rules,
             )
     finally:
         try:
@@ -221,6 +231,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    ignore_rules: bool = False,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -317,6 +328,8 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        skip_context_files=ignore_rules,
+        skip_memory=ignore_rules,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction
