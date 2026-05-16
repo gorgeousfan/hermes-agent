@@ -11150,24 +11150,33 @@ class GatewayRunner:
                 # (preserving its full transcript in SQLite) and creates a new
                 # session_id for the continuation.  Write the compressed messages
                 # into the NEW session so the original history stays searchable.
+                original_session_id = session_entry.session_id
                 new_session_id = tmp_agent.session_id
-                if new_session_id != session_entry.session_id:
+                if new_session_id != original_session_id:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
 
-                self.session_store.rewrite_transcript(new_session_id, compressed)
-                # Reset stored token count — transcript changed, old value is stale
-                self.session_store.update_session(
-                    session_entry.session_key, last_prompt_tokens=0
-                )
+                if compressed != msgs or new_session_id != original_session_id:
+                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                    # Reset stored token count; transcript changed, old value is stale
+                    self.session_store.update_session(
+                        session_entry.session_key, last_prompt_tokens=0
+                    )
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
+                _noop_reason = getattr(
+                    compressor,
+                    "_last_compression_noop_reason",
+                    "",
+                )
+                _noop_reason = _noop_reason.strip() if isinstance(_noop_reason, str) else ""
                 summary = summarize_manual_compression(
                     msgs,
                     compressed,
                     approx_tokens,
                     new_tokens,
+                    noop_reason=_noop_reason,
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress

@@ -10658,6 +10658,20 @@ class AIAgent:
                         "check auxiliary.compression.model in config.yaml."
                     )
 
+        if list(compressed) == list(messages):
+            _noop_reason = getattr(
+                self.context_compressor,
+                "_last_compression_noop_reason",
+                "",
+            )
+            logger.info(
+                "context compression no-op: session=%s messages=%d reason=%s",
+                self.session_id or "none",
+                _pre_msg_count,
+                _noop_reason or "unchanged context",
+            )
+            return messages, getattr(self, "_cached_system_prompt", None)
+
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})

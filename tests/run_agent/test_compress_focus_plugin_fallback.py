@@ -73,3 +73,47 @@ def test_compress_context_falls_back_when_engine_rejects_focus_topic():
     assert captured_kwargs == [{"current_tokens": 100}]
     # Silence unused-var warning on agent.
     assert agent.context_compressor is engine
+
+
+def test_compress_context_noop_skips_todo_injection_and_session_split(tmp_path):
+    class _NoopEngine:
+        compression_count = 0
+        _last_compression_noop_reason = "no eligible raw backlog outside fresh tail"
+
+        def compress(self, messages, current_tokens=None, focus_topic=None):
+            return list(messages)
+
+    engine = _NoopEngine()
+    agent = _make_agent_with_engine(engine)
+    agent.logs_dir = tmp_path
+    agent.tools = None
+    agent._session_db = MagicMock()
+    agent._session_db.get_session_title.return_value = None
+    agent._session_init_model_config = {}
+    agent._todo_store.format_for_injection.return_value = (
+        "[Your active task list was preserved across context compression]"
+    )
+    agent._invalidate_system_prompt = MagicMock()
+    agent._build_system_prompt = MagicMock(return_value="new-system-prompt")
+
+    messages = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
+
+    compressed, system_prompt = agent._compress_context(
+        messages,
+        None,
+        approx_tokens=100,
+    )
+
+    assert compressed == messages
+    assert system_prompt == agent._cached_system_prompt
+    assert agent.session_id == "sess-1"
+    agent._todo_store.format_for_injection.assert_not_called()
+    agent._invalidate_system_prompt.assert_not_called()
+    agent._build_system_prompt.assert_not_called()
+    agent._session_db.end_session.assert_not_called()
+    agent._session_db.create_session.assert_not_called()

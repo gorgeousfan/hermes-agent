@@ -752,6 +752,30 @@ def test_dispatch_long_handler_does_not_block_fast_handler(server):
     released.set()
 
 
+def test_compress_session_history_noop_does_not_bump_history_version(server):
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    agent = MagicMock()
+    agent._compress_context.return_value = (list(history), "")
+    agent.context_compressor = None
+    agent.model = "test/model"
+    session = {
+        "agent": agent,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 3,
+    }
+
+    removed, usage = server._compress_session_history(session)
+
+    assert removed == 0
+    assert usage["model"] == "test/model"
+    assert session["history"] is history
+    assert session["history_version"] == 3
+
+
 def test_dispatch_session_compress_does_not_block_fast_handler(server):
     """Manual TUI compaction can take minutes, so it must not block the RPC loop."""
     released = threading.Event()

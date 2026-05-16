@@ -38,6 +38,28 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     assert "Approx request size: ~100 tokens (unchanged)" in output
 
 
+def test_manual_compress_reports_context_engine_noop_reason(capsys):
+    shell = _make_cli()
+    history = _make_history()
+    shell.conversation_history = history
+    shell.agent = MagicMock()
+    shell.agent.compression_enabled = True
+    shell.agent._cached_system_prompt = ""
+    shell.agent.tools = None
+    shell.agent.session_id = shell.session_id
+    shell.agent.context_compressor._last_compression_noop_reason = (
+        "no eligible raw backlog outside fresh tail"
+    )
+    shell.agent._compress_context.return_value = (list(history), "")
+
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):
+        shell._manual_compress()
+
+    output = capsys.readouterr().out
+    assert "No changes from compression" in output
+    assert "Reason: no eligible raw backlog outside fresh tail" in output
+
+
 def test_manual_compress_explains_when_token_estimate_rises(capsys):
     shell = _make_cli()
     history = _make_history()

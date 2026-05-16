@@ -9148,11 +9148,17 @@ class HermesCLI:
                     system_prompt=_sys_prompt,
                     tools=_tools,
                 )
+                _noop_reason = getattr(
+                    getattr(self.agent, "context_compressor", None),
+                    "_last_compression_noop_reason",
+                    "",
+                )
                 summary = summarize_manual_compression(
                     original_history,
                     self.conversation_history,
                     approx_tokens,
                     new_tokens,
+                    noop_reason=_noop_reason,
                 )
                 icon = "🗜️" if summary["noop"] else "✅"
                 print(f"  {icon} {summary['headline']}")

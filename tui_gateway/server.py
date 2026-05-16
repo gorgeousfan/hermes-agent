@@ -1194,8 +1194,9 @@ def _compress_session_history(
             # result so we don't clobber concurrent edits.
             usage = _get_usage(agent)
             return 0, usage
-        session["history"] = compressed
-        session["history_version"] = history_version + 1
+        if compressed != history:
+            session["history"] = compressed
+            session["history_version"] = history_version + 1
     usage = _get_usage(agent)
     return len(history) - len(compressed), usage
 
@@ -2579,8 +2580,18 @@ def _(rid, params: dict) -> dict:
             )
             agent = session["agent"]
             _sync_session_key_after_compress(sid, session)
+            _noop_reason = getattr(
+                getattr(agent, "context_compressor", None),
+                "_last_compression_noop_reason",
+                "",
+            )
+            _noop_reason = _noop_reason.strip() if isinstance(_noop_reason, str) else ""
             summary = summarize_manual_compression(
-                before_messages, messages, before_tokens, after_tokens
+                before_messages,
+                messages,
+                before_tokens,
+                after_tokens,
+                noop_reason=_noop_reason,
             )
             info = _session_info(agent)
             _emit("session.info", sid, info)

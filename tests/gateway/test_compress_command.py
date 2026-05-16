@@ -67,6 +67,9 @@ async def test_compress_command_reports_noop_without_success_banner():
     agent_instance._cached_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_compression_noop_reason = (
+        "no eligible raw backlog outside fresh tail"
+    )
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
 
@@ -84,7 +87,11 @@ async def test_compress_command_reports_noop_without_success_banner():
 
     assert "No changes from compression" in result
     assert "Compressed:" not in result
+    assert "Reason: no eligible raw backlog outside fresh tail" in result
     assert "Approx request size: ~100 tokens (unchanged)" in result
+    runner.session_store.rewrite_transcript.assert_not_called()
+    runner.session_store.update_session.assert_not_called()
+    runner.session_store._save.assert_not_called()
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 

@@ -10,6 +10,8 @@ def summarize_manual_compression(
     after_messages: Sequence[dict[str, Any]],
     before_tokens: int,
     after_tokens: int,
+    *,
+    noop_reason: str | None = None,
 ) -> dict[str, Any]:
     """Return consistent user-facing feedback for manual compression."""
     before_count = len(before_messages)
@@ -35,7 +37,11 @@ def summarize_manual_compression(
         )
 
     note = None
-    if not noop and after_count < before_count and after_tokens > before_tokens:
+    if noop:
+        reason = (noop_reason or "").strip() if isinstance(noop_reason, str) else ""
+        if reason:
+            note = f"Reason: {reason}"
+    elif after_count < before_count and after_tokens > before_tokens:
         note = (
             "Note: fewer messages can still raise this estimate when "
             "compression rewrites the transcript into denser summaries."
