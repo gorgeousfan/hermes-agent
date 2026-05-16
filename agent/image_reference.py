@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,12 @@ def _validate_data_url(ref: str, *, max_bytes: int) -> ImageReference:
     if not b64_compact:
         raise ImageReferenceError("Data URL does not contain image bytes")
 
+    max_encoded_chars = 4 * math.ceil(max_bytes / 3)
+    if len(b64_compact) > max_encoded_chars:
+        raise ImageReferenceError(
+            f"Image reference is too large (encoded length {len(b64_compact)} exceeds {max_encoded_chars} chars)"
+        )
+
     try:
         raw = base64.b64decode(b64_compact, validate=True)
     except binascii.Error as exc:
@@ -140,13 +147,14 @@ def _validate_local_path(ref: str, *, max_bytes: int) -> ImageReference:
     if not resolved.is_file():
         raise ImageReferenceError("Image reference is not a file")
 
-    size = resolved.stat().st_size
-    if size > max_bytes:
-        raise ImageReferenceError(
-            f"Image reference is too large ({size} bytes > {max_bytes} bytes)"
-        )
-
-    sample = resolved.read_bytes() if size <= max_bytes else b""
+    with resolved.open("rb") as fh:
+        size = fh.seek(0, 2)
+        if size > max_bytes:
+            raise ImageReferenceError(
+                f"Image reference is too large ({size} bytes > {max_bytes} bytes)"
+            )
+        fh.seek(0)
+        sample = fh.read(16)
     mime_type = _detect_mime(sample)
     if mime_type is None:
         raise ImageReferenceError("Local file is not a supported image")

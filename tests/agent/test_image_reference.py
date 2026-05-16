@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -90,6 +91,25 @@ def test_rejects_oversized_data_url():
     assert "too large" in str(excinfo.value)
 
 
+def test_rejects_oversized_data_url_before_decoding():
+    oversized = "data:image/png;base64," + ("A" * 1024)
+
+    with patch("agent.image_reference.base64.b64decode", side_effect=AssertionError("decoded")):
+        with pytest.raises(ImageReferenceError) as excinfo:
+            validate_image_reference(oversized, max_bytes=8)
+
+    assert excinfo.value.error_type == "invalid_argument"
+    assert "too large" in str(excinfo.value)
+
+
+def test_invalid_base64_after_size_precheck_still_reports_invalid():
+    with pytest.raises(ImageReferenceError) as excinfo:
+        validate_image_reference("data:image/png;base64,!!!!", max_bytes=128)
+
+    assert excinfo.value.error_type == "invalid_argument"
+    assert "invalid base64" in str(excinfo.value)
+
+
 def test_allows_local_file_under_cache_images(hermes_home):
     path = hermes_home / "cache" / "images" / "source.png"
     path.parent.mkdir(parents=True)
@@ -102,6 +122,19 @@ def test_allows_local_file_under_cache_images(hermes_home):
     assert ref.path == path.resolve()
     assert ref.mime_type == "image/png"
     assert ref.bytes_size == len(PNG_BYTES)
+
+
+def test_local_file_validation_reads_only_header_not_entire_file(hermes_home, monkeypatch):
+    path = hermes_home / "cache" / "images" / "source.png"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(PNG_BYTES + (b"x" * 1024))
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(AssertionError("read whole file")))
+
+    ref = validate_image_reference(str(path), max_bytes=2048)
+
+    assert ref.kind == "file"
+    assert ref.mime_type == "image/png"
+    assert ref.bytes_size == len(PNG_BYTES) + 1024
 
 
 def test_allows_local_file_under_legacy_image_cache(hermes_home):
