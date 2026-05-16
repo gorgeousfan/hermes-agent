@@ -155,6 +155,37 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
+    def test_codex_backend_does_not_set_extra_headers(self, transport):
+        """Regression for #26599: chatgpt.com/backend-api/codex/responses
+        rejects requests carrying ``extra_headers`` with HTTP 400
+        ``Unsupported parameter: extra_headers``. The transport must not
+        inject ``session_id`` / ``x-client-request-id`` for is_codex_backend."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            session_id="sess-26599",
+            is_codex_backend=True,
+        )
+        assert "extra_headers" not in kw, (
+            f"Codex backend must not receive extra_headers (got {kw.get('extra_headers')!r})"
+        )
+
+    def test_codex_backend_preserves_caller_extra_headers(self, transport):
+        """If the caller already supplied extra_headers via request_overrides
+        we leave them alone — only the transport-injected session_id /
+        x-client-request-id pair is dropped for the Codex backend (#26599)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            session_id="sess-26599",
+            is_codex_backend=True,
+            request_overrides={"extra_headers": {"X-Caller": "keep-me"}},
+        )
+        # Caller-supplied headers are preserved; transport-injected ones are not added.
+        assert kw.get("extra_headers") == {"X-Caller": "keep-me"}
+        assert "session_id" not in kw.get("extra_headers", {})
+        assert "x-client-request-id" not in kw.get("extra_headers", {})
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
