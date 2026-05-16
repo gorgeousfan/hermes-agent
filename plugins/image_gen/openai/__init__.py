@@ -107,10 +107,11 @@ def _resolve_edit_model(
 
     if quality_tier in {"low", "medium", "high"}:
         meta["quality"] = quality_tier
-        for candidate, candidate_meta in _MODELS.items():
-            if candidate_meta["quality"] == quality_tier:
-                tier_id = candidate
-                break
+        quality_to_tier = {
+            candidate_meta["quality"]: candidate
+            for candidate, candidate_meta in _MODELS.items()
+        }
+        tier_id = quality_to_tier[quality_tier]
 
     return tier_id, meta
 

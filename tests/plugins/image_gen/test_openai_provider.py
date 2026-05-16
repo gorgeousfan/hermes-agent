@@ -280,6 +280,49 @@ class TestEdit:
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
+    def test_missing_openai_dependency(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+
+        with patch.dict("sys.modules", {"openai": None}):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "missing_dependency"
+
+    def test_api_error_returns_error_response(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.side_effect = RuntimeError("boom")
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "boom" in result["error"]
+
+    def test_empty_response_data(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = SimpleNamespace(data=[])
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+
+    def test_empty_response_item_without_image_payload(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=None, url=None)
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+
     def test_local_image_edit_calls_openai_and_saves_b64(self, provider, tmp_path):
         source = self._cached_png(tmp_path)
         fake_client = MagicMock()
