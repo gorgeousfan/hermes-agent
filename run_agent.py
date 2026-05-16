@@ -2416,6 +2416,7 @@ class AIAgent:
                     platform=self.platform or "cli",
                     model=self.model,
                     context_length=getattr(self.context_compressor, "context_length", 0),
+                    conversation_id=self._gateway_session_key,
                 )
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
@@ -2567,7 +2568,75 @@ class AIAgent:
                 "Session DB creation failed (will retry next turn): %s", e
             )
 
-    def reset_session_state(self):
+    def _transition_context_engine_session(
+        self,
+        *,
+        old_session_id: str | None = None,
+        new_session_id: str | None = None,
+        previous_messages: list | None = None,
+        carry_over_context: bool = False,
+        reset_engine: bool = True,
+        **extra_context,
+    ) -> None:
+        """Notify the active context engine about a host session transition.
+
+        This is a generic host-side lifecycle helper for external context
+        engines. The built-in compressor keeps its existing reset behavior,
+        while engines that implement richer hooks can flush old-session state,
+        reset runtime counters, bind to the new session, and optionally carry
+        retained context forward.
+        """
+        engine = getattr(self, "context_compressor", None)
+        if not engine:
+            return
+
+        if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
+            try:
+                engine.on_session_end(old_session_id, previous_messages)
+            except Exception as exc:
+                logger.debug("context engine on_session_end during transition: %s", exc)
+
+        if reset_engine and hasattr(engine, "on_session_reset"):
+            try:
+                engine.on_session_reset()
+            except Exception as exc:
+                logger.debug("context engine on_session_reset during transition: %s", exc)
+
+        should_start = bool(old_session_id or previous_messages is not None or carry_over_context or extra_context)
+        target_session_id = new_session_id or getattr(self, "session_id", "") or ""
+        if should_start and target_session_id and hasattr(engine, "on_session_start"):
+            start_context = {
+                "old_session_id": old_session_id,
+                "carry_over_context": carry_over_context,
+                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "model": getattr(self, "model", ""),
+                "context_length": getattr(engine, "context_length", None),
+                "conversation_id": getattr(self, "_gateway_session_key", None),
+            }
+            start_context.update(extra_context)
+            start_context = {k: v for k, v in start_context.items() if v not in (None, "")}
+            try:
+                engine.on_session_start(target_session_id, **start_context)
+            except Exception as exc:
+                logger.debug("context engine on_session_start during transition: %s", exc)
+
+        if (
+            carry_over_context
+            and old_session_id
+            and target_session_id
+            and hasattr(engine, "carry_over_new_session_context")
+        ):
+            try:
+                engine.carry_over_new_session_context(old_session_id, target_session_id)
+            except Exception as exc:
+                logger.debug("context engine carry_over_new_session_context during transition: %s", exc)
+
+    def reset_session_state(
+        self,
+        previous_messages: list | None = None,
+        old_session_id: str | None = None,
+        carry_over_context: bool = False,
+    ):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
         This method encapsulates the reset logic for all session-level metrics
@@ -2602,9 +2671,14 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
-        # Context engine reset (works for both built-in compressor and plugins)
-        if hasattr(self, "context_compressor") and self.context_compressor:
-            self.context_compressor.on_session_reset()
+        # Context engine reset/transition (works for both built-in compressor and plugins)
+        self._transition_context_engine_session(
+            old_session_id=old_session_id,
+            new_session_id=getattr(self, "session_id", None),
+            previous_messages=previous_messages,
+            carry_over_context=carry_over_context,
+            reset_engine=True,
+        )
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
@@ -10774,6 +10848,7 @@ class AIAgent:
                     self.session_id or "",
                     boundary_reason="compression",
                     old_session_id=_old_sid,
+                    conversation_id=getattr(self, "_gateway_session_key", None),
                 )
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)

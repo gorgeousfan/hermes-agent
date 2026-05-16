@@ -7508,6 +7508,7 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    gateway_session_key=session_key,
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
@@ -10623,6 +10624,7 @@ class GatewayRunner:
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            session_key = self._session_key_for_source(source)
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -10667,6 +10669,7 @@ class GatewayRunner:
                     chat_name=source.chat_name,
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
+                    gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -11122,6 +11125,7 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                gateway_session_key=session_key,
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
