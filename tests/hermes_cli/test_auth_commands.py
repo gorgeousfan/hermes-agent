@@ -1686,3 +1686,49 @@ def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, mon
 
     auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
     assert is_source_suppressed("openai-codex", "device_code")
+
+
+def test_auth_remove_skips_suppression_when_sibling_entries_share_source(tmp_path, monkeypatch):
+    """Removing one of N credentials with the same source must NOT suppress
+    that source — the survivors still depend on it (issue #24390).
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {"openai-codex": {"tokens": {"access_token": "t", "refresh_token": "r"}}},
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cdx-a",
+                        "label": "account-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "ta",
+                    },
+                    {
+                        "id": "cdx-b",
+                        "label": "account-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "tb",
+                    },
+                ]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="account-a"))
+
+    # account-b still has source=manual:device_code — must not be suppressed
+    assert not is_source_suppressed("openai-codex", "manual:device_code")

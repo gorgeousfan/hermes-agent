@@ -488,7 +488,14 @@ def auth_remove_command(args) -> None:
     for line in result.cleaned:
         print(line)
     if result.suppress:
-        suppress_credential_source(provider, removed.source)
+        # Only suppress the source when no remaining pool entries share it.
+        # Multiple manual OAuth credentials commonly share a source tag
+        # (e.g. every device-code credential gets source=manual:device_code),
+        # so suppressing on a single removal would silently drop the survivors.
+        if not any(e.source == removed.source for e in pool.entries()):
+            suppress_credential_source(provider, removed.source)
+        else:
+            result.hints = [h for h in result.hints if "re-seeded" not in h]
     for line in result.hints:
         print(line)
 
