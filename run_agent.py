@@ -1189,6 +1189,7 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        skip_skills_index: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -1247,6 +1248,13 @@ class AIAgent:
             load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
                 identity even when skip_context_files=True. Project context files from the cwd
                 remain skipped.
+            skip_skills_index (bool): If True, suppress the <available_skills> block from the
+                system prompt. The skill tools themselves (skills_list, skill_view, skill_manage)
+                remain registered and callable; the model just won't have the catalogue index
+                to know what skills are available. Implied by skip_context_files. Can also be
+                set via HERMES_NO_SKILLS_INDEX=1 env var or --no-skills-index CLI flag.
+                Useful for high-frequency scripted callers (batch, cron, oneshot) where the
+                3.5k-token skills index is pure overhead (~14k chars per call).
         """
         _install_safe_stdio()
 
@@ -1276,6 +1284,13 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
+        # Suppress <available_skills> system-prompt block when set. Also honoured
+        # when skip_context_files=True (ignore-rules mode) or HERMES_NO_SKILLS_INDEX=1.
+        self.skip_skills_index = (
+            skip_skills_index
+            or skip_context_files
+            or os.environ.get("HERMES_NO_SKILLS_INDEX", "").lower() in ("1", "true", "yes")
+        )
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -6151,7 +6166,13 @@ class AIAgent:
                     stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-        if has_skills_tools:
+        # skip_skills_index suppresses the <available_skills> catalogue block to
+        # save ~3.5k input tokens on high-frequency scripted/oneshot callers.
+        # Set by: skip_context_files (--ignore-rules), --no-skills-index CLI flag,
+        # HERMES_NO_SKILLS_INDEX=1 env var, or AIAgent(skip_skills_index=True).
+        # The skill *tools* (skills_list, skill_view, skill_manage) stay registered;
+        # the model just won't have the index to discover available skills.
+        if has_skills_tools and not self.skip_skills_index:
             avail_toolsets = {
                 toolset
                 for toolset in (
