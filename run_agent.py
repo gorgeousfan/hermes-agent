@@ -1110,6 +1110,26 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _custom_provider_headers_for_base_url(base_url: str, provider: str) -> dict:
+    provider = str(provider or "").strip().lower()
+    if not provider.startswith("custom"):
+        return {}
+    try:
+        from hermes_cli.config import get_custom_provider_headers
+
+        return get_custom_provider_headers(base_url)
+    except Exception:
+        return {}
+
+
+def _merge_default_headers(client_kwargs: dict, headers: dict) -> None:
+    if not headers:
+        return
+    merged = dict(client_kwargs.get("default_headers") or {})
+    merged.update({str(k): str(v) for k, v in headers.items()})
+    client_kwargs["default_headers"] = merged
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1708,6 +1728,10 @@ class AIAgent:
                             client_kwargs["default_headers"] = dict(_ph.default_headers)
                     except Exception:
                         pass
+                _merge_default_headers(
+                    client_kwargs,
+                    _custom_provider_headers_for_base_url(effective_base, self.provider),
+                )
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -2729,6 +2753,7 @@ class AIAgent:
             _sm_timeout = get_provider_request_timeout(self.provider, self.model)
             if _sm_timeout is not None:
                 self._client_kwargs["timeout"] = _sm_timeout
+            self._apply_client_headers_for_base_url(str(effective_base or ""))
             self.client = self._create_openai_client(
                 dict(self._client_kwargs),
                 reason="switch_model",
@@ -7560,6 +7585,10 @@ class AIAgent:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
                 self._client_kwargs.pop("default_headers", None)
+        _merge_default_headers(
+            self._client_kwargs,
+            _custom_provider_headers_for_base_url(base_url, self.provider),
+        )
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

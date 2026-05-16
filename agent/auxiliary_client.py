@@ -3012,6 +3012,21 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
+            custom_headers = {}
+            if isinstance(main_runtime, dict):
+                raw_headers = main_runtime.get("default_headers") or main_runtime.get("headers")
+                if isinstance(raw_headers, dict):
+                    custom_headers.update({str(k): str(v) for k, v in raw_headers.items()})
+            if not custom_headers:
+                try:
+                    from hermes_cli.config import get_custom_provider_headers
+                    custom_headers = get_custom_provider_headers(custom_base)
+                except Exception:
+                    custom_headers = {}
+            if custom_headers:
+                merged_headers = dict(extra.get("default_headers") or {})
+                merged_headers.update(custom_headers)
+                extra["default_headers"] = merged_headers
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -3077,6 +3092,11 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _custom_headers2 = custom_entry.get("headers")
+                if isinstance(_custom_headers2, dict) and _custom_headers2:
+                    _extra2["default_headers"] = {
+                        str(k): str(v) for k, v in _custom_headers2.items()
+                    }
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -3099,6 +3119,8 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        if "default_headers" in _extra2:
+                            _fb_extra["default_headers"] = dict(_extra2["default_headers"])
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))

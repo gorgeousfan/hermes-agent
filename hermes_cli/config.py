@@ -2883,6 +2883,8 @@ def _normalize_custom_provider_entry(
         "defaultModel": "default_model",
         "contextLength": "context_length",
         "rateLimitDelay": "rate_limit_delay",
+        "defaultHeaders": "headers",
+        "customHeaders": "headers",
     }
     # api_key_env is a documented snake_case alias for key_env (see
     # website/docs/guides/azure-foundry.md).  Normalize it up front so the
@@ -2892,7 +2894,7 @@ def _normalize_custom_provider_entry(
     _KNOWN_KEYS = {
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "context_length", "rate_limit_delay", "headers",
         "request_timeout_seconds", "stale_timeout_seconds",
     }
     for camel, snake in _CAMEL_ALIASES.items():
@@ -2984,6 +2986,26 @@ def _normalize_custom_provider_entry(
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
 
+    headers = _normalize_custom_provider_headers(entry.get("headers"))
+    if headers:
+        normalized["headers"] = headers
+
+    return normalized
+
+
+def _normalize_custom_provider_headers(headers: Any) -> Dict[str, str]:
+    """Return a string-only HTTP header map from a custom provider config."""
+    if not isinstance(headers, dict):
+        return {}
+
+    normalized: Dict[str, str] = {}
+    for key, value in headers.items():
+        header_name = str(key or "").strip()
+        if not header_name:
+            continue
+        if value is None:
+            continue
+        normalized[header_name] = str(value)
     return normalized
 
 
@@ -3116,6 +3138,40 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_headers(
+    base_url: str,
+    *,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return configured default HTTP headers for a custom endpoint."""
+    if not base_url:
+        return {}
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return {}
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return {}
+
+    target_url = str(base_url or "").rstrip("/")
+    if not target_url:
+        return {}
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = str(entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        return _normalize_custom_provider_headers(entry.get("headers"))
+    return {}
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -3144,7 +3200,7 @@ _KNOWN_ROOT_KEYS = {
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay",
+    "context_length", "rate_limit_delay", "headers",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
@@ -3497,6 +3553,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     new_entry["default_model"] = entry["model"]
                 if entry.get("api_mode"):
                     new_entry["transport"] = entry["api_mode"]
+                headers = _normalize_custom_provider_headers(entry.get("headers"))
+                if headers:
+                    new_entry["headers"] = headers
 
                 providers_dict[key] = new_entry
                 migrated_count += 1

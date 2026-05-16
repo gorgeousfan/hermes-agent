@@ -137,6 +137,31 @@ class TestResolveProviderClientNamedCustom:
         assert model == "my-model"
         assert "beans.local" in str(client.base_url)
 
+    def test_named_custom_provider_default_headers(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "bifrost",
+                    "base_url": "http://bifrost.local/v1",
+                    "api_key": "k",
+                    "headers": {"x-bf-mcp-include-tools": "__none__"},
+                },
+            ],
+        })
+
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("bifrost", "my-model")
+
+        assert client is not None
+        assert model == "my-model"
+        assert mock_openai.call_args.kwargs["default_headers"] == {
+            "x-bf-mcp-include-tools": "__none__"
+        }
+
     def test_named_custom_provider_default_model(self, tmp_path):
         _write_config(tmp_path, {
             "model": {"default": "main-model"},

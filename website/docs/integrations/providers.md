@@ -1204,11 +1204,17 @@ custom_providers:
     base_url: https://gpu-server.internal.corp/v1
     key_env: CORP_API_KEY
     api_mode: chat_completions   # optional, auto-detected from URL
+    headers:                     # optional default HTTP headers
+      User-Agent: HermesAgent/1.0
+      x-bf-mcp-include-tools: "__none__"
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
+
+Use `headers` for OpenAI-compatible proxies that require a custom `User-Agent`
+or gateway controls such as Bifrost's `x-bf-mcp-include-tools`.
 
 Switch between them mid-session with the triple syntax:
 

@@ -1581,6 +1581,23 @@ def test_get_named_custom_provider_includes_model(monkeypatch):
     assert result["model"] == "qwen3.6-plus"
 
 
+def test_get_named_custom_provider_includes_headers(monkeypatch):
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "providers": {
+            "bifrost": {
+                "name": "Bifrost",
+                "api": "https://bifrost.example.com/v1",
+                "api_key": "test-key",
+                "headers": {"x-bf-mcp-include-tools": "__none__"},
+            },
+        },
+    })
+
+    result = rp._get_named_custom_provider("bifrost")
+    assert result is not None
+    assert result["headers"] == {"x-bf-mcp-include-tools": "__none__"}
+
+
 def test_get_named_custom_provider_excludes_empty_model(monkeypatch):
     """Empty or whitespace-only model field should not appear in result."""
     for model_val in ["", "   ", None]:
@@ -1621,6 +1638,24 @@ def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-server")
     assert resolved["model"] == "qwen3.6-plus"
     assert resolved["provider"] == "custom"
+
+
+def test_named_custom_runtime_propagates_default_headers(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "headers": {"User-Agent": "HermesTest/1.0"},
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert resolved["default_headers"] == {"User-Agent": "HermesTest/1.0"}
 
 
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):

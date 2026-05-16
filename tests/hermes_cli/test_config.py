@@ -11,6 +11,7 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
+    get_custom_provider_headers,
     load_config,
     load_env,
     migrate_config,
@@ -593,6 +594,59 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["base_url"] == "https://api.openai.com/v1"
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
+
+    def test_custom_provider_headers_survive_migration(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "custom_providers": [
+                        {
+                            "name": "Cloudflare Proxy",
+                            "base_url": "https://api.example.com/v1",
+                            "api_key": "test-key",
+                            "headers": {
+                                "User-Agent": "HermesTest/1.0",
+                                "x-bf-mcp-include-tools": "__none__",
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            compatible = get_compatible_custom_providers()
+
+        migrated = raw["providers"]["cloudflare-proxy"]
+        assert migrated["headers"]["User-Agent"] == "HermesTest/1.0"
+        assert compatible[0]["headers"]["x-bf-mcp-include-tools"] == "__none__"
+
+    def test_get_custom_provider_headers_matches_providers_dict(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "bifrost": {
+                            "api": "https://bifrost.example.com/v1",
+                            "headers": {"x-bf-mcp-include-tools": "__none__"},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            headers = get_custom_provider_headers("https://bifrost.example.com/v1/")
+
+        assert headers == {"x-bf-mcp-include-tools": "__none__"}
 
     def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
         """URL field precedence is base_url > url > api (PR #9332)."""

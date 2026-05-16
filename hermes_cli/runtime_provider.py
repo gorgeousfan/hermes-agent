@@ -29,7 +29,11 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import get_compatible_custom_providers, load_config
+from hermes_cli.config import (
+    get_compatible_custom_providers,
+    get_custom_provider_headers,
+    load_config,
+)
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
 
@@ -459,6 +463,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    headers = get_custom_provider_headers(
+                        base_url,
+                        custom_providers=get_compatible_custom_providers(config),
+                    )
+                    if headers:
+                        result["headers"] = headers
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -484,6 +494,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
+                        headers = get_custom_provider_headers(
+                            base_url,
+                            custom_providers=get_compatible_custom_providers(config),
+                        )
+                        if headers:
+                            result["headers"] = headers
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
@@ -527,6 +543,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             result["key_env"] = key_env
         if provider_key:
             result["provider_key"] = provider_key
+        headers = get_custom_provider_headers(
+            base_url,
+            custom_providers=custom_providers,
+        )
+        if headers:
+            result["headers"] = headers
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -566,7 +588,7 @@ def _resolve_named_custom_runtime(
             (c for c in api_key_candidates if has_usable_secret(c)),
             "",
         ) or "no-key-required"
-        return {
+        result = {
             "provider": "custom",
             "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
@@ -574,6 +596,10 @@ def _resolve_named_custom_runtime(
             "source": "direct-alias",
             "requested_provider": requested_provider,
         }
+        headers = get_custom_provider_headers(base_url)
+        if headers:
+            result["default_headers"] = headers
+        return result
 
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
@@ -594,6 +620,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        headers = custom_provider.get("headers")
+        if isinstance(headers, dict) and headers:
+            pool_result["default_headers"] = dict(headers)
         return pool_result
 
     api_key_candidates = [
@@ -618,6 +647,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    headers = custom_provider.get("headers")
+    if isinstance(headers, dict) and headers:
+        result["default_headers"] = dict(headers)
     return result
 
 

@@ -177,6 +177,104 @@ def test_unknown_base_url_clears_default_headers(mock_openai):
 
 
 @patch("run_agent.OpenAI")
+def test_custom_provider_base_url_applies_configured_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "Cloudflare Proxy",
+                "base_url": "https://api.example.com/v1",
+                "headers": {
+                    "User-Agent": "HermesTest/1.0",
+                    "x-bf-mcp-include-tools": "__none__",
+                },
+            }
+        ]
+    }
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.example.com/v1",
+            provider="custom",
+            model="test-model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["User-Agent"] == "HermesTest/1.0"
+    assert headers["x-bf-mcp-include-tools"] == "__none__"
+
+
+@patch("run_agent.OpenAI")
+def test_custom_provider_headers_replace_stale_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    cfg = {
+        "providers": {
+            "proxy": {
+                "api": "https://api.example.com/v1",
+                "headers": {"User-Agent": "HermesTest/1.0"},
+            }
+        }
+    }
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.example.com/v1",
+        provider="custom",
+        model="test-model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._client_kwargs["default_headers"] = {"X-Stale": "yes"}
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        agent._apply_client_headers_for_base_url("https://api.example.com/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers == {"User-Agent": "HermesTest/1.0"}
+
+
+@patch("run_agent.OpenAI")
+def test_switch_model_applies_custom_provider_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    cfg = {
+        "custom_providers": [
+            {
+                "name": "Bifrost",
+                "base_url": "https://bifrost.example.com/v1",
+                "headers": {"x-bf-mcp-include-tools": "__none__"},
+            }
+        ]
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=128000,
+    ):
+        agent = AIAgent(
+            api_key="old-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            model="old/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.switch_model(
+            new_model="new-model",
+            new_provider="custom",
+            api_key="new-key",
+            base_url="https://bifrost.example.com/v1",
+            api_mode="chat_completions",
+        )
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers == {"x-bf-mcp-include-tools": "__none__"}
+
+
+@patch("run_agent.OpenAI")
 def test_openrouter_headers_include_response_cache_when_enabled(mock_openai):
     """When openrouter.response_cache is True, the cache header is injected."""
     mock_openai.return_value = MagicMock()
