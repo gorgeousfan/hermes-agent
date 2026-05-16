@@ -887,6 +887,58 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     return "{}"
 
 
+def _parse_tool_call_arguments_for_execution(
+    raw_args: Any,
+    tool_name: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Parse executable tool arguments, rejecting malformed/non-object payloads."""
+    if isinstance(raw_args, dict):
+        return raw_args, None
+
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except json.JSONDecodeError as exc:
+            return {}, json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"Malformed tool call arguments for '{tool_name}': "
+                        f"{exc.msg} at line {exc.lineno} column {exc.colno}. "
+                        "Tool was not executed."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+    else:
+        return {}, json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Malformed tool call arguments for '{tool_name}': "
+                    f"expected a JSON object string, got {type(raw_args).__name__}. "
+                    "Tool was not executed."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    if not isinstance(parsed, dict):
+        return {}, json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Malformed tool call arguments for '{tool_name}': "
+                    f"expected a JSON object, got {type(parsed).__name__}. "
+                    "Tool was not executed."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    return parsed, None
+
+
 def _strip_non_ascii(text: str) -> str:
     """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
 
@@ -11052,21 +11104,13 @@ class AIAgent:
         for tool_call in tool_calls:
             function_name = tool_call.function.name
 
-            # Reset nudge counters
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
-
-            try:
-                function_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                function_args = {}
-            if not isinstance(function_args, dict):
-                function_args = {}
+            function_args, argument_error_result = _parse_tool_call_arguments_for_execution(
+                tool_call.function.arguments,
+                function_name,
+            )
 
             # Checkpoint for file-mutating tools
-            if function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
+            if argument_error_result is None and function_name in {"write_file", "patch"} and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -11076,7 +11120,7 @@ class AIAgent:
                     pass
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if argument_error_result is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -11089,21 +11133,31 @@ class AIAgent:
 
             block_result = None
             blocked_by_guardrail = False
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
-                )
-            except Exception:
-                block_message = None
-
-            if block_message is not None:
-                block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+            if argument_error_result is not None:
+                block_result = argument_error_result
             else:
-                guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    block_result = self._guardrail_block_result(guardrail_decision)
-                    blocked_by_guardrail = True
+                try:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    block_message = get_pre_tool_call_block_message(
+                        function_name, function_args, task_id=effective_task_id or "",
+                    )
+                except Exception:
+                    block_message = None
+
+                if block_message is not None:
+                    block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+                else:
+                    guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
+                    if not guardrail_decision.allows_execution:
+                        block_result = self._guardrail_block_result(guardrail_decision)
+                        blocked_by_guardrail = True
+
+            if block_result is None:
+                # Reset nudge counters only when the relevant tool will run.
+                if function_name == "memory":
+                    self._turns_since_memory = 0
+                elif function_name == "skill_manage":
+                    self._iters_since_skill = 0
 
             parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -11457,31 +11511,33 @@ class AIAgent:
 
             function_name = tool_call.function.name
 
-            try:
-                function_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError as e:
-                logging.warning(f"Unexpected JSON error after validation: {e}")
-                function_args = {}
-            if not isinstance(function_args, dict):
-                function_args = {}
+            function_args, argument_error_result = _parse_tool_call_arguments_for_execution(
+                tool_call.function.arguments,
+                function_name,
+            )
 
             # Check plugin hooks for a block directive before executing.
             _block_msg: Optional[str] = None
-            try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                _block_msg = get_pre_tool_call_block_message(
-                    function_name, function_args, task_id=effective_task_id or "",
-                )
-            except Exception:
-                pass
+            if argument_error_result is None:
+                try:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    _block_msg = get_pre_tool_call_block_message(
+                        function_name, function_args, task_id=effective_task_id or "",
+                    )
+                except Exception:
+                    pass
 
             _guardrail_block_decision: ToolGuardrailDecision | None = None
-            if _block_msg is None:
+            if argument_error_result is None and _block_msg is None:
                 guardrail_decision = self._tool_guardrails.before_call(function_name, function_args)
                 if not guardrail_decision.allows_execution:
                     _guardrail_block_decision = guardrail_decision
 
-            _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+            _execution_blocked = (
+                argument_error_result is not None
+                or _block_msg is not None
+                or _guardrail_block_decision is not None
+            )
 
             if _execution_blocked:
                 # Tool blocked by plugin or guardrail policy — skip counters,
@@ -11555,7 +11611,12 @@ class AIAgent:
 
             tool_start_time = time.time()
 
-            if _block_msg is not None:
+            if argument_error_result is not None:
+                # Reject malformed tool-call arguments instead of executing
+                # the requested tool with an accidental empty-argument dict.
+                function_result = argument_error_result
+                tool_duration = 0.0
+            elif _block_msg is not None:
                 # Tool blocked by plugin policy — return error without executing.
                 function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
                 tool_duration = 0.0
