@@ -189,7 +189,14 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    env_var_enabled,
+    is_truthy_value,
+    normalize_proxy_url,
+)
 from hermes_cli.config import cfg_get
 
 
@@ -2139,8 +2146,10 @@ class AIAgent:
                 compression_threshold = _model_cthresh
         except Exception:
             pass
-        compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
-        compression_status_messages = str(_compression_cfg.get("status_messages", True)).lower() in {"true", "1", "yes", "on"}
+        compression_enabled = is_truthy_value(_compression_cfg.get("enabled", True), default=True)
+        compression_status_messages = is_truthy_value(
+            _compression_cfg.get("status_messages", True), default=True
+        )
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
         # protect_first_n is the number of non-system messages to protect at
@@ -2935,7 +2944,7 @@ class AIAgent:
 
     def _emit_compression_status(self, message: str) -> None:
         """Emit a user-facing context-compression status if enabled."""
-        if not getattr(self, "compression_status_messages", True):
+        if not self.compression_status_messages:
             return
         self._emit_status(message)
 
