@@ -51,3 +51,40 @@ def test_default_edit_clamps_invalid_aspect_ratio():
     result = GenerateOnlyProvider().edit("prompt", image="source", aspect_ratio="wide")
 
     assert result["aspect_ratio"] == "landscape"
+
+
+def test_default_edit_accepts_no_reference_images():
+    result = GenerateOnlyProvider().edit("prompt")
+
+    assert result["success"] is False
+    assert result["error_type"] == "unsupported"
+    assert result["model"] == ""
+
+
+def test_default_edit_accepts_none_and_empty_edge_values():
+    result = GenerateOnlyProvider().edit(
+        "prompt",
+        images=None,
+        image=None,
+        mask=None,
+        aspect_ratio="",
+        model=None,
+        quality_tier=None,
+        ignored_future_kwarg=None,
+    )
+
+    assert result["success"] is False
+    assert result["aspect_ratio"] == "landscape"
+    assert result["model"] == ""
+
+
+def test_default_edit_accepts_empty_images_and_extra_kwargs():
+    result = GenerateOnlyProvider().edit(
+        "prompt",
+        images=[],
+        aspect_ratio=None,
+        nested_future_kwarg={"x": object()},
+    )
+
+    assert result["success"] is False
+    assert result["aspect_ratio"] == "landscape"

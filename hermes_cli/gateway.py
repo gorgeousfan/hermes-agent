@@ -2086,17 +2086,27 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
     """
-    current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    current_hermes = Path(env_home) if env_home else Path.home() / ".hermes"
+    current_default = Path.home() / ".hermes"
     target_default = Path(target_home_dir) / ".hermes"
 
+    try:
+        current_hermes_cmp = current_hermes.resolve(strict=False)
+    except OSError:
+        current_hermes_cmp = current_hermes.absolute()
+    try:
+        current_default_cmp = current_default.resolve(strict=False)
+    except OSError:
+        current_default_cmp = current_default.absolute()
+
     # Default ~/.hermes → remap to target user's default
-    if current_hermes == current_default:
+    if current_hermes_cmp == current_default_cmp:
         return str(target_default)
 
     # Profile or subdir of ~/.hermes → preserve the relative structure
     try:
-        relative = current_hermes.relative_to(current_default)
+        relative = current_hermes_cmp.relative_to(current_default_cmp)
         return str(target_default / relative)
     except ValueError:
         # Completely custom path (not under ~/.hermes) — keep as-is

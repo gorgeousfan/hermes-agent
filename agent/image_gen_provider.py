@@ -153,7 +153,7 @@ class ImageGenProvider(abc.ABC):
         *,
         image: str | None = None,
         mask: str | None = None,
-        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        aspect_ratio: str | None = DEFAULT_ASPECT_RATIO,
         size: str | None = None,
         model: str | None = None,
         quality_tier: str | None = None,
@@ -162,9 +162,13 @@ class ImageGenProvider(abc.ABC):
         """Edit one or more existing images.
 
         Providers that support image-to-image should override this and return
-        the same uniform response shape as :meth:`generate`. The default is a
-        structured unsupported response so existing generate-only providers do
-        not need to implement an edit method.
+        the same uniform response shape as :meth:`generate`. ``images`` is the
+        canonical ordered list of reference inputs; ``image`` is a legacy
+        single-reference alias kept for call-site compatibility. Providers that
+        support both should merge ``image`` ahead of/into ``images`` according to
+        their API's ordering semantics. The default is a structured unsupported
+        response so existing generate-only providers do not need to implement an
+        edit method and unknown future keyword arguments are safely ignored.
         """
         aspect = resolve_aspect_ratio(aspect_ratio)
         return error_response(
