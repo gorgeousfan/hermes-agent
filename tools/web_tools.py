@@ -40,12 +40,14 @@ Usage:
     crawl_data = web_crawl_tool("example.com", "Find contact information")
 """
 
+import html
 import json
 import logging
 import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from urllib.parse import urljoin, urlparse
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
 # proxy, client construction, and response-shape normalizers all live in
@@ -291,6 +293,242 @@ def _web_requires_env() -> list[str]:
 # _extract_scrape_payload, _is_tool_gateway_ready, etc.) are re-exported at
 # the top of this module for backward-compat with integration tests and
 # unit-test patches.
+
+
+_DIRECT_FETCH_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+_DIRECT_TEXT_EXTENSIONS = (
+    ".md", ".markdown", ".txt", ".rst", ".json", ".yaml", ".yml",
+    ".toml", ".csv", ".tsv", ".xml", ".log",
+)
+_SPECIAL_ROUTE_TEXT_MAX_BYTES = 2_000_000
+_GITHUB_HTML_HOSTS = {"github.com", "www.github.com"}
+_GITHUB_RAW_HOST = "raw.githubusercontent.com"
+_X_STATUS_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
+_X_ARTICLE_PATH_RE = re.compile(r"/i/article/\d+")
+
+
+def _collapse_whitespace(value: str) -> str:
+    return re.sub(r"[ \t\r\f\v]+", " ", value or "").strip()
+
+
+def _strip_html_fallback(value: str) -> str:
+    """Naive HTML → text fallback for lightweight direct fetch routes."""
+    text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", value or "")
+    text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n", text)
+    text = re.sub(r"(?i)<p[^>]*>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return "\n".join(_collapse_whitespace(line) for line in text.splitlines() if _collapse_whitespace(line))
+
+
+def _extract_meta_content(document: str, *, name: str = "", prop: str = "") -> str:
+    if not document:
+        return ""
+    attr_name = "property" if prop else "name"
+    attr_value = prop or name
+    if not attr_value:
+        return ""
+    patterns = [
+        rf'<meta[^>]+{attr_name}=["\']{re.escape(attr_value)}["\'][^>]+content=["\']([^"\']*)["\']',
+        rf'<meta[^>]+content=["\']([^"\']*)["\'][^>]+{attr_name}=["\']{re.escape(attr_value)}["\']',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, document, re.IGNORECASE)
+        if match:
+            return html.unescape(match.group(1)).strip()
+    return ""
+
+
+def _direct_fetch_text(url: str, timeout: int = 20) -> tuple[str, str, str]:
+    with httpx.stream(
+        "GET",
+        url,
+        headers={
+            "User-Agent": _DIRECT_FETCH_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+        },
+        follow_redirects=True,
+        timeout=timeout,
+    ) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        body = bytearray()
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body) > _SPECIAL_ROUTE_TEXT_MAX_BYTES:
+                raise ValueError("Special-routed response is larger than 2MB")
+        encoding = response.encoding or "utf-8"
+        return body.decode(encoding, errors="replace"), content_type, str(response.url)
+
+
+def _is_textish_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    return host == _GITHUB_RAW_HOST or path.endswith(_DIRECT_TEXT_EXTENSIONS)
+
+
+def _github_raw_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    parts = [part for part in parsed.path.split("/") if part]
+    if host == _GITHUB_RAW_HOST:
+        return url
+    if host not in _GITHUB_HTML_HOSTS:
+        return ""
+    if len(parts) >= 5 and parts[2] in {"blob", "raw"}:
+        owner, repo, _, ref = parts[:4]
+        rest = "/".join(parts[4:])
+        if rest:
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{rest}"
+    return ""
+
+
+def _build_extract_result(
+    *,
+    url: str,
+    title: str,
+    content: str,
+    route: str,
+    requested_url: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    final_metadata = {
+        "sourceURL": url,
+        "title": title,
+        "route": route,
+        "requestedURL": requested_url,
+    }
+    if metadata:
+        final_metadata.update(metadata)
+    return {
+        "url": url,
+        "title": title,
+        "content": content,
+        "raw_content": content,
+        "metadata": final_metadata,
+    }
+
+
+def _extract_direct_text_result(url: str, format: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    raw_url = _github_raw_url(url)
+    target_url = raw_url or url
+    if not raw_url and not _is_textish_url(target_url):
+        return None
+
+    body, content_type, final_url = _direct_fetch_text(target_url)
+    parsed_final = urlparse(final_url)
+    title = parsed_final.path.rsplit("/", 1)[-1] or final_url
+
+    if format == "html" and "html" in content_type.lower() and not _is_textish_url(final_url):
+        content = body
+    else:
+        content = body if _is_textish_url(final_url) else _strip_html_fallback(body)
+
+    return _build_extract_result(
+        url=final_url,
+        title=title,
+        content=content,
+        route="direct-text",
+        requested_url=url,
+    )
+
+
+def _extract_x_status_result(url: str) -> Optional[Dict[str, Any]]:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in _X_STATUS_HOSTS:
+        return None
+
+    match = re.search(r"/([^/]+)/status/(\d+)", parsed.path)
+    if not match:
+        return None
+
+    screen_name, status_id = match.groups()
+    document, _content_type, final_url = _direct_fetch_text(url)
+
+    full_text = ""
+    text_match = re.search(r'"full_text":"((?:\\.|[^"\\])*)"', document)
+    if text_match:
+        try:
+            full_text = bytes(text_match.group(1), "utf-8").decode("unicode_escape")
+        except Exception:
+            full_text = text_match.group(1)
+    full_text = _collapse_whitespace(html.unescape(full_text.replace("\n", " ")))
+
+    title = (
+        _extract_meta_content(document, prop="og:title")
+        or _extract_meta_content(document, name="twitter:title")
+        or f"@{screen_name} on X"
+    )
+
+    article_url = ""
+    normalized_document = document.replace(r"\/", "/")
+    for article_path in re.findall(
+        r'https?://x\.com(?P<path>/[^"\s<]+)',
+        normalized_document,
+    ):
+        article_match = _X_ARTICLE_PATH_RE.search(article_path)
+        if article_match:
+            article_url = urljoin("https://x.com", article_match.group(0))
+            break
+
+    description = (
+        _extract_meta_content(document, prop="og:description")
+        or _extract_meta_content(document, name="twitter:description")
+    )
+    description = _collapse_whitespace(description)
+
+    recovered_lines = [
+        f"Author: @{screen_name}",
+        f"Tweet ID: {status_id}",
+    ]
+    if full_text:
+        recovered_lines.append(f"Text: {full_text}")
+    if article_url:
+        recovered_lines.append(f"Linked article: {article_url}")
+    if description and description != full_text:
+        recovered_lines.append(f"Description: {description}")
+    recovered_lines.append(
+        "Note: extracted via raw public X HTML fallback; linked article bodies may still require stronger browser/API support."
+    )
+
+    content = "# X Post\n\n" + "\n".join(f"- {line}" for line in recovered_lines)
+    return _build_extract_result(
+        url=final_url,
+        title=title,
+        content=content,
+        route="x-status-fallback",
+        requested_url=url,
+        metadata={
+            "author": screen_name,
+            "tweetId": status_id,
+            "articleUrl": article_url,
+        },
+    )
+
+
+def _extract_special_url_result(url: str, format: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Auto-route URLs that are better handled outside the generic crawler path."""
+    extractors = (
+        lambda current_url: _extract_x_status_result(current_url),
+        lambda current_url: _extract_direct_text_result(current_url, format=format),
+    )
+    for extractor in extractors:
+        try:
+            result = extractor(url)
+        except Exception as exc:
+            logger.debug("Special URL extractor failed for %s: %s", url, exc)
+            continue
+        if result:
+            return result
+    return None
 
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
@@ -922,10 +1160,73 @@ async def web_extract_tool(
             else:
                 safe_urls.append(url)
 
-        # Dispatch only safe URLs to the configured backend
-        if not safe_urls:
-            results = []
-        else:
+        ordered_results: List[Optional[Dict[str, Any]]] = [None] * len(safe_urls)
+        generic_urls: List[str] = []
+        generic_positions: List[int] = []
+
+        from tools.interrupt import is_interrupted as _is_interrupted
+        for index, url in enumerate(safe_urls):
+            if _is_interrupted():
+                ordered_results[index] = {
+                    "url": url,
+                    "error": "Interrupted",
+                    "title": "",
+                }
+                continue
+
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info(
+                    "Blocked web_extract for %s by rule %s",
+                    blocked["host"],
+                    blocked["rule"],
+                )
+                ordered_results[index] = {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": blocked["message"],
+                    "blocked_by_policy": {
+                        "host": blocked["host"],
+                        "rule": blocked["rule"],
+                        "source": blocked["source"],
+                    },
+                }
+                continue
+
+            special_result = _extract_special_url_result(url, format=format)
+            if special_result:
+                final_url = special_result.get("metadata", {}).get(
+                    "sourceURL", special_result.get("url", url)
+                )
+                final_blocked = check_website_access(final_url)
+                if final_blocked:
+                    logger.info(
+                        "Blocked special-routed web_extract for %s by rule %s",
+                        final_blocked["host"],
+                        final_blocked["rule"],
+                    )
+                    ordered_results[index] = {
+                        "url": final_url,
+                        "title": special_result.get("title", ""),
+                        "content": "",
+                        "raw_content": "",
+                        "error": final_blocked["message"],
+                        "blocked_by_policy": {
+                            "host": final_blocked["host"],
+                            "rule": final_blocked["rule"],
+                            "source": final_blocked["source"],
+                        },
+                    }
+                else:
+                    ordered_results[index] = special_result
+                continue
+
+            generic_positions.append(index)
+            generic_urls.append(url)
+
+        generic_results: List[Dict[str, Any]] = []
+        if generic_urls:
             backend = _get_extract_backend()
 
             # All seven providers (brave-free, ddgs, searxng, exa, parallel,
@@ -933,8 +1234,13 @@ async def web_extract_tool(
             # registry lookup + delegation. Some providers' extract() is
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            # in a thread so they don't block the event loop on network I/O.
+            try:
+                from hermes_cli.plugins import discover_plugins
+                discover_plugins()  # idempotent; ensures bundled providers are registered
+            except Exception as exc:
+                logger.debug("Web provider plugin discovery failed: %s", exc)
+
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
@@ -976,20 +1282,38 @@ async def web_extract_tool(
                     )
 
             logger.info(
-                "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
+                "Web extract via %s: %d URL(s)", provider.name, len(generic_urls)
             )
 
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
             import inspect
             if inspect.iscoroutinefunction(provider.extract):
-                results = await provider.extract(safe_urls, format=format)
+                generic_results = await provider.extract(generic_urls, format=format)
             else:
-                # Run sync extract() in a thread so we don't block the
-                # event loop on network I/O.
-                results = await asyncio.to_thread(
-                    provider.extract, safe_urls, format=format
+                generic_results = await asyncio.to_thread(
+                    provider.extract, generic_urls, format=format
                 )
+
+            for index, result in zip(generic_positions, generic_results):
+                ordered_results[index] = result
+
+            if len(generic_results) < len(generic_positions):
+                for index, url in zip(
+                    generic_positions[len(generic_results):],
+                    generic_urls[len(generic_results):],
+                ):
+                    ordered_results[index] = {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "error": "Extraction provider returned no result",
+                    }
+
+        results = [result for result in ordered_results if result is not None]
+        if len(generic_results) > len(generic_positions):
+            results.extend(generic_results[len(generic_positions):])
+
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
