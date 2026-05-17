@@ -1236,6 +1236,34 @@ class TestSystemUnitHermesHome:
         assert 'HERMES_HOME=/home/alice/.hermes/profiles/coder' in unit
         assert '/root/' not in unit
 
+    def test_system_unit_ignores_inaccessible_calling_user_path_dir(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+
+        original_is_dir = gateway_cli.Path.is_dir
+
+        def raising_is_dir(self):
+            if self == Path("/root/.hermes/node/bin"):
+                raise PermissionError("simulated inaccessible root hermes node bin")
+            return original_is_dir(self)
+
+        monkeypatch.setattr(gateway_cli.Path, "is_dir", raising_is_dir)
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'HERMES_HOME=/home/alice/.hermes' in unit
+        assert '/root/.hermes/node/bin' not in unit
+
     def test_system_unit_preserves_custom_hermes_home(self, monkeypatch):
         # Custom HERMES_HOME not under any user's home — keep as-is
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
