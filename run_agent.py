@@ -1178,6 +1178,7 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
+        user_agent: str | None = None,
         acp_command: str = None,
         acp_args: list[str] | None = None,
         command: str = None,
@@ -1317,6 +1318,7 @@ class AIAgent:
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
+        self._user_agent = user_agent
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -1655,7 +1657,7 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout, user_agent=user_agent)
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -1740,13 +1742,19 @@ class AIAgent:
                     # Fall back to profile.default_headers for providers that
                     # declare custom headers (e.g. Vercel AI Gateway attribution,
                     # Kimi User-Agent on non-kimi.com endpoints).
+                    _got_profile_headers = False
                     try:
                         from providers import get_provider_profile as _gpf
                         _ph = _gpf(self.provider)
                         if _ph and _ph.default_headers:
                             client_kwargs["default_headers"] = dict(_ph.default_headers)
+                            _got_profile_headers = True
                     except Exception:
                         pass
+                    # Third-party endpoints behind Cloudflare block SDK User-Agents.
+                    if not _got_profile_headers:
+                        _safe_ua = (user_agent or "hermes-agent")[:256].replace("\r", "").replace("\n", "")
+                        client_kwargs["default_headers"] = {"User-Agent": _safe_ua}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -2754,6 +2762,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                user_agent=self._user_agent,
             )
             self._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
             self.client = None
@@ -7530,6 +7539,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                user_agent=self._user_agent,
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -7604,6 +7614,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                user_agent=self._user_agent,
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -7771,6 +7782,7 @@ class AIAgent:
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
+                user_agent=self._user_agent,
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):
@@ -9146,6 +9158,7 @@ class AIAgent:
                 self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(
                     effective_key, self._anthropic_base_url, timeout=_fb_timeout,
+                    user_agent=self._user_agent,
                 )
                 self._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
                 self.client = None
@@ -9280,6 +9293,7 @@ class AIAgent:
                 self._anthropic_client = build_anthropic_client(
                     rt["anthropic_api_key"], rt["anthropic_base_url"],
                     timeout=get_provider_request_timeout(self.provider, self.model),
+                    user_agent=self._user_agent,
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
@@ -9379,6 +9393,7 @@ class AIAgent:
                 self._anthropic_client = build_anthropic_client(
                     rt["anthropic_api_key"], rt["anthropic_base_url"],
                     timeout=get_provider_request_timeout(self.provider, self.model),
+                    user_agent=self._user_agent,
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
