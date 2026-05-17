@@ -27,6 +27,7 @@ from typing import Dict, Any, List, Optional, Union
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
+DEFAULT_SESSION_SEARCH_TIME_BUDGET = 90.0
 
 
 def _get_session_search_max_concurrency(default: int = 3) -> int:
@@ -48,6 +49,37 @@ def _get_session_search_max_concurrency(default: int = 3) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, min(value, 5))
+
+
+def _get_session_search_time_budget(
+    default: float = DEFAULT_SESSION_SEARCH_TIME_BUDGET,
+) -> float:
+    """Read auxiliary.session_search.time_budget_seconds, clamped to [10, 600].
+
+    This is the overall wall-clock budget for summarising all matched
+    sessions in a single ``session_search`` invocation. It is independent
+    of the per-LLM-request ``timeout`` (which only bounds one HTTP call).
+    Without this budget, a slow auxiliary model with retries could keep
+    ``session_search`` running for many minutes on the CLI path, where no
+    outer ``_run_async`` deadline applies.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return default
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get("session_search", {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return default
+    raw = task_config.get("time_budget_seconds")
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(10.0, min(value, 600.0))
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -457,9 +489,23 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
+        time_budget = _get_session_search_time_budget()
+        budget_exceeded = False
+
+        # Summarize all sessions in parallel under an overall time budget.
+        # Without this budget the CLI path (model_tools._run_async →
+        # tool_loop.run_until_complete) has no outer deadline, so a slow
+        # auxiliary model and retries can keep session_search running for
+        # many minutes (#7725).
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions with bounded concurrency."""
+            """Summarize all sessions with bounded concurrency and a wall-clock budget.
+
+            On budget exhaustion, in-flight summary tasks are cancelled and
+            represented as ``asyncio.TimeoutError`` in the result list, so
+            the existing fallback-preview path still emits a usable entry
+            for each session.
+            """
+            nonlocal budget_exceeded
             max_concurrency = min(_get_session_search_max_concurrency(), max(1, len(tasks)))
             semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -467,11 +513,40 @@ def session_search(
                 async with semaphore:
                     return await _summarize_session(text, query, meta)
 
-            coros = [
-                _bounded_summary(text, meta)
+            futures = [
+                asyncio.ensure_future(_bounded_summary(text, meta))
                 for _, _, text, meta in tasks
             ]
-            return await asyncio.gather(*coros, return_exceptions=True)
+            if not futures:
+                return []
+
+            try:
+                _done, pending = await asyncio.wait(futures, timeout=time_budget)
+            except asyncio.CancelledError:
+                for f in futures:
+                    f.cancel()
+                raise
+
+            if pending:
+                budget_exceeded = True
+                for f in pending:
+                    f.cancel()
+                # Drain cancellations so the loop has no stranded tasks.
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            results: List[Union[str, Exception, None]] = []
+            for f in futures:
+                if f.cancelled():
+                    results.append(asyncio.TimeoutError(
+                        f"Session summarization exceeded {time_budget:.0f}s budget"
+                    ))
+                    continue
+                exc = f.exception()
+                if exc is not None:
+                    results.append(exc)
+                else:
+                    results.append(f.result())
+            return results
 
         try:
             # Use _run_async() which properly manages event loops across
@@ -484,13 +559,19 @@ def session_search(
             results = _run_async(_summarize_all())
         except concurrent.futures.TimeoutError:
             logging.warning(
-                "Session summarization timed out after 60 seconds",
+                "Session summarization exceeded the outer _run_async deadline",
                 exc_info=True,
             )
             return json.dumps({
                 "success": False,
                 "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
             }, ensure_ascii=False)
+
+        if budget_exceeded:
+            logging.warning(
+                "session_search exceeded time budget of %.0fs; returning partial results",
+                time_budget,
+            )
 
         summaries = []
         for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
@@ -525,13 +606,22 @@ def session_search(
 
             summaries.append(entry)
 
-        return json.dumps({
+        payload: Dict[str, Any] = {
             "success": True,
             "query": query,
             "results": summaries,
             "count": len(summaries),
             "sessions_searched": len(seen_sessions),
-        }, ensure_ascii=False)
+        }
+        if budget_exceeded:
+            payload["time_budget_exceeded"] = True
+            payload["message"] = (
+                f"Time budget of {time_budget:.0f}s reached before all sessions "
+                "could be summarized; some entries fall back to raw previews. "
+                "Try a more specific query, reduce 'limit', or raise "
+                "auxiliary.session_search.time_budget_seconds in your config."
+            )
+        return json.dumps(payload, ensure_ascii=False)
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)

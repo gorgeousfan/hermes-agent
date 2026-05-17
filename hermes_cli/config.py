@@ -879,6 +879,7 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
             "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
+            "time_budget_seconds": 90,  # Overall wall-clock budget for summarising all matched sessions; partial results returned on timeout
         },
         "skills_hub": {
             "provider": "auto",

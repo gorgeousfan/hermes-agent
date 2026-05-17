@@ -10,8 +10,10 @@ from tools.session_search_tool import (
     _format_conversation,
     _truncate_around_matches,
     _get_session_search_max_concurrency,
+    _get_session_search_time_budget,
     _list_recent_sessions,
     _HIDDEN_SESSION_SOURCES,
+    DEFAULT_SESSION_SEARCH_TIME_BUDGET,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
 )
@@ -239,6 +241,141 @@ class TestSessionSearchConcurrency:
         assert result["success"] is True
         assert result["count"] == 3
         assert max_seen["value"] == 1
+
+
+class TestSessionSearchTimeBudget:
+    def test_default_budget(self):
+        assert _get_session_search_time_budget() == DEFAULT_SESSION_SEARCH_TIME_BUDGET
+
+    def test_reads_configured_value(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"time_budget_seconds": 45}}},
+        )
+        assert _get_session_search_time_budget() == 45.0
+
+    def test_clamps_too_low(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"time_budget_seconds": 1}}},
+        )
+        assert _get_session_search_time_budget() == 10.0
+
+    def test_clamps_too_high(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"time_budget_seconds": 99999}}},
+        )
+        assert _get_session_search_time_budget() == 600.0
+
+    def test_invalid_value_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"session_search": {"time_budget_seconds": "soon"}}},
+        )
+        assert _get_session_search_time_budget() == DEFAULT_SESSION_SEARCH_TIME_BUDGET
+
+    def test_session_search_aborts_slow_summaries_and_returns_partial_results(
+        self, monkeypatch
+    ):
+        """Slow session summarisations must be cancelled when the time budget
+        elapses, instead of blocking session_search indefinitely (#7725)."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "auxiliary": {
+                    "session_search": {
+                        "max_concurrency": 5,
+                        "time_budget_seconds": 10,  # clamps to 10s — but tiny patched budget below
+                    }
+                }
+            },
+        )
+        # Override budget to a tiny value for fast test execution. We patch
+        # the helper directly to dodge the [10, 600] clamp.
+        monkeypatch.setattr(
+            "tools.session_search_tool._get_session_search_time_budget",
+            lambda: 0.05,
+        )
+
+        async def fake_summarize(_text, _query, meta):
+            sid = meta.get("id", "?")
+            if sid == "fast":
+                return f"summary for {sid}"
+            # "slow" session never completes within the budget
+            await asyncio.sleep(5)
+            return f"summary for {sid}"  # pragma: no cover — should be cancelled
+
+        monkeypatch.setattr("tools.session_search_tool._summarize_session", fake_summarize)
+        monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "fast", "source": "cli", "session_started": 1709500000, "model": "m"},
+            {"session_id": "slow", "source": "cli", "session_started": 1709500001, "model": "m"},
+        ]
+
+        def _get_session(sid):
+            return {
+                "id": sid,
+                "parent_session_id": None,
+                "source": "cli",
+                "started_at": 1709500000,
+            }
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = lambda sid: [
+            {"role": "user", "content": f"message from {sid}"},
+            {"role": "assistant", "content": "response"},
+        ]
+
+        start = time.monotonic()
+        result = json.loads(session_search(query="message", db=mock_db, limit=3))
+        elapsed = time.monotonic() - start
+
+        # Must return well before the 5s sleep — proves cancellation worked.
+        assert elapsed < 2.0, f"session_search hung for {elapsed:.2f}s instead of cancelling"
+        assert result["success"] is True
+        assert result.get("time_budget_exceeded") is True
+        assert result["count"] == 2
+
+        by_id = {entry["session_id"]: entry for entry in result["results"]}
+        assert by_id["fast"]["summary"] == "summary for fast"
+        # Slow session was cancelled — falls back to raw preview.
+        assert "[Raw preview" in by_id["slow"]["summary"]
+
+    def test_no_budget_message_when_all_summaries_finish_in_time(self, monkeypatch):
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        monkeypatch.setattr(
+            "tools.session_search_tool._get_session_search_time_budget",
+            lambda: 5.0,
+        )
+
+        async def fake_summarize(_text, _query, _meta):
+            return "summary"
+
+        monkeypatch.setattr("tools.session_search_tool._summarize_session", fake_summarize)
+        monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {"session_id": "s1", "source": "cli", "session_started": 1709500000, "model": "m"},
+        ]
+        mock_db.get_session.side_effect = lambda sid: {
+            "id": sid, "parent_session_id": None, "source": "cli", "started_at": 1709500000,
+        }
+        mock_db.get_messages_as_conversation.side_effect = lambda sid: [
+            {"role": "user", "content": "hello"},
+        ]
+
+        result = json.loads(session_search(query="hello", db=mock_db, limit=3))
+        assert result["success"] is True
+        assert "time_budget_exceeded" not in result
 
 
 class TestRecentSessionListing:
