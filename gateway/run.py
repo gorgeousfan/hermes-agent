@@ -43,6 +43,91 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
+
+def _collect_current_turn_media_tags(
+    final_response: str,
+    result_messages: List[Dict[str, Any]],
+    history_media_paths: set,
+) -> tuple[List[str], bool]:
+    """Return MEDIA tags found in current tool results but not already delivered.
+
+    TTS tools already return MEDIA tags. Image generation providers generally
+    return JSON with an ``image`` field instead, so this normalizes both shapes
+    before gateway delivery.
+    """
+    media_tags: List[str] = []
+    has_voice_directive = False
+    existing_response_media_paths = set()
+    if "MEDIA:" in final_response:
+        for match in re.finditer(r'MEDIA:(\S+)', final_response):
+            path = match.group(1).strip().rstrip('",}')
+            if path:
+                existing_response_media_paths.add(path)
+
+    def add_media_path(path: str) -> None:
+        path = str(path or "").strip().strip("`\"'")
+        path = path.rstrip('",}')
+        if not path:
+            return
+        if path in history_media_paths or path in existing_response_media_paths:
+            return
+        media_tags.append(f"MEDIA:{path}")
+
+    for msg in result_messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        content = msg.get("content", "")
+        for path in _extract_media_paths_from_tool_content(content):
+            add_media_path(path)
+        if isinstance(content, str) and "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+
+    seen = set()
+    unique_tags = []
+    for tag in media_tags:
+        if tag not in seen:
+            seen.add(tag)
+            unique_tags.append(tag)
+    return unique_tags, has_voice_directive
+
+
+def _extract_media_paths_from_tool_content(content: Any) -> List[str]:
+    """Extract local/media paths from tool result content.
+
+    Covers both tools that return literal ``MEDIA:/path`` tags and tools that
+    return JSON payloads such as ``{"success": true, "image": "/path.png"}``.
+    """
+    paths: List[str] = []
+    if isinstance(content, str) and "MEDIA:" in content:
+        for match in re.finditer(r'MEDIA:(\S+)', content):
+            path = match.group(1).strip().rstrip('",}')
+            if path:
+                paths.append(path)
+
+    try:
+        tool_data = json.loads(content) if isinstance(content, str) else content
+    except Exception:
+        tool_data = None
+    if isinstance(tool_data, dict) and tool_data.get("success"):
+        image_value = tool_data.get("image")
+        if isinstance(image_value, str):
+            paths.append(image_value)
+        elif isinstance(image_value, dict):
+            image_path = image_value.get("path") or image_value.get("url")
+            if isinstance(image_path, str):
+                paths.append(image_path)
+        images_value = tool_data.get("images")
+        if isinstance(images_value, list):
+            for image_item in images_value:
+                if isinstance(image_item, str):
+                    paths.append(image_item)
+                elif isinstance(image_item, dict):
+                    image_path = image_item.get("path") or image_item.get("url")
+                    if isinstance(image_path, str):
+                        paths.append(image_path)
+    return paths
+
+
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
 # patches (tests/gateway/test_usage_command.py) target
@@ -772,6 +857,8 @@ def _build_media_placeholder(event) -> str:
         mtype = media_types[i] if i < len(media_types) else ""
         if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
             parts.append(f"[User sent an image: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
         else:
@@ -6915,12 +7002,15 @@ class GatewayRunner:
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
                 if mtype.startswith("audio/") or event.message_type in {MessageType.VOICE, MessageType.AUDIO}:
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -6980,6 +7070,17 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+
+            if video_paths:
+                notes = []
+                for path in video_paths:
+                    basename = os.path.basename(path)
+                    notes.append(
+                        f"[The user sent a video: '{basename}'. "
+                        f"The file is saved at: {path}. "
+                        f"Use this local path directly for video-processing tools or terminal commands.]"
+                    )
+                message_text = "\n".join(notes + ([message_text] if message_text else []))
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -14534,6 +14635,74 @@ class GatewayRunner:
 
     # ------------------------------------------------------------------
 
+    def _should_skip_user_profile_for_source(
+        self,
+        *,
+        source: SessionSource,
+        session_key: Optional[str] = None,
+        user_config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Return True when the global USER profile should be hidden.
+
+        Built-in USER.md describes the agent owner.  In gateway chats with
+        other people, injecting it as "USER PROFILE (who the user is)" is a
+        direct identity hazard: the model may address a contact as the owner
+        even when Current Session Context says otherwise.  Keep MEMORY.md
+        available for contact-specific facts, but only include USER.md when
+        the inbound source can be proven to be the platform home/owner user.
+        """
+        if not source or source.platform == Platform.LOCAL:
+            return False
+
+        platform = source.platform
+        platform_name = platform.value if hasattr(platform, "value") else str(platform)
+        home_ids: set[str] = set()
+
+        try:
+            home = self.config.get_home_channel(platform) if getattr(self, "config", None) else None
+            if home and home.chat_id:
+                home_ids.add(str(home.chat_id))
+        except Exception:
+            pass
+
+        try:
+            cfg = user_config or {}
+            pdata = (cfg.get("platforms") or {}).get(platform_name) or {}
+            hdata = pdata.get("home_channel") or {}
+            if isinstance(hdata, dict) and hdata.get("chat_id"):
+                home_ids.add(str(hdata.get("chat_id")))
+        except Exception:
+            pass
+
+        def _digits(value: str) -> str:
+            return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+        home_digits = {_digits(h) for h in home_ids if _digits(h)}
+        source_values = {
+            str(source.chat_id or ""),
+            str(source.user_id or ""),
+            str(getattr(source, "chat_id_alt", "") or ""),
+            str(getattr(source, "user_id_alt", "") or ""),
+        }
+
+        # Exact IDs cover Telegram/Discord/etc. and WhatsApp's non-LID DMs.
+        if home_ids.intersection(source_values):
+            return False
+
+        # WhatsApp session keys canonicalize LID senders to phone digits:
+        #   agent:main:whatsapp:dm:521...
+        #   agent:main:whatsapp:group:<chat_jid>:521...
+        # Use that canonical tail to identify the owner even when the inbound
+        # event uses an @lid chat/user id.
+        key_parts = [p for p in str(session_key or "").split(":") if p]
+        key_tail_digits = _digits(key_parts[-1]) if key_parts else ""
+        source_digits = {_digits(v) for v in source_values if _digits(v)}
+        if home_digits and (home_digits.intersection(source_digits) or key_tail_digits in home_digits):
+            return False
+
+        # No proof that this speaker is the owner.  Hide USER.md.
+        return True
+
     async def _run_agent(
         self,
         message: str,
@@ -15254,12 +15423,20 @@ class GatewayRunner:
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            skip_user_profile = self._should_skip_user_profile_for_source(
+                source=source,
+                session_key=session_key,
+                user_config=user_config,
+            )
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys={
+                    **self._extract_cache_busting_config(user_config),
+                    "skip_user_profile": skip_user_profile,
+                },
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -15300,6 +15477,7 @@ class GatewayRunner:
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    skip_user_profile=skip_user_profile,
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,
@@ -15509,18 +15687,18 @@ class GatewayRunner:
                         entry = _build_replay_entry(role, content, msg)
                         agent_history.append(entry)
             
-            # Collect MEDIA paths already in history so we can exclude them
-            # from the current turn's extraction. This is compression-safe:
-            # even if the message list shrinks, we know which paths are old.
+            # Collect media paths already in history so we can exclude them
+            # from the current turn's extraction. This covers both literal
+            # MEDIA tags and JSON tool payloads from image generation.
+            # Compression-safe: even if the message list shrinks, we know
+            # which paths are old.
             _history_media_paths: set = set()
             for _hm in agent_history:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+                    for _p in _extract_media_paths_from_tool_content(_hc):
+                        if _p:
+                            _history_media_paths.add(_p)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -15799,30 +15977,15 @@ class GatewayRunner:
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
+            media_tags, has_voice_directive = _collect_current_turn_media_tags(
+                final_response,
+                result.get("messages", []),
+                _history_media_paths,
+            )
+            if media_tags:
+                if has_voice_directive and "[[audio_as_voice]]" not in final_response:
+                    media_tags.insert(0, "[[audio_as_voice]]")
+                final_response = final_response + "\n" + "\n".join(media_tags)
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).

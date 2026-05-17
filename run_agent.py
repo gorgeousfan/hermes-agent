@@ -1228,6 +1228,7 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        skip_user_profile: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -2040,7 +2041,9 @@ class AIAgent:
             try:
                 mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
-                self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                self._user_profile_enabled = (
+                    False if skip_user_profile else mem_config.get("user_profile_enabled", False)
+                )
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
