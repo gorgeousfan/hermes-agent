@@ -205,7 +205,7 @@ class TestSendMessageTool:
 
         with patch("gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("gateway.channel_directory.resolve_channel_name", return_value="-1001:17585"), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value=("-1001", "17585")), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
              patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("gateway.mirror.mirror_to_session", return_value=True):
@@ -229,15 +229,15 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
-
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
+
         cache_file = tmp_path / "channel_directory.json"
         cache_file.write_text(json.dumps({
             "updated_at": "2026-01-01T00:00:00",
             "platforms": {
                 "telegram": [
-                    {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"}
+                    {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group", "thread_id": "17585"}
                 ]
             },
         }))
