@@ -50,6 +50,15 @@ def _get_anthropic_sdk():
             _anthropic_sdk = None
     return _anthropic_sdk
 
+
+def _get_hermes_version() -> str:
+    """Return the Hermes Agent version string for User-Agent headers."""
+    try:
+        from hermes_cli import __version__
+        return __version__
+    except Exception:
+        return "0.0.0"
+
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
@@ -523,6 +532,7 @@ def build_anthropic_client(
     api_key: str,
     base_url: str = None,
     timeout: float = None,
+    user_agent: str = None,
     *,
     drop_context_1m_beta: bool = False,
 ):
@@ -533,6 +543,11 @@ def build_anthropic_client(
     per-model ``request_timeout_seconds`` config so Anthropic-native and
     Anthropic-compatible providers respect the same knob as OpenAI-wire
     providers.
+
+    If *user_agent* is provided (e.g. from a custom_providers config entry),
+    it overrides the SDK's default "Anthropic/Python X.Y.Z" User-Agent header.
+    This prevents Cloudflare WAF and other bot-detection rules from blocking
+    requests to third-party API proxies.
 
     ``drop_context_1m_beta=True`` strips ``context-1m-2025-08-07`` from the
     client-level ``anthropic-beta`` header. Used by the reactive OAuth retry
@@ -617,6 +632,21 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Override User-Agent for custom providers behind Cloudflare WAF or similar
+    # bot-detection rules.  The SDK's default "Anthropic/Python X.Y.Z" is often
+    # blocked by Cloudflare's bot rules; a generic "hermes-agent/X.Y.Z" UA
+    # bypasses these filters.  Respects caller override (custom_providers
+    # config entry) and falls back to "hermes-agent/X.Y.Z" when user_agent is
+    # not explicitly set but the base_url parameter was provided (i.e. the
+    # caller is using a custom/third-party endpoint).
+    if user_agent or base_url:
+        _ua = user_agent or f"hermes-agent/{_get_hermes_version()}"
+        _dh = kwargs.setdefault("default_headers", {})
+        # Only set User-Agent if this isn't a specialized header path
+        # (OAuth sets claude-code/UA, kimi_coding sets claude-code/UA).
+        if "User-Agent" not in _dh and "user-agent" not in {k.lower() for k in _dh}:
+            _dh["User-Agent"] = _ua
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
