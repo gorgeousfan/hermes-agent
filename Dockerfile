@@ -66,9 +66,20 @@ RUN npm install --prefer-offline --no-audit && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all` installs only the
-# deps reachable through the composite `[all]` extra (handpicked set
-# intended for the production image).  We do NOT use `--all-extras`:
+# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# installs the deps reachable through `[all]` plus the `[messaging]` extra
+# (python-telegram-bot, discord.py, slack-bolt/sdk, …).  `[all]` deliberately
+# excludes messaging because most extras lazy-install at first use via
+# `tools/lazy_deps.py`, but that path requires a hermes-writable `.venv`.
+# When a user runs the container with `docker run --user $(id -u):$(id -g)`
+# the entrypoint enters directly as the host UID and skips the root branch
+# that re-chowns `/opt/hermes/.venv` to match — so lazy installs of telegram
+# / discord / slack fail with EACCES and the gateway adapters silently
+# refuse to start (see #27100).  Baking messaging deps into the image makes
+# the common chat-gateway path work out of the box under `--user`, matching
+# what the Nix build now does (#27056 / NixOS #27047).
+#
+# We do NOT use `--all-extras`:
 # that would pull in `[rl]` (atroposlib + tinker + torch + wandb from
 # git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
 # redundancy), none of which belong in the published container.
@@ -76,7 +87,7 @@ RUN npm install --prefer-offline --no-audit && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all
+RUN uv sync --frozen --no-install-project --extra all --extra messaging
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
