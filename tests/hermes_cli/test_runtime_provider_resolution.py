@@ -27,6 +27,76 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_resolve_runtime_provider_pool_exhausted_raises_pool_error(monkeypatch):
+    from hermes_cli.auth import AuthError
+
+    class _Entry:
+        id = "acct1"
+        label = "primary"
+        last_error_code = 429
+        last_error_reason = "usage_limit_reached"
+        last_error_message = "The usage limit has been reached."
+        last_error_reset_at = 1779038128
+        last_status_at = None
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+        def entries(self):
+            return [_Entry()]
+
+    def _unexpected_singleton():
+        raise AssertionError("exhausted pools must not fall through to singleton Codex auth")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", _unexpected_singleton)
+
+    with pytest.raises(AuthError) as exc_info:
+        rp.resolve_runtime_provider(requested="openai-codex")
+
+    err = exc_info.value
+    assert err.code == "credential_pool_exhausted"
+    assert err.provider == "openai-codex"
+    assert "credential pool" in str(err)
+    assert "primary" in str(err)
+    assert "No Codex credentials stored" not in str(err)
+
+
+def test_resolve_runtime_provider_auto_pool_exhausted_skips_singleton(monkeypatch):
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+        def entries(self):
+            return []
+
+    def _unexpected_singleton():
+        raise AssertionError("auto fallthrough must skip exhausted singleton provider")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", _unexpected_singleton)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-fallback")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["api_key"] == "sk-or-fallback"
+
+
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
     class _Entry:
         access_token = "pool-token"
