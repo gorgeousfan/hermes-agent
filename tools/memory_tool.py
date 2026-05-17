@@ -131,9 +131,27 @@ class MemoryStore:
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        # Remove duplicates — normalized by stripped content, keeping first occurrence.
+        # This prevents the system-prompt banner from visually duplicating a memory line
+        # if the file on disk somehow accumulated identical entries (e.g. due to a race
+        # in concurrent memory writes, or mid-session flush-without-reload).
+        _seen: set[str] = set()
+        _deduped_mem: list[str] = []
+        for e in self.memory_entries:
+            _key = e.strip()
+            if _key and _key not in _seen:
+                _seen.add(_key)
+                _deduped_mem.append(e)
+        self.memory_entries = _deduped_mem
+
+        _seen_user: set[str] = set()
+        _deduped_user: list[str] = []
+        for e in self.user_entries:
+            _key = e.strip()
+            if _key and _key not in _seen_user:
+                _seen_user.add(_key)
+                _deduped_user.append(e)
+        self.user_entries = _deduped_user
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {

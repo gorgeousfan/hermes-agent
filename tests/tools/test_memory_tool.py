@@ -207,6 +207,50 @@ class TestMemoryStorePersistence:
         store.load_from_disk()
         assert len(store.memory_entries) == 2
 
+    def test_dedup_with_whitespace_differences(self, tmp_path, monkeypatch):
+        """Entries that differ only by whitespace are treated as duplicates."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text(
+            "the same content\n§\nthe same content   \n§\n  the same content\n§\nunique entry"
+        )
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.memory_entries) == 2
+        assert store.memory_entries[0] == "the same content"
+
+    def test_dedup_preserves_first_occurrence(self, tmp_path, monkeypatch):
+        """When duplicates exist, the first (oldest) entry is kept."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("original version\n§\noriginal version")
+        # After dedup, the first occurrence ("original version") is kept
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.memory_entries) == 1
+        assert store.memory_entries[0] == "original version"
+
+    def test_dedup_empty_lines_removed(self, tmp_path, monkeypatch):
+        """Blank entries (whitespace-only) are filtered by _read_file before dedup."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("valid entry\n§\n   \n§\n  \n§\nvalid entry again")
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.memory_entries) == 2
+        assert "valid entry" in store.memory_entries
+        assert "valid entry again" in store.memory_entries
+
+    def test_user_entries_also_deduplicated(self, tmp_path, monkeypatch):
+        """USER.md dedup uses the same strip-normalized logic."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        user_file = tmp_path / "USER.md"
+        user_file.write_text("I like pie\n§\nI like pie\n§\nI like cake")
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.user_entries) == 2
+        assert store.user_entries[0] == "I like pie"
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
