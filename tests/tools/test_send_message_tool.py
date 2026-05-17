@@ -143,6 +143,41 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_slack_thread_target_preserves_thread_ts(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref(
+            "slack",
+            "C0AUUMPP7D1:1778566499.343239",
+        )
+
+        assert chat_id == "C0AUUMPP7D1"
+        assert thread_id == "1778566499.343239"
+        assert is_explicit is True
+
+    def test_send_to_platform_passes_slack_thread_id(self):
+        slack_cfg = SimpleNamespace(enabled=True, token="test", extra={})
+
+        async def _run():
+            with patch("tools.send_message_tool._send_slack", new=AsyncMock(return_value={"success": True})) as slack_send:
+                result = await _send_to_platform(
+                    Platform.SLACK,
+                    slack_cfg,
+                    "C0AUUMPP7D1",
+                    "hello",
+                    thread_id="1778566499.343239",
+                    media_files=[],
+                    force_document=False,
+                )
+                slack_send.assert_awaited_once_with(
+                    "test",
+                    "C0AUUMPP7D1",
+                    "hello",
+                    thread_id="1778566499.343239",
+                )
+                return result
+
+        result = asyncio.run(_run())
+        assert result["success"] is True
+
     def test_display_label_target_resolves_via_channel_directory(self, tmp_path):
         config, telegram_cfg = _make_config()
         cache_file = tmp_path / "channel_directory.json"
