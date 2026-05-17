@@ -7847,20 +7847,76 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
-            if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error — cannot reach the remote repository.")
-                print(f"  {stderr.splitlines()[0]}" if stderr else "")
-            elif (
-                "Authentication failed" in stderr or "could not read Username" in stderr
+            # Auto-recover from stale remote-tracking refs. When a remote
+            # branch is force-pushed or a dependabot/PR ref is rewritten
+            # upstream, ``~/.hermes/hermes-agent/.git/refs/remotes/origin/...``
+            # can be left pointing at an object that no longer exists. The
+            # next ``git fetch`` then bails out with e.g.
+            #   fatal: bad object refs/remotes/origin/dependabot/.../setup-python-6.2.0
+            # Before this branch the user had to run ``git update-ref -d``
+            # by hand for each broken ref (one support thread alone needed
+            # 10+ messages of manual ref surgery). ``git remote prune
+            # origin`` purges every dangling remote ref in one call, so we
+            # try it once and retry the fetch — most users see the recovery
+            # transparently and the original error never reaches them.
+            if (
+                "bad object refs/remotes/origin/" in stderr
+                or "bad object refs/remotes/origin\n" in stderr
             ):
                 print(
-                    "✗ Authentication failed — check your git credentials or SSH key."
+                    "  ⚠ Detected stale remote-tracking ref; "
+                    "running 'git remote prune origin' and retrying..."
                 )
-            else:
-                print(f"✗ Failed to fetch updates from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
-            sys.exit(1)
+                prune_result = subprocess.run(
+                    git_cmd + ["remote", "prune", "origin"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if prune_result.returncode == 0:
+                    fetch_result = subprocess.run(
+                        git_cmd + ["fetch", "origin"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if fetch_result.returncode == 0:
+                        print("  ✓ Stale refs cleaned up; fetch succeeded.")
+                    else:
+                        stderr = fetch_result.stderr.strip()
+                else:
+                    # prune itself failed (rare) — fall through to the
+                    # generic error path so the user sees the original
+                    # message with manual-recovery context below.
+                    stderr = (
+                        prune_result.stderr.strip()
+                        or fetch_result.stderr.strip()
+                    )
+            if fetch_result.returncode != 0:
+                if "Could not resolve host" in stderr or "unable to access" in stderr:
+                    print("✗ Network error — cannot reach the remote repository.")
+                    print(f"  {stderr.splitlines()[0]}" if stderr else "")
+                elif (
+                    "Authentication failed" in stderr or "could not read Username" in stderr
+                ):
+                    print(
+                        "✗ Authentication failed — check your git credentials or SSH key."
+                    )
+                elif "bad object refs/remotes/origin/" in stderr:
+                    # prune failed to clear the breakage — give the user
+                    # the manual recovery command instead of a bare error.
+                    print("✗ Failed to fetch updates from origin (stale remote refs).")
+                    if stderr:
+                        print(f"  {stderr.splitlines()[0]}")
+                    print(
+                        "  Try manually: cd ~/.hermes/hermes-agent && "
+                        "git remote prune origin && git fetch origin"
+                    )
+                else:
+                    print(f"✗ Failed to fetch updates from origin.")
+                    if stderr:
+                        print(f"  {stderr.splitlines()[0]}")
+                sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
