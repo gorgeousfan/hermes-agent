@@ -201,18 +201,50 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     Existing installs that already have the old path (e.g. ``image_cache``)
     keep using it — no migration required.
 
+    A bare empty ``<old_name>/`` directory does **not** count as "the
+    legacy install is in use" — install scaffolds, manual ``mkdir`` work,
+    and cleared-then-abandoned locations all create empty stubs that
+    would otherwise silently shadow real data populated at
+    ``<new_subpath>/``. See #27602 for the pairing-store regression where
+    a dormant empty ``pairing/`` orphaned approved-user data in
+    ``platforms/pairing/``.
+
     Args:
         new_subpath: Preferred path relative to HERMES_HOME (e.g. ``"cache/images"``).
         old_name: Legacy path relative to HERMES_HOME (e.g. ``"image_cache"``).
 
     Returns:
-        Absolute ``Path`` — old location if it exists on disk, otherwise the new one.
+        Absolute ``Path`` — legacy location if it exists with content,
+        otherwise the new location.
     """
     home = get_hermes_home()
     old_path = home / old_name
-    if old_path.exists():
+    if _legacy_path_has_content(old_path):
         return old_path
     return home / new_subpath
+
+
+def _legacy_path_has_content(path: Path) -> bool:
+    """Return ``True`` iff ``path`` exists and has content worth honouring.
+
+    A populated *directory* (any entry inside) counts. A non-directory
+    file at ``path`` also counts — the consumer presumably wrote it.
+    An empty directory does **not** count, so a stale empty
+    legacy stub falls through to the new layout. If enumeration fails
+    (permissions, race), assume occupied so we don't accidentally orphan
+    legacy data.
+    """
+    if not path.exists():
+        return False
+    if not path.is_dir():
+        return True
+    try:
+        next(path.iterdir())
+    except StopIteration:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def display_hermes_home() -> str:
