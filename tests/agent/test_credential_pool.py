@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 
+import httpx
 import pytest
 
 
@@ -12,6 +13,164 @@ def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
+
+
+def _read_auth_store(tmp_path) -> dict:
+    return json.loads((tmp_path / "hermes" / "auth.json").read_text())
+
+
+def test_oauth_broker_entry_fetches_access_token_without_refresh_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("BROKER_HEADERS", json.dumps({"Authorization": "Bearer runtime"}))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "broker-1",
+                        "label": "brokered",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "oauth_broker",
+                        "access_token": "",
+                        "broker_url": "https://broker.example/token",
+                        "broker_headers_env": "BROKER_HEADERS",
+                        "broker_subject": "subject-1",
+                    }
+                ]
+            },
+        },
+    )
+    calls = []
+
+    def fake_post(url, *, headers, json, timeout):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "access-from-broker",
+                "base_url": "https://api.example/v1",
+                "refresh_after": time.time() + 3600,
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("agent.credential_pool.httpx.post", fake_post)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == "access-from-broker"
+    assert entry.refresh_token is None
+    assert entry.base_url == "https://api.example/v1"
+    assert calls == [
+        {
+            "url": "https://broker.example/token",
+            "headers": {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": "Bearer runtime",
+            },
+            "json": {
+                "provider": "openrouter",
+                "credential_id": "broker-1",
+                "subject": "subject-1",
+                "force": False,
+            },
+            "timeout": 20.0,
+        }
+    ]
+    persisted = _read_auth_store(tmp_path)["credential_pool"]["openrouter"][0]
+    assert persisted["access_token"] == "access-from-broker"
+    assert "refresh_token" not in persisted
+
+
+def test_oauth_broker_honors_refresh_after_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "broker-1",
+                        "label": "brokered",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "oauth_broker",
+                        "access_token": "cached-token",
+                        "broker_url": "https://broker.example/token",
+                        "refresh_after": time.time() + 3600,
+                    }
+                ]
+            },
+        },
+    )
+
+    def fail_post(*args, **kwargs):
+        raise AssertionError("broker should not be called before refresh_after")
+
+    monkeypatch.setattr("agent.credential_pool.httpx.post", fail_post)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == "cached-token"
+
+
+def test_oauth_broker_force_refreshes_current_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "broker-1",
+                        "label": "brokered codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "oauth_broker",
+                        "access_token": "cached-token",
+                        "broker_url": "https://broker.example/token",
+                        "refresh_after": time.time() + 3600,
+                    }
+                ]
+            },
+        },
+    )
+    forces = []
+
+    def fake_post(url, *, headers, json, timeout):
+        forces.append(json["force"])
+        return httpx.Response(
+            200,
+            json={"access_token": "forced-token", "refresh_after": time.time() + 3600},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("agent.credential_pool.httpx.post", fake_post)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.select().access_token == "cached-token"
+
+    refreshed = pool.try_refresh_current()
+
+    assert refreshed is not None
+    assert refreshed.access_token == "forced-token"
+    assert forces == [True]
 
 
 def test_fill_first_selection_skips_recently_exhausted_entry(tmp_path, monkeypatch):

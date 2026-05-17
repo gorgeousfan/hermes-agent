@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import random
 import threading
@@ -12,6 +13,8 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+import httpx
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import get_env_value, load_env
@@ -56,6 +59,7 @@ AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
+SOURCE_OAUTH_BROKER = "oauth_broker"
 
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
@@ -86,7 +90,8 @@ CUSTOM_POOL_PREFIX = "custom:"
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
-    "agent_key_obtained_at", "tls",
+    "agent_key_obtained_at", "tls", "broker_url", "broker_headers_env",
+    "broker_subject", "refresh_after",
 })
 
 
@@ -231,6 +236,31 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _future_iso_timestamp(seconds_from_now: float) -> str:
+    return datetime.utcfromtimestamp(time.time() + seconds_from_now).isoformat() + "Z"
+
+
+def _parse_broker_headers(entry: PooledCredential) -> Dict[str, str]:
+    headers_env = getattr(entry, "broker_headers_env", None)
+    if not headers_env:
+        return {}
+    raw_headers = os.environ.get(str(headers_env), "")
+    if not raw_headers:
+        return {}
+    try:
+        parsed = json.loads(raw_headers)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{headers_env} must contain a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{headers_env} must contain a JSON object")
+    headers: Dict[str, str] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError(f"{headers_env} header names and values must be strings")
+        headers[key] = value
+    return headers
 
 
 def _extract_retry_delay_seconds(message: str) -> Optional[float]:
@@ -744,7 +774,87 @@ class CredentialPool:
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
+    def _refresh_oauth_broker_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+        broker_url = str(getattr(entry, "broker_url", "") or "").strip()
+        if not broker_url:
+            if force:
+                self._mark_exhausted(entry, None, {"reason": "missing_broker_url"})
+            return None
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            **_parse_broker_headers(entry),
+        }
+        payload = {
+            "provider": self.provider,
+            "credential_id": entry.id,
+            "subject": getattr(entry, "broker_subject", None) or entry.id,
+            "force": bool(force),
+        }
+        timeout_seconds = float(os.environ.get("HERMES_OAUTH_BROKER_TIMEOUT_SECONDS", "20"))
+        response = httpx.post(
+            broker_url,
+            headers=headers,
+            json=payload,
+            timeout=max(1.0, timeout_seconds),
+        )
+        response.raise_for_status()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("OAuth broker response must be a JSON object")
+
+        access_token = body.get("access_token") or body.get("api_key")
+        if not isinstance(access_token, str) or not access_token:
+            raise ValueError("OAuth broker response missing access_token")
+
+        field_updates: Dict[str, Any] = {
+            "access_token": access_token,
+            "refresh_token": None,
+        }
+        for key in ("base_url", "expires_at", "expires_at_ms", "inference_base_url", "agent_key", "agent_key_expires_at"):
+            value = body.get(key)
+            if value is not None:
+                field_updates[key] = value
+
+        extra_updates = dict(entry.extra)
+        for key in ("broker_url", "broker_headers_env", "broker_subject"):
+            value = getattr(entry, key, None)
+            if value is not None:
+                extra_updates[key] = value
+        refresh_after = body.get("refresh_after")
+        if refresh_after is not None:
+            extra_updates["refresh_after"] = refresh_after
+        elif body.get("expires_in") is not None:
+            try:
+                extra_updates["refresh_after"] = _future_iso_timestamp(float(body["expires_in"]) * 0.8)
+            except (TypeError, ValueError):
+                pass
+
+        updated = replace(
+            entry,
+            extra=extra_updates,
+            last_status=STATUS_OK,
+            last_status_at=None,
+            last_error_code=None,
+            last_error_reason=None,
+            last_error_message=None,
+            last_error_reset_at=None,
+            **field_updates,
+        )
+        self._replace_entry(entry, updated)
+        self._persist()
+        return updated
+
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
+        if entry.auth_type == AUTH_TYPE_OAUTH and entry.source == SOURCE_OAUTH_BROKER:
+            try:
+                return self._refresh_oauth_broker_entry(entry, force=force)
+            except Exception as exc:
+                logger.debug("OAuth broker refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+                self._mark_exhausted(entry, None)
+                return None
+
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -951,6 +1061,18 @@ class CredentialPool:
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
+            return False
+        if entry.source == SOURCE_OAUTH_BROKER:
+            if not entry.access_token:
+                return True
+            refresh_after = _parse_absolute_timestamp(getattr(entry, "refresh_after", None))
+            if refresh_after is not None:
+                return refresh_after <= time.time()
+            expires_at = _parse_absolute_timestamp(entry.expires_at)
+            if expires_at is not None:
+                return expires_at <= time.time() + 120
+            if entry.expires_at_ms is not None:
+                return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
             return False
         if self.provider == "anthropic":
             if entry.expires_at_ms is None:
