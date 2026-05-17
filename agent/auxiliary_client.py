@@ -1478,7 +1478,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
-            _mark_provider_unhealthy("openrouter", ttl=60)
+            _mark_provider_unhealthy("openrouter", ttl=60, reason="missing credentials")
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
@@ -1487,7 +1487,7 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
+        _mark_provider_unhealthy("openrouter", ttl=60, reason="missing credentials")
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
@@ -1519,7 +1519,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                 "Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)",
                 _remaining,
             )
-            _mark_provider_unhealthy("nous", ttl=_remaining)
+            _mark_provider_unhealthy("nous", ttl=_remaining, reason="rate limit")
             return None, None
     except Exception:
         pass
@@ -1531,7 +1531,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             "Auxiliary Nous client unavailable: no Nous authentication found "
             "(run: hermes auth)."
         )
-        _mark_provider_unhealthy("nous", ttl=60)
+        _mark_provider_unhealthy("nous", ttl=60, reason="missing credentials")
         return None, None
     if runtime is None and nous:
         # Runtime credential mint failed but stored Nous auth is still present.
@@ -2025,10 +2025,17 @@ def _normalize_chain_label(provider: str) -> str:
     return _AUX_UNHEALTHY_LABEL_ALIASES.get(p, p)
 
 
-def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None:
+def _mark_provider_unhealthy(
+    provider: str,
+    ttl: Optional[float] = None,
+    *,
+    reason: str = "payment / credit error",
+) -> None:
     """Mark ``provider`` as recently-402'd, hidden from chain iteration
     until the TTL expires. Called from the payment-fallback branches in
-    ``call_llm`` and ``acall_llm`` after a confirmed payment error.
+    ``call_llm`` and ``acall_llm`` after a confirmed payment error. Some
+    resolver paths also use the same short-lived skip cache for missing
+    credentials or rate-limit guards; ``reason`` keeps the operator log honest.
     """
     label = _normalize_chain_label(provider)
     if not label:
@@ -2036,10 +2043,11 @@ def _mark_provider_unhealthy(provider: str, ttl: Optional[float] = None) -> None
     expires_at = time.time() + (ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS)
     _aux_unhealthy_until[label] = expires_at
     logger.warning(
-        "Auxiliary: marking %s unhealthy for %ds (payment / credit error). "
+        "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
         label,
         int(ttl if ttl is not None else _AUX_UNHEALTHY_TTL_SECONDS),
+        reason,
         time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
