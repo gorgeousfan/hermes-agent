@@ -2088,17 +2088,27 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
     """
-    current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    current_hermes = Path(env_home) if env_home else Path.home() / ".hermes"
+    current_default = Path.home() / ".hermes"
     target_default = Path(target_home_dir) / ".hermes"
 
+    try:
+        current_hermes_cmp = current_hermes.resolve(strict=False)
+    except OSError:
+        current_hermes_cmp = current_hermes.absolute()
+    try:
+        current_default_cmp = current_default.resolve(strict=False)
+    except OSError:
+        current_default_cmp = current_default.absolute()
+
     # Default ~/.hermes → remap to target user's default
-    if current_hermes == current_default:
+    if current_hermes_cmp == current_default_cmp:
         return str(target_default)
 
     # Profile or subdir of ~/.hermes → preserve the relative structure
     try:
-        relative = current_hermes.relative_to(current_default)
+        relative = current_hermes_cmp.relative_to(current_default_cmp)
         return str(target_default / relative)
     except ValueError:
         # Completely custom path (not under ~/.hermes) — keep as-is
@@ -2112,22 +2122,28 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
 
     candidates = []
 
+    def is_accessible_dir(path: Path) -> bool:
+        try:
+            return path.is_dir()
+        except OSError:
+            return False
+
     venv_bin = project_root / "venv" / "bin"
-    if venv_bin.is_dir():
+    if is_accessible_dir(venv_bin):
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))
 
     node_bin = project_root / "node_modules" / ".bin"
-    if node_bin.is_dir():
+    if is_accessible_dir(node_bin):
         candidates.append(str(node_bin))
 
     hermes_home = get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
-    if hermes_node.is_dir():
+    if is_accessible_dir(hermes_node):
         candidates.append(str(hermes_node))
     hermes_nm = hermes_home / "node_modules" / ".bin"
-    if hermes_nm.is_dir():
+    if is_accessible_dir(hermes_nm):
         candidates.append(str(hermes_nm))
 
     return candidates

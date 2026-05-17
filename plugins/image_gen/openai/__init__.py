@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import ExitStack
+from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -35,6 +37,7 @@ from agent.image_gen_provider import (
     save_b64_image,
     success_response,
 )
+from agent.image_reference import ImageReference, ImageReferenceError, validate_image_reference
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,61 @@ _SIZES = {
     "square": "1024x1024",
     "portrait": "1024x1536",
 }
+
+
+def _normalize_edit_sources(
+    images: List[str] | None,
+    image: str | None,
+) -> List[str]:
+    refs: List[str] = []
+    if image:
+        refs.append(image)
+    if images:
+        refs.extend(img for img in images if img)
+    return refs
+
+
+def _resolve_edit_model(
+    model: str | None,
+    quality_tier: str | None,
+) -> Tuple[str, Dict[str, Any]]:
+    if model and model in _MODELS:
+        tier_id = model
+        meta = dict(_MODELS[model])
+    else:
+        tier_id, resolved_meta = _resolve_model()
+        meta = dict(resolved_meta)
+
+    if quality_tier in {"low", "medium", "high"}:
+        meta["quality"] = quality_tier
+        quality_to_tier = {
+            candidate_meta["quality"]: candidate
+            for candidate, candidate_meta in _MODELS.items()
+        }
+        tier_id = quality_to_tier[quality_tier]
+
+    return tier_id, meta
+
+
+def _image_reference_to_file(ref: ImageReference):
+    if ref.kind == "file" and ref.path is not None:
+        return open(ref.path, "rb")
+    if ref.kind == "data":
+        import base64
+
+        _, encoded = ref.value.split(",", 1)
+        suffix = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }.get(ref.mime_type or "", "img")
+        bio = BytesIO(base64.b64decode(encoded))
+        bio.name = f"image-reference.{suffix}"
+        return bio
+    raise ImageReferenceError(
+        "OpenAI image edits currently require local files or data URLs; HTTP(S) image URLs are not supported"
+    )
 
 
 def _load_openai_config() -> Dict[str, Any]:
@@ -156,6 +214,9 @@ class OpenAIImageGenProvider(ImageGenProvider):
     def default_model(self) -> Optional[str]:
         return DEFAULT_MODEL
 
+    def supports_edit(self) -> bool:
+        return True
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "OpenAI",
@@ -169,6 +230,171 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 },
             ],
         }
+
+    def edit(
+        self,
+        prompt: str,
+        images: List[str] | None = None,
+        *,
+        image: str | None = None,
+        mask: str | None = None,
+        aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        size: str | None = None,
+        model: str | None = None,
+        quality_tier: str | None = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        prompt = (prompt or "").strip()
+        aspect = resolve_aspect_ratio(aspect_ratio)
+
+        if not prompt:
+            return error_response(
+                error="Prompt is required and must be a non-empty string",
+                error_type="invalid_argument",
+                provider="openai",
+                aspect_ratio=aspect,
+            )
+
+        source_refs = _normalize_edit_sources(images, image)
+        if not source_refs:
+            return error_response(
+                error="At least one source image is required for OpenAI image edits",
+                error_type="invalid_argument",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        if not os.environ.get("OPENAI_API_KEY"):
+            return error_response(
+                error=(
+                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
+                    "Generation → OpenAI to configure, or `hermes setup` "
+                    "to add the key."
+                ),
+                error_type="auth_required",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        try:
+            import openai
+        except ImportError:
+            return error_response(
+                error="openai Python package not installed (pip install openai)",
+                error_type="missing_dependency",
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        try:
+            validated_images = [validate_image_reference(ref) for ref in source_refs]
+            validated_mask = validate_image_reference(mask) if mask else None
+        except ImageReferenceError as exc:
+            return error_response(
+                error=str(exc),
+                error_type=exc.error_type,
+                provider="openai",
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        tier_id, meta = _resolve_edit_model(model, quality_tier)
+        request_size = size or _SIZES.get(aspect, _SIZES["square"])
+
+        try:
+            with ExitStack() as stack:
+                image_files = [stack.enter_context(_image_reference_to_file(ref)) for ref in validated_images]
+                mask_file = stack.enter_context(_image_reference_to_file(validated_mask)) if validated_mask else None
+
+                payload: Dict[str, Any] = {
+                    "model": API_MODEL,
+                    "prompt": prompt,
+                    "image": image_files[0] if len(image_files) == 1 else image_files,
+                    "size": request_size,
+                    "n": 1,
+                    "quality": meta["quality"],
+                }
+                if mask_file is not None:
+                    payload["mask"] = mask_file
+
+                client = openai.OpenAI()
+                response = client.images.edit(**payload)
+        except ImageReferenceError as exc:
+            return error_response(
+                error=str(exc),
+                error_type=exc.error_type,
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+        except Exception as exc:
+            logger.debug("OpenAI image edit failed", exc_info=True)
+            return error_response(
+                error=f"OpenAI image edit failed: {exc}",
+                error_type="api_error",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        data = getattr(response, "data", None) or []
+        if not data:
+            return error_response(
+                error="OpenAI returned no image data",
+                error_type="empty_response",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        first = data[0]
+        b64 = getattr(first, "b64_json", None)
+        url = getattr(first, "url", None)
+        revised_prompt = getattr(first, "revised_prompt", None)
+
+        if b64:
+            try:
+                saved_path = save_b64_image(b64, prefix=f"openai_edit_{tier_id}")
+            except Exception as exc:
+                return error_response(
+                    error=f"Could not save edited image to cache: {exc}",
+                    error_type="io_error",
+                    provider="openai",
+                    model=tier_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            image_ref = str(saved_path)
+        elif url:
+            image_ref = url
+        else:
+            return error_response(
+                error="OpenAI response contained neither b64_json nor URL",
+                error_type="empty_response",
+                provider="openai",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
+        extra: Dict[str, Any] = {"size": request_size, "quality": meta["quality"]}
+        if revised_prompt:
+            extra["revised_prompt"] = revised_prompt
+
+        return success_response(
+            image=image_ref,
+            model=tier_id,
+            prompt=prompt,
+            aspect_ratio=aspect,
+            provider="openai",
+            extra=extra,
+        )
 
     def generate(
         self,

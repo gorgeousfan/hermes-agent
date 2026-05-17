@@ -67,6 +67,9 @@ class TestMetadata:
             assert entry["speed"]
             assert entry["strengths"]
 
+    def test_supports_edit(self, provider):
+        assert provider.supports_edit() is True
+
 
 # ── Availability ────────────────────────────────────────────────────────────
 
@@ -241,3 +244,171 @@ class TestGenerate:
 
         assert result["success"] is True
         assert result["image"] == "https://example.com/img.png"
+
+
+# ── Edit ────────────────────────────────────────────────────────────────────
+
+
+class TestEdit:
+    def _cached_png(self, root: Path, name: str = "source.png") -> Path:
+        path = root / "cache" / "images" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bytes.fromhex(_PNG_HEX))
+        return path
+
+    def test_empty_prompt_rejected(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+
+        result = provider.edit("", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+
+    def test_requires_at_least_one_image(self, provider):
+        result = provider.edit("make it brighter")
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "source image" in result["error"]
+
+    def test_missing_api_key(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        source = self._cached_png(tmp_path)
+
+        result = openai_plugin.OpenAIImageGenProvider().edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "auth_required"
+
+    def test_missing_openai_dependency(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+
+        with patch.dict("sys.modules", {"openai": None}):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "missing_dependency"
+
+    def test_api_error_returns_error_response(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.side_effect = RuntimeError("boom")
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "boom" in result["error"]
+
+    def test_empty_response_data(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = SimpleNamespace(data=[])
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+
+    def test_empty_response_item_without_image_payload(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=None, url=None)
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source))
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+
+    def test_local_image_edit_calls_openai_and_saves_b64(self, provider, tmp_path):
+        source = self._cached_png(tmp_path)
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png(), revised_prompt="Edited")
+
+        with _patched_openai(fake_client):
+            result = provider.edit("add a hat", image=str(source), aspect_ratio="portrait")
+
+        assert result["success"] is True
+        assert result["model"] == "gpt-image-2-medium"
+        assert result["provider"] == "openai"
+        assert result["size"] == "1024x1536"
+        assert result["quality"] == "medium"
+        assert result["revised_prompt"] == "Edited"
+        assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
+
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-image-2"
+        assert call_kwargs["prompt"] == "add a hat"
+        assert call_kwargs["size"] == "1024x1536"
+        assert call_kwargs["quality"] == "medium"
+        assert call_kwargs["image"].name == str(source.resolve())
+        assert "response_format" not in call_kwargs
+
+    def test_data_url_image_edit(self, provider):
+        import base64
+
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(url="https://example.test/edited.png")
+        data_url = f"data:image/png;base64,{base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()}"
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=data_url, size="1024x1024", quality_tier="high")
+
+        assert result["success"] is True
+        assert result["image"] == "https://example.test/edited.png"
+        assert result["model"] == "gpt-image-2-high"
+        assert result["quality"] == "high"
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert call_kwargs["size"] == "1024x1024"
+        assert call_kwargs["quality"] == "high"
+        assert call_kwargs["image"].name == "image-reference.png"
+
+    def test_multiple_images_use_sdk_list_shape(self, provider, tmp_path):
+        source1 = self._cached_png(tmp_path, "source1.png")
+        source2 = self._cached_png(tmp_path, "source2.png")
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(url="https://example.test/edited.png")
+
+        with _patched_openai(fake_client):
+            result = provider.edit("combine", images=[str(source1), str(source2)])
+
+        assert result["success"] is True
+        call_kwargs = fake_client.images.edit.call_args.kwargs
+        assert isinstance(call_kwargs["image"], list)
+        assert [item.name for item in call_kwargs["image"]] == [str(source1.resolve()), str(source2.resolve())]
+
+    def test_mask_is_validated_and_passed(self, provider, tmp_path):
+        source = self._cached_png(tmp_path, "source.png")
+        mask = self._cached_png(tmp_path, "mask.png")
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(url="https://example.test/edited.png")
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image=str(source), mask=str(mask))
+
+        assert result["success"] is True
+        assert fake_client.images.edit.call_args.kwargs["mask"].name == str(mask.resolve())
+
+    def test_invalid_reference_does_not_call_api(self, provider):
+        fake_client = MagicMock()
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image="/etc/passwd")
+
+        assert result["success"] is False
+        assert result["error_type"] in {"invalid_argument", "not_found"}
+        fake_client.images.edit.assert_not_called()
+
+    def test_http_reference_rejected_before_api_call(self, provider):
+        fake_client = MagicMock()
+
+        with _patched_openai(fake_client):
+            result = provider.edit("edit", image="https://example.test/source.png")
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "HTTP(S)" in result["error"]
+        fake_client.images.edit.assert_not_called()
