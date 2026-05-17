@@ -128,6 +128,76 @@ class TestCompressionBoundaryHook:
             f"got {comp_calls!r}"
         )
 
+    def test_on_session_start_passes_platform_on_compression(self):
+        """The compression boundary call must include ``platform`` so plugin
+        context engines (e.g. hermes-lcm) that track per-session source
+        lineage don't reset their stored platform to ``""`` / ``"unknown"``
+        on every compression rollover.  Mirrors the initial session-start
+        call in ``agent/agent_init.py`` which already passes ``platform``.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            agent.platform = "discord"
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            agent.context_compressor = compressor
+
+            agent._compress_context(
+                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+            )
+
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert comp_calls, "compression boundary call missing"
+            assert comp_calls[-1].kwargs.get("platform") == "discord", (
+                f"Expected platform='discord' on compression boundary, "
+                f"got kwargs={comp_calls[-1].kwargs!r}"
+            )
+
+    def test_on_session_start_falls_back_to_cli_when_platform_unset(self):
+        """When ``agent.platform`` is unset/empty, the compression boundary
+        call should fall back to ``"cli"`` — matching the initial
+        session-start call at ``agent/agent_init.py:1354``.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            agent.platform = None
+
+            compressor = MagicMock()
+            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            agent.context_compressor = compressor
+
+            agent._compress_context(
+                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+            )
+
+            comp_calls = [
+                c for c in compressor.on_session_start.call_args_list
+                if c.kwargs.get("boundary_reason") == "compression"
+            ]
+            assert comp_calls, "compression boundary call missing"
+            assert comp_calls[-1].kwargs.get("platform") == "cli", (
+                f"Expected platform='cli' fallback on compression boundary, "
+                f"got kwargs={comp_calls[-1].kwargs!r}"
+            )
+
     def test_hook_failure_does_not_break_compression(self):
         """If the context engine raises from on_session_start, compression still completes."""
         from hermes_state import SessionDB
