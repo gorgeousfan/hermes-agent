@@ -15812,7 +15812,14 @@ class AIAgent:
                     )
 
         # Determine if conversation completed successfully
-        completed = final_response is not None and api_call_count < self.max_iterations
+        # When max_iterations is reached but _handle_max_iterations successfully
+        # returns a summary, the conversation should still be considered completed
+        # so the summary is properly displayed to the user instead of appearing
+        # as if the agent "paused" or got stuck.
+        completed = final_response is not None and (
+            api_call_count < self.max_iterations
+            or _turn_exit_reason.startswith("max_iterations_reached")
+        )
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
