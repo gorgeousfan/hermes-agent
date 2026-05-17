@@ -189,7 +189,14 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    env_var_enabled,
+    is_truthy_value,
+    normalize_proxy_url,
+)
 from hermes_cli.config import cfg_get
 
 
@@ -2178,7 +2185,10 @@ class AIAgent:
                 compression_threshold = _model_cthresh
         except Exception:
             pass
-        compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+        compression_enabled = is_truthy_value(_compression_cfg.get("enabled", True), default=True)
+        compression_status_messages = is_truthy_value(
+            _compression_cfg.get("status_messages", True), default=True
+        )
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
         # protect_first_n is the number of non-system messages to protect at
@@ -2406,6 +2416,7 @@ class AIAgent:
                 api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
+        self.compression_status_messages = compression_status_messages
 
         # Reject models whose context window is below the minimum required
         # for reliable tool-calling workflows (64K tokens).
@@ -2969,6 +2980,12 @@ class AIAgent:
                 self.status_callback("lifecycle", message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
+
+    def _emit_compression_status(self, message: str) -> None:
+        """Emit a user-facing context-compression status if enabled."""
+        if not self.compression_status_messages:
+            return
+        self._emit_status(message)
 
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.
@@ -10697,7 +10714,7 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, emit_status: bool = True) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Args:
@@ -10715,9 +10732,10 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
-        self._emit_status(
-            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
-        )
+        if emit_status:
+            self._emit_compression_status(
+                "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+            )
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:
@@ -12434,7 +12452,7 @@ class AIAgent:
                     self.model,
                     f"{self.context_compressor.context_length:,}",
                 )
-                self._emit_status(
+                self._emit_compression_status(
                     f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
                     f">= {self.context_compressor.threshold_tokens:,} threshold. "
                     "This may take a moment."
@@ -12445,7 +12463,7 @@ class AIAgent:
                     _orig_len = len(messages)
                     messages, active_system_prompt = self._compress_context(
                         messages, system_message, approx_tokens=_preflight_tokens,
-                        task_id=effective_task_id,
+                        task_id=effective_task_id, emit_status=False,
                     )
                     if len(messages) >= _orig_len:
                         break  # Cannot compress further
@@ -14314,7 +14332,7 @@ class AIAgent:
                             # messages to the new session, not skipping them.
                             conversation_history = None
                             if len(messages) < original_len or old_ctx > _reduced_ctx:
-                                self._emit_status(
+                                self._emit_compression_status(
                                     f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
                                     f"(was {old_ctx:,}), retrying..."
                                 )
@@ -14435,7 +14453,7 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_compression_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -14448,7 +14466,7 @@ class AIAgent:
                         conversation_history = None
 
                         if len(messages) < original_len:
-                            self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            self._emit_compression_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
@@ -14592,7 +14610,7 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
-                        self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                        self._emit_compression_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -14606,7 +14624,7 @@ class AIAgent:
 
                         if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                             if len(messages) < original_len:
-                                self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                                self._emit_compression_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
                             break
