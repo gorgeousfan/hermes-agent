@@ -814,8 +814,14 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
+    ".html": "text/html",
+    ".htm": "text/html",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".ts": "text/typescript",
+    ".py": "text/x-python",
     ".csv": "text/csv",
     ".log": "text/plain",
     ".json": "application/json",
@@ -2147,10 +2153,10 @@ class BasePlatformAdapter(ABC):
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
-        Detect bare local file paths in response text for native media delivery.
+        Detect bare local file paths in response text for native attachment delivery.
 
         Matches absolute paths (/...) and tilde paths (~/) ending in common
-        image or video extensions.  Validates each candidate with
+        media/document extensions.  Validates each candidate with
         ``os.path.isfile()`` to avoid false positives from URLs or
         non-existent paths.
 
@@ -2164,6 +2170,11 @@ class BasePlatformAdapter(ABC):
         _LOCAL_MEDIA_EXTS = (
             '.png', '.jpg', '.jpeg', '.gif', '.webp',
             '.mp4', '.mov', '.avi', '.mkv', '.webm',
+            '.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac',
+            '.pdf', '.html', '.htm', '.txt', '.md', '.csv',
+            '.json', '.xml', '.yaml', '.yml', '.log', '.py',
+            '.js', '.ts', '.css', '.zip', '.rar', '.7z',
+            '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 
