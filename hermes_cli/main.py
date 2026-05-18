@@ -1329,6 +1329,7 @@ def _pin_kanban_board_env() -> None:
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
+    is_interactive_chat = not (getattr(args, "query", None) or getattr(args, "image", None))
 
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
@@ -1396,6 +1397,12 @@ def cmd_chat(args):
         print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
+    # Guard prompt_toolkit/curses chat mode from non-interactive stdin.
+    # `curl ... | bash` installs run with stdin wired to a pipe; launching
+    # `hermes` from that context crashes inside asyncio/prompt_toolkit on macOS.
+    # Query/image one-shot mode is intentionally exempt and remains headless-safe.
+    if is_interactive_chat:
+        _require_tty("chat")
     # Start update check in background (runs while other init happens)
     try:
         from hermes_cli.banner import prefetch_update_check

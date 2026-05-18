@@ -1,6 +1,7 @@
 """Tests for non-interactive setup and first-run headless behavior."""
 
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -143,6 +144,41 @@ class TestNonInteractiveSetup:
         mock_setup.assert_not_called()
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
+
+    def test_chat_requires_tty_in_interactive_mode(self, capsys):
+        """Interactive `hermes chat` should fail fast when stdin is not a TTY."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args()
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch("sys.stdin") as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            with pytest.raises(SystemExit) as exc:
+                cmd_chat(args)
+
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "requires an interactive terminal" in err
+
+    def test_chat_query_mode_allows_headless_stdin(self):
+        """One-shot query mode must remain usable without an interactive TTY."""
+        from hermes_cli.main import cmd_chat
+
+        args = _make_chat_args(query="ping")
+        fake_cli_main = MagicMock()
+
+        with (
+            patch("hermes_cli.main._has_any_provider_configured", return_value=True),
+            patch.dict("sys.modules", {"cli": SimpleNamespace(main=fake_cli_main)}),
+            patch("sys.stdin") as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            cmd_chat(args)
+
+        fake_cli_main.assert_called_once()
 
     def test_main_accepts_tts_setup_section(self, monkeypatch):
         """`hermes setup tts` should parse and dispatch like other setup sections."""
