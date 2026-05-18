@@ -154,6 +154,25 @@ def _codex_ack_message_response(text: str):
     )
 
 
+def _codex_final_answer_with_top_level_incomplete_response(text: str):
+    # Azure Foundry shape: top-level response.status="incomplete" but the
+    # output contains a `phase=final_answer, status=completed` message with
+    # substantive text content. See issue #27988.
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                phase="final_answer",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="incomplete",
+        model="gpt-5.4",
+    )
+
+
 class _FakeResponsesStream:
     def __init__(self, *, final_response=None, final_error=None):
         self._final_response = final_response
@@ -1133,6 +1152,53 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
     assert finish_reason == "incomplete"
     assert "inspect the repository" in (assistant_message.content or "")
+
+
+def test_normalize_codex_response_final_answer_overrides_top_level_incomplete(monkeypatch):
+    """Azure Foundry can set top-level `response.status="incomplete"` on
+    otherwise-complete gpt-5.x responses. A per-message
+    `phase=final_answer, status=completed` carrying substantive text
+    indicates the user-visible answer is complete; the top-level status
+    is an accounting/streaming-edge artifact and must not promote a
+    complete response to `finish_reason="incomplete"` (issue #27988).
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    assistant_message, finish_reason = _normalize_codex_response(
+        _codex_final_answer_with_top_level_incomplete_response(
+            "Briefly:\n\n- I'm Ramsay, your assistant."
+        )
+    )
+
+    assert finish_reason == "stop"
+    assert "Ramsay" in (assistant_message.content or "")
+
+
+def test_normalize_codex_response_top_level_incomplete_without_final_answer_phase_stays_incomplete(monkeypatch):
+    """Negative: if the top-level status is `incomplete` and there is no
+    `phase=final_answer` message in output, finish_reason must remain
+    `incomplete` so the continuation path can re-elicit the answer.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="Partial...")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="incomplete",
+        model="gpt-5.4",
+    )
+
+    _, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
 
 
 def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
