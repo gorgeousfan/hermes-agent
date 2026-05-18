@@ -188,6 +188,112 @@ def test_random_strategy_uses_random_choice(tmp_path, monkeypatch):
     assert selected.id == "cred-2"
 
 
+def test_mark_exhausted_uses_explicit_credential_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "request-credential",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-primary",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "pool-current",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-or-secondary",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    pool = load_pool("openrouter")
+    assert pool.select().id == "cred-1"
+    pool.acquire_lease("cred-2")
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "usage_limit_reached"},
+        credential_id="cred-1",
+    )
+
+    entries = {entry.id: entry for entry in pool.entries()}
+    assert entries["cred-1"].last_status == STATUS_EXHAUSTED
+    assert entries["cred-2"].last_status != STATUS_EXHAUSTED
+    assert next_entry is not None
+    assert next_entry.id == "cred-2"
+
+
+def test_openai_codex_selection_reconciles_stale_exhaustion(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "live-available",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": _jwt_with_claims({"sub": "one"}),
+                        "refresh_token": "refresh-1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                        "last_error_reason": "usage_limit_reached",
+                        "last_error_reset_at": time.time() + 3600,
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "still-limited",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": _jwt_with_claims({"sub": "two"}),
+                        "refresh_token": "refresh-2",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                        "last_error_reason": "usage_limit_reached",
+                        "last_error_reset_at": time.time() + 3600,
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, _CodexUsageStatus, load_pool
+
+    def fake_usage_status(entry):
+        return _CodexUsageStatus(available=entry.id == "cred-1")
+
+    monkeypatch.setattr("agent.credential_pool._fetch_codex_entry_usage_status", fake_usage_status)
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "cred-1"
+    entries = {entry.id: entry for entry in pool.entries()}
+    assert entries["cred-1"].last_status == "ok"
+    assert entries["cred-2"].last_status == STATUS_EXHAUSTED
+
+
 
 def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

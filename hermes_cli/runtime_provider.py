@@ -517,6 +517,7 @@ def _resolve_runtime_from_pool_entry(
         "api_key": api_key,
         "source": getattr(entry, "source", "pool"),
         "credential_pool": pool,
+        "credential_pool_entry_id": getattr(entry, "id", None),
         "requested_provider": requested_provider,
     }
 
@@ -567,6 +568,7 @@ def _try_resolve_from_custom_pool(
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
             "credential_pool": pool,
+            "credential_pool_entry_id": getattr(entry, "id", None),
         }
     except Exception:
         return None

@@ -441,6 +441,11 @@ def auth_list_command(args) -> None:
         })
     for provider in providers:
         pool = load_pool(provider)
+        if provider == "openai-codex":
+            try:
+                pool.reconcile_live_usage()
+            except Exception:
+                pass
         entries = pool.entries()
         if not entries:
             continue

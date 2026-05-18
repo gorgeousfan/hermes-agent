@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import random
 import threading
 import time
 import uuid
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -273,6 +276,99 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
+@dataclass(frozen=True)
+class _CodexUsageStatus:
+    available: bool
+    reset_at: Optional[float] = None
+    reason: Optional[str] = None
+    message: Optional[str] = None
+
+
+def _codex_usage_url_for_entry(entry: PooledCredential) -> str:
+    base_url = (entry.runtime_base_url or entry.base_url or "https://chatgpt.com/backend-api/codex").rstrip("/")
+    if base_url.endswith("/codex"):
+        base_url = base_url[: -len("/codex")]
+    if "/backend-api" in base_url:
+        return base_url + "/wham/usage"
+    return base_url + "/api/codex/usage"
+
+
+def _codex_account_id_from_token(access_token: str) -> Optional[str]:
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if isinstance(auth_claims, dict):
+        account_id = auth_claims.get("chatgpt_account_id")
+        if isinstance(account_id, str) and account_id.strip():
+            return account_id.strip()
+    return None
+
+
+def _fetch_codex_entry_usage_status(entry: PooledCredential) -> Optional[_CodexUsageStatus]:
+    access_token = str(entry.access_token or "").strip()
+    if not access_token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+        "originator": "codex_cli_rs",
+    }
+    account_id = _codex_account_id_from_token(access_token)
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+
+    timeout = float(os.getenv("HERMES_CODEX_USAGE_TIMEOUT_SECONDS", "8") or "8")
+    request = urllib.request.Request(_codex_usage_url_for_entry(entry), headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        logger.debug("Codex usage probe failed for pool entry %s: %s", entry.label or entry.id, exc)
+        return None
+
+    rate_limit = payload.get("rate_limit") if isinstance(payload, dict) else None
+    if not isinstance(rate_limit, dict):
+        return None
+
+    primary_window = rate_limit.get("primary_window")
+    secondary_window = rate_limit.get("secondary_window")
+    reset_at = None
+    if isinstance(primary_window, dict):
+        reset_at = _parse_absolute_timestamp(primary_window.get("reset_at"))
+    if reset_at is None and isinstance(secondary_window, dict):
+        reset_at = _parse_absolute_timestamp(secondary_window.get("reset_at"))
+
+    allowed = rate_limit.get("allowed")
+    limit_reached = rate_limit.get("limit_reached")
+    if allowed is True:
+        return _CodexUsageStatus(available=True, reset_at=reset_at)
+    if limit_reached is True or allowed is False:
+        return _CodexUsageStatus(
+            available=False,
+            reset_at=reset_at,
+            reason="usage_limit_reached",
+            message="The usage limit has been reached",
+        )
+
+    used_values: list[float] = []
+    for window in (primary_window, secondary_window):
+        if isinstance(window, dict):
+            used = window.get("used_percent")
+            if isinstance(used, (int, float)):
+                used_values.append(float(used))
+    if used_values and max(used_values) < 100:
+        return _CodexUsageStatus(available=True, reset_at=reset_at)
+    if used_values and max(used_values) >= 100:
+        return _CodexUsageStatus(
+            available=False,
+            reset_at=reset_at,
+            reason="usage_limit_reached",
+            message="The usage limit has been reached",
+        )
+    return None
+
+
 def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
         return None
@@ -410,6 +506,11 @@ class CredentialPool:
         if not self._current_id:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
+
+    def _entry_by_id(self, credential_id: Optional[str]) -> Optional[PooledCredential]:
+        if not credential_id:
+            return None
+        return next((entry for entry in self._entries if entry.id == credential_id), None)
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
@@ -1218,6 +1319,9 @@ class CredentialPool:
 
     def _select_unlocked(self) -> Optional[PooledCredential]:
         available = self._available_entries(clear_expired=True, refresh=True)
+        if not available and self.provider == "openai-codex":
+            if self._reconcile_codex_usage_unlocked():
+                available = self._available_entries(clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1261,9 +1365,16 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        credential_id: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = self.current() or self._select_unlocked()
+            entry = self._entry_by_id(credential_id) if credential_id else None
+            if credential_id and entry is None:
+                logger.debug(
+                    "credential pool: requested exhausted mark for missing entry %s; falling back to current",
+                    credential_id,
+                )
+            entry = entry or self.current() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1278,6 +1389,60 @@ class CredentialPool:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
             return next_entry
+
+    def reconcile_live_usage(self) -> int:
+        """Refresh live provider usage state for pool entries that support it."""
+        if self.provider != "openai-codex":
+            return 0
+        with self._lock:
+            return self._reconcile_codex_usage_unlocked()
+
+    def _reconcile_codex_usage_unlocked(self) -> int:
+        changed = 0
+        for entry in list(self._entries):
+            if entry.last_status != STATUS_EXHAUSTED:
+                continue
+            if self._entry_needs_refresh(entry):
+                refreshed = self._refresh_entry(entry, force=False)
+                if refreshed is None:
+                    continue
+                entry = refreshed
+            status = _fetch_codex_entry_usage_status(entry)
+            if status is None:
+                continue
+            if status.available:
+                updated = replace(
+                    entry,
+                    last_status=STATUS_OK,
+                    last_status_at=None,
+                    last_error_code=None,
+                    last_error_reason=None,
+                    last_error_message=None,
+                    last_error_reset_at=None,
+                )
+                self._replace_entry(entry, updated)
+                changed += 1
+                logger.info(
+                    "credential pool: cleared stale Codex exhaustion for %s from live usage",
+                    entry.label or entry.id[:8],
+                )
+                continue
+
+            updated = replace(
+                entry,
+                last_status=STATUS_EXHAUSTED,
+                last_status_at=entry.last_status_at or time.time(),
+                last_error_code=429,
+                last_error_reason=status.reason or entry.last_error_reason,
+                last_error_message=status.message or entry.last_error_message,
+                last_error_reset_at=status.reset_at or entry.last_error_reset_at,
+            )
+            if updated != entry:
+                self._replace_entry(entry, updated)
+                changed += 1
+        if changed:
+            self._persist()
+        return changed
 
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
@@ -1319,12 +1484,13 @@ class CredentialPool:
             else:
                 self._active_leases[credential_id] = count - 1
 
-    def try_refresh_current(self) -> Optional[PooledCredential]:
+    def try_refresh_current(self, credential_id: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._try_refresh_current_unlocked()
+            return self._try_refresh_current_unlocked(credential_id=credential_id)
 
-    def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
-        entry = self.current()
+    def _try_refresh_current_unlocked(self, credential_id: Optional[str] = None) -> Optional[PooledCredential]:
+        entry = self._entry_by_id(credential_id) if credential_id else None
+        entry = entry or self.current()
         if entry is None:
             return None
         refreshed = self._refresh_entry(entry, force=True)
