@@ -1813,6 +1813,23 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _refresh_telegram_topic_binding_after_session_switch(
+        self,
+        source: SessionSource,
+        session_entry,
+        *,
+        reason: str,
+    ) -> None:
+        """Keep Telegram topic routing aligned after a session_id rollover."""
+        try:
+            if not self._is_telegram_topic_lane(source):
+                return
+            self._record_telegram_topic_binding(source, session_entry)
+        except Exception:
+            logger.exception(
+                "Failed to refresh Telegram DM topic binding after %s", reason,
+            )
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -7751,6 +7768,11 @@ class GatewayRunner:
                                     if _hyg_new_sid != session_entry.session_id:
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
+                                        self._refresh_telegram_topic_binding_after_session_switch(
+                                            source,
+                                            session_entry,
+                                            reason="hygiene compression",
+                                        )
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -8012,6 +8034,11 @@ class GatewayRunner:
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
+                self._refresh_telegram_topic_binding_after_session_switch(
+                    source,
+                    session_entry,
+                    reason="agent session switch",
+                )
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -16093,6 +16120,11 @@ class GatewayRunner:
                 if entry:
                     entry.session_id = agent.session_id
                     self.session_store._save()
+                    self._refresh_telegram_topic_binding_after_session_switch(
+                        source,
+                        entry,
+                        reason="run-time compression split",
+                    )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 
