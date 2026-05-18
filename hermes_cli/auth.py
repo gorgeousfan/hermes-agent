@@ -378,6 +378,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
         base_url_env_var="AI_GATEWAY_BASE_URL",
     ),
+    "cloudflare": ProviderConfig(
+        id="cloudflare",
+        name="Cloudflare Workers AI",
+        auth_type="api_key",
+        inference_base_url="https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        api_key_env_vars=("CLOUDFLARE_API_TOKEN",),
+        base_url_env_var="CLOUDFLARE_BASE_URL",
+    ),
     "opencode-zen": ProviderConfig(
         id="opencode-zen",
         name="OpenCode Zen",
@@ -5287,6 +5295,10 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "zai":
+        base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "cloudflare":
+        base_url = _resolve_cloudflare_base_url(pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url
     else:
@@ -5365,6 +5377,20 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return {"logged_in": False}
 
 
+def _resolve_cloudflare_base_url(default_url: str, env_override: str) -> str:
+    """Return the Cloudflare Workers AI base URL using CLOUDFLARE_ACCOUNT_ID.
+
+    If the user has explicitly set CLOUDFLARE_BASE_URL, that always wins.
+    Otherwise, construct it from the account ID.
+    """
+    if env_override:
+        return env_override
+    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+    if account_id:
+        return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    return default_url
+
+
 def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider.
 
@@ -5397,6 +5423,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "cloudflare":
+        base_url = _resolve_cloudflare_base_url(pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:

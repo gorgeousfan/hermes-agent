@@ -456,6 +456,35 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Azure Foundry: user-provided endpoint and model.
     # Empty list because models depend on the endpoint configuration.
     "azure-foundry": [],
+    "cloudflare": [
+        # 2026 frontier models
+        "@cf/meta/llama-4-scout-17b",
+        "@cf/meta/llama-4-70b",
+        "@cf/meta/llama-3.1-8b-instruct",
+        "@cf/meta/llama-3.1-70b-instruct",
+        "@cf/meta/llama-3-8b-instruct",
+        "@cf/meta/llama-3-70b-instruct",
+        "@cf/mistral/mistral-7b-instruct-v0.1",
+        "@cf/mistral/mistral-small-3.1-24b-instruct-2503",
+        # Google models on CF
+        "@cf/google/gemma-4-26b-a4b-it",
+        "@cf/google/gemma-4-2b-it",
+        "@cf/google/gemma-3-27b-it",
+        "@cf/google/gemma-27b-it",
+        "@cf/google/gemma-7b-it",
+        # Moonshot / Kimi on CF
+        "@cf/moonshotai/kimi-k2.6",
+        "@cf/moonshotai/kimi-k2.5",
+        # NVIDIA on CF
+        "@cf/nvidia/nemotron-mini-4b-instruct",
+        # Hermes fine-tunes
+        "@hf/nousresearch/hermes-2-pro-llama-3-8b",
+        "@hf/nousresearch/hermes-3-llama-3.1-8b",
+        # Open-weight community models
+        "@cf/qwen/qwen1.5-7b-chat-awq",
+        "@cf/qwen/qwen2.5-7b-instruct",
+        "@cf/phi-2/phi-2",
+    ],
     "novita": [
         "moonshotai/kimi-k2.5",
         "minimax/minimax-m2.7",
@@ -957,6 +986,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("cloudflare",     "Cloudflare Workers AI",    "Cloudflare Workers AI (Llama 3, Mistral, Hermes — serverless GPUs)"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
@@ -1022,6 +1052,8 @@ _PROVIDER_ALIASES = {
     "aigateway": "ai-gateway",
     "vercel": "ai-gateway",
     "vercel-ai-gateway": "ai-gateway",
+    "cf": "cloudflare",
+    "cloudflare-ai": "cloudflare",
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
@@ -2253,6 +2285,31 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
+
+    # Generic api_key providers (Cloudflare, DeepSeek, xAI, etc.)
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    pconfig = PROVIDER_REGISTRY.get(normalized)
+    if pconfig and pconfig.auth_type == "api_key":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials(normalized)
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+
+            if normalized == "cloudflare" and api_key:
+                from hermes_cli.config import get_env_value
+                account_id = get_env_value("CLOUDFLARE_ACCOUNT_ID")
+                if account_id:
+                    live = _fetch_cloudflare_models(api_key, account_id)
+                    if live:
+                        return live
+
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -3134,6 +3191,29 @@ def probe_api_models(
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
     }
+
+
+def _fetch_cloudflare_models(api_token: str, account_id: str, timeout: float = 8.0) -> Optional[list[str]]:
+    """Fetch Text Generation models from Cloudflare Workers AI search API."""
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search"
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+    # Filter for Text Generation models by default
+    query_url = f"{url}?task=Text%20Generation"
+    
+    req = urllib.request.Request(query_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            result = data.get("result", [])
+            if not isinstance(result, list):
+                return None
+            return [m["name"] for m in result if m.get("name")]
+    except Exception as exc:
+        logger.debug("fetch_cloudflare_models failed: %s", exc)
+        return None
 
 
 def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
