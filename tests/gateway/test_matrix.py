@@ -474,65 +474,74 @@ class TestMatrixDmDetection:
 # ---------------------------------------------------------------------------
 
 class TestMatrixReplyFallbackStripping:
-    """Test that Matrix reply fallback lines ('> ' prefix) are stripped."""
+    """Test that Matrix reply fallback lines are converted to quoted context.
 
-    def setup_method(self):
-        self.adapter = _make_adapter()
-        self.adapter._user_id = "@bot:example.org"
-        self.adapter._startup_ts = 0.0
-        self.adapter._dm_rooms = {}
-        self.adapter._message_handler = AsyncMock()
+    The adapter strips the ``"> "`` fallback prefix from the user's body and
+    prepends ``[Replying to: "<quoted>"]`` so the LLM can disambiguate short
+    replies like "this one" (issue #27946).
+    """
 
-    def _strip_fallback(self, body: str, has_reply: bool = True) -> str:
-        """Simulate the reply fallback stripping logic from _on_room_message."""
+    def _apply(self, body: str, has_reply: bool = True) -> str:
+        """Reproduce the production fallback-handling branch from _handle_text_message."""
+        from gateway.platforms.matrix import _strip_matrix_reply_fallback
+
         reply_to = "some_event_id" if has_reply else None
         if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+            new_body, quoted_text = _strip_matrix_reply_fallback(body)
+            if quoted_text and new_body != body:
+                return f'[Replying to: "{quoted_text}"]\n{new_body}'
+            return new_body
         return body
 
-    def test_simple_reply_fallback(self):
+    def test_simple_reply_prepends_quoted_context(self):
         body = "> <@alice:ex.org> Original message\n\nActual reply"
-        result = self._strip_fallback(body)
-        assert result == "Actual reply"
+        result = self._apply(body)
+        assert result == '[Replying to: "Original message"]\nActual reply'
 
-    def test_multiline_reply_fallback(self):
+    def test_multiline_reply_joins_quoted_lines(self):
         body = "> <@alice:ex.org> Line 1\n> Line 2\n\nMy response"
-        result = self._strip_fallback(body)
-        assert result == "My response"
+        result = self._apply(body)
+        assert result == '[Replying to: "Line 1 Line 2"]\nMy response'
 
     def test_no_reply_fallback_preserved(self):
         body = "Just a normal message"
-        result = self._strip_fallback(body, has_reply=False)
+        result = self._apply(body, has_reply=False)
         assert result == "Just a normal message"
 
     def test_quote_without_reply_preserved(self):
         """'> ' lines without a reply_to context should be preserved."""
         body = "> This is a blockquote"
-        result = self._strip_fallback(body, has_reply=False)
+        result = self._apply(body, has_reply=False)
         assert result == "> This is a blockquote"
 
-    def test_empty_fallback_separator(self):
-        """The blank line between fallback and actual content should be stripped."""
+    def test_empty_fallback_separator_dropped(self):
+        """A ``>`` line on its own (empty quoted line) is not included as context."""
         body = "> <@alice:ex.org> hi\n>\n\nResponse"
-        result = self._strip_fallback(body)
-        assert result == "Response"
+        result = self._apply(body)
+        assert result == '[Replying to: "hi"]\nResponse'
 
     def test_multiline_response_after_fallback(self):
         body = "> <@alice:ex.org> Original\n\nLine 1\nLine 2\nLine 3"
-        result = self._strip_fallback(body)
-        assert result == "Line 1\nLine 2\nLine 3"
+        result = self._apply(body)
+        assert result == '[Replying to: "Original"]\nLine 1\nLine 2\nLine 3'
+
+    def test_helper_returns_empty_quote_when_no_new_body(self):
+        """Body that is *only* the fallback (no reply text) keeps the raw body."""
+        from gateway.platforms.matrix import _strip_matrix_reply_fallback
+
+        body = "> <@alice:ex.org> Just the quote"
+        new_body, quoted = _strip_matrix_reply_fallback(body)
+        assert new_body == body
+        assert quoted == ""
+
+    def test_helper_handles_sender_tag_without_space(self):
+        """Sender tag immediately followed by the message text still extracts cleanly."""
+        from gateway.platforms.matrix import _strip_matrix_reply_fallback
+
+        body = "> <@alice:ex.org>Original\n\nReply"
+        new_body, quoted = _strip_matrix_reply_fallback(body)
+        assert new_body == "Reply"
+        assert quoted == "Original"
 
 
 # ---------------------------------------------------------------------------

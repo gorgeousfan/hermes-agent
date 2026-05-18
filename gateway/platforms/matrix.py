@@ -180,6 +180,50 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
 
 
+def _strip_matrix_reply_fallback(body: str) -> tuple[str, str]:
+    """Split a Matrix reply body into the user's new text and the quoted context.
+
+    Matrix's text/plain reply fallback prepends each line of the quoted message
+    with ``"> "`` (and a ``<@user:server>`` sender tag on the first line),
+    separated from the new reply by a blank line. Stripping the fallback without
+    re-injecting the quoted content drops the only signal the LLM has for
+    disambiguating short replies like "this one"; see issue #27946.
+
+    Returns ``(new_body, quoted_text)``. ``quoted_text`` is empty when the body
+    does not contain a recognizable fallback block.
+    """
+    if not body.startswith("> "):
+        return body, ""
+
+    lines = body.split("\n")
+    fallback_lines: list[str] = []
+    new_lines: list[str] = []
+    past_fallback = False
+    for line in lines:
+        if not past_fallback:
+            if line.startswith("> "):
+                fallback_lines.append(line[2:])
+                continue
+            if line == ">":
+                continue
+            if line == "":
+                past_fallback = True
+                continue
+            past_fallback = True
+        new_lines.append(line)
+
+    if not new_lines:
+        return body, ""
+
+    if fallback_lines and fallback_lines[0].startswith("<@") and ">" in fallback_lines[0]:
+        first = fallback_lines[0]
+        gt = first.index(">")
+        fallback_lines[0] = first[gt + 1 :].lstrip()
+
+    quoted_text = " ".join(line for line in fallback_lines if line).strip()
+    return "\n".join(new_lines), quoted_text
+
+
 def _create_matrix_session(proxy_url: str | None):
     """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
 
@@ -1800,21 +1844,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
+        # Strip reply fallback from body, re-injecting the quoted context so
+        # the LLM can disambiguate short replies like "this one" (issue #27946).
         if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+            new_body, quoted_text = _strip_matrix_reply_fallback(body)
+            if quoted_text and new_body != body:
+                body = f'[Replying to: "{quoted_text}"]\n{new_body}'
+            else:
+                body = new_body
 
         msg_type = MessageType.TEXT
         if body.startswith(("!", "/")):
