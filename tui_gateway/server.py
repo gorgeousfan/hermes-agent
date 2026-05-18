@@ -4653,7 +4653,13 @@ def _(rid, params: dict) -> dict:
             )
             if not result["ok"]:
                 return _err(rid, result["code"], result["message"])
-            output = (result["stdout"] or "").strip()[:4000]
+            _stdout = result.get("stdout") or ""
+            _stderr = result.get("stderr") or ""
+            output = (
+                _stdout
+                + ("\n" if _stdout and _stderr else "")
+                + _stderr
+            ).strip()[:4000]
             if result["code"] != 0:
                 return _err(
                     rid, 4018, output or f"quick command failed with exit code {result['code']}"
