@@ -453,3 +453,47 @@ class TestCodexNormalizeResponse:
         tc = nr.tool_calls[0]
         assert tc.name == "terminal"
         assert '"command"' in tc.arguments
+
+
+class TestCodexPreflightProviderNeutral:
+    """Preflight validates final Responses kwargs without provider policy."""
+
+    def _slash_enum_tool(self):
+        return {
+            "type": "function",
+            "name": "brave_search_like_tool",
+            "description": "x",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "accept": {
+                        "type": "string",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        }
+
+    def _api_kwargs(self, tools):
+        return {
+            "model": "grok-4.3",
+            "instructions": "You are Hermes.",
+            "input": [{"role": "user", "content": "hi"}],
+            "tools": tools,
+            "store": False,
+        }
+
+    def test_preflight_keeps_slash_enums(self, transport):
+        result = transport.preflight_kwargs(self._api_kwargs([self._slash_enum_tool()]))
+        accept = result["tools"][0]["parameters"]["properties"]["accept"]
+        assert accept["enum"] == ["application/json", "*/*"]
+
+    def test_preflight_does_not_mutate_caller_tool_registry(self, transport):
+        """Provider-neutral preflight should not mutate caller-owned schemas."""
+        tool = self._slash_enum_tool()
+        original_enum = list(tool["parameters"]["properties"]["accept"]["enum"])
+
+        transport.preflight_kwargs(self._api_kwargs([tool]))
+
+        assert tool["parameters"]["properties"]["accept"]["enum"] == original_enum

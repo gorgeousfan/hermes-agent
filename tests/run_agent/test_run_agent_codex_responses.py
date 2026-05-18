@@ -1965,3 +1965,100 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+def _slash_enum_chat_tool():
+    return {
+        "type": "function",
+        "function": {
+            "name": "brave_llm_context",
+            "description": "x",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "pattern": "^.+$",
+                    },
+                    "accept": {
+                        "type": "string",
+                        "format": "media-type",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        },
+    }
+
+
+def test_build_api_kwargs_xai_responses_strips_incompatible_tool_schema_without_mutating_registry(monkeypatch):
+    """xAI tool-schema compatibility belongs in request construction, not preflight."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    tool = _slash_enum_chat_tool()
+    agent.tools = [tool]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    params = kwargs["tools"][0]["parameters"]
+    accept = params["properties"]["accept"]
+    query = params["properties"]["query"]
+    assert "enum" not in accept, f"slash-containing enum should be stripped: {accept}"
+    assert accept["type"] == "string"
+    assert "format" not in accept
+    assert "pattern" not in query
+
+    original_params = agent.tools[0]["function"]["parameters"]
+    assert original_params["properties"]["accept"]["enum"] == ["application/json", "*/*"]
+    assert original_params["properties"]["accept"]["format"] == "media-type"
+    assert original_params["properties"]["query"]["pattern"] == "^.+$"
+
+
+def test_build_api_kwargs_non_xai_responses_keeps_slash_enums(monkeypatch):
+    """Non-xAI Responses backends keep slash enums untouched."""
+    agent = _build_agent(monkeypatch)
+    agent.tools = [_slash_enum_chat_tool()]
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    accept = kwargs["tools"][0]["parameters"]["properties"]["accept"]
+    assert accept["enum"] == ["application/json", "*/*"]
+
+
+def test_preflight_codex_api_kwargs_keeps_slash_enums(monkeypatch):
+    """Preflight is provider-neutral validation; it does not apply xAI policy."""
+    _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["tools"] = [
+        {
+            "type": "function",
+            "name": "brave_llm_context",
+            "description": "x",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "accept": {
+                        "type": "string",
+                        "enum": ["application/json", "*/*"],
+                    },
+                },
+            },
+        }
+    ]
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    result = _preflight_codex_api_kwargs(kwargs)
+    accept = result["tools"][0]["parameters"]["properties"]["accept"]
+    assert accept["enum"] == ["application/json", "*/*"]

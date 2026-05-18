@@ -380,3 +380,102 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
             stripped,
         )
     return tools, stripped
+
+
+# =============================================================================
+# xAI Responses — strip enum constraints containing "/" values
+# =============================================================================
+
+
+def strip_xai_incompatible_enum_values(tools: list[dict]) -> tuple[list[dict], int]:
+    """Drop ``enum`` constraints containing string values with ``/``.
+
+    xAI's ``/v1/responses`` schema validator rejects any tool whose parameter
+    schema contains a string enum value with a ``/`` character (e.g.
+    ``"application/json"``, ``"*/*"``, ``"text/plain"``). The server returns
+    HTTP 200 with a single SSE ``event: error`` frame (message observed as
+    ``"Invalid arguments passed to the model."`` in May 2026) and closes the
+    stream, aborting the agent turn.
+
+    The known triggering case at the time of writing is MCP tools that expose
+    HTTP ``accept`` headers as a string enum of media types. Other Responses-
+    compatible backends (OpenAI Codex) accept these enums fine, so the strip
+    is gated by the caller on the xAI path only.
+
+    These enums often describe HTTP plumbing the model has no business
+    emitting as a function-call argument, so removing the enum constraint is
+    safe — and the property keeps its ``"type": "string"`` typing so any
+    free-form value the model does emit still validates. If a mixed enum has
+    both slash and non-slash values, the whole enum is removed rather than
+    narrowed; preserving only the non-slash values would silently change the
+    accepted value space.
+
+    Args:
+        tools: OpenAI-format or Responses-format tool list. The list and the
+            schema dicts inside it are **mutated in place** for efficiency
+            (matching ``strip_pattern_and_format``). Callers that need to
+            preserve the original should deep-copy first.
+
+    Returns:
+        ``(tools, stripped_count)`` — the same list reference (already
+        mutated) plus a count of slash-containing enum values that caused an
+        enum constraint to be removed.
+    """
+    if not tools:
+        return tools, 0
+
+    stripped = 0
+
+    def _walk(node: Any) -> None:
+        nonlocal stripped
+        if isinstance(node, dict):
+            enum_values = node.get("enum")
+            if isinstance(enum_values, list):
+                slash_values = [
+                    v for v in enum_values
+                    if isinstance(v, str) and "/" in v
+                ]
+                if slash_values:
+                    stripped += len(slash_values)
+                    node.pop("enum", None)
+            elif enum_values is not None:
+                # JSON Schema requires ``enum`` to be a list. Anything else
+                # is a malformed schema; skip but log so upstream bugs in
+                # MCP tool schemas remain debuggable.
+                logger.debug(
+                    "schema_sanitizer: skipping non-list enum value (type=%s)",
+                    type(enum_values).__name__,
+                )
+            for value in list(node.values()):
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+
+        # OpenAI-format: {"function": {"parameters": {...}}}
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            params = fn.get("parameters")
+            if isinstance(params, dict):
+                _walk(params)
+                continue
+
+        # Responses-format: {"name": "...", "parameters": {...}}
+        params = tool.get("parameters")
+        if isinstance(params, dict):
+            _walk(params)
+
+    if stripped:
+        # DEBUG (not INFO) because this fires every turn on affected setups
+        # — it's compatibility plumbing, not a notable event.
+        logger.debug(
+            "schema_sanitizer: stripped %d slash-containing enum value(s) "
+            "from tool schemas (xAI Responses compatibility)",
+            stripped,
+        )
+    return tools, stripped
