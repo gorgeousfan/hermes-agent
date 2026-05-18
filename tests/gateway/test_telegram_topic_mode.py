@@ -4,9 +4,11 @@ Topic mode makes the root Telegram DM a system lobby while user-created
 Telegram topics act as independent Hermes session lanes.
 """
 
+from collections import OrderedDict
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import threading
 
 import pytest
 
@@ -76,30 +78,48 @@ def _make_runner(session_db=None):
     )
 
     runner.session_store = MagicMock()
+    runner.session_store._entries = {}
     runner.session_store._generate_session_key.side_effect = lambda source: build_session_key(
         source,
         group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(runner.config, "thread_sessions_per_user", False),
     )
-    runner.session_store.get_or_create_session.side_effect = lambda source, force_new=False: SessionEntry(
-        session_key=build_session_key(
+    def _get_or_create_session(source, force_new=False):
+        session_key = build_session_key(
             source,
             group_sessions_per_user=getattr(runner.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(runner.config, "thread_sessions_per_user", False),
-        ),
-        session_id="sess-topic" if source.thread_id else "sess-root",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        origin=source,
-    )
+        )
+        entry = SessionEntry(
+            session_key=session_key,
+            session_id="sess-topic" if source.thread_id else "sess-root",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=source,
+        )
+        runner.session_store._entries[session_key] = entry
+        return entry
+    runner.session_store.get_or_create_session.side_effect = _get_or_create_session
     runner.session_store.load_transcript.return_value = []
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.append_to_transcript = MagicMock()
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store.reset_session = MagicMock(return_value=None)
+
+    def _advance_after_compression(session_key, old_session_id, new_session_id):
+        entry = runner.session_store._entries.get(session_key)
+        if entry is None:
+            return None
+        if entry.session_id == old_session_id:
+            entry.session_id = new_session_id
+            entry.last_prompt_tokens = 0
+        return entry
+    runner.session_store.advance_session_after_compression = MagicMock(
+        side_effect=_advance_after_compression,
+    )
 
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
@@ -124,6 +144,8 @@ def _make_runner(session_db=None):
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._session_db = session_db
+    runner._agent_cache = OrderedDict()
+    runner._agent_cache_lock = threading.Lock()
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -264,6 +286,119 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
 
     assert result == "restored response"
     assert captured["session_id"] == "restored-session"
+
+
+@pytest.mark.asyncio
+async def test_topic_binding_follows_compression_tip_without_switch_session(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    chat_id = topic_source.chat_id
+    thread_id = topic_source.thread_id
+    user_id = topic_source.user_id
+    parent_session_id = "topic-parent-session"
+    compressed_session_id = "topic-compressed-session"
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id=chat_id, user_id=user_id)
+    session_db.create_session(
+        session_id=parent_session_id,
+        source="telegram",
+        user_id=user_id,
+    )
+    session_db.end_session(parent_session_id, "compression")
+    session_db.create_session(
+        session_id=compressed_session_id,
+        source="telegram",
+        user_id=user_id,
+        parent_session_id=parent_session_id,
+    )
+
+    session_db.bind_telegram_topic(
+        chat_id=chat_id,
+        thread_id=thread_id,
+        user_id=user_id,
+        session_key=topic_key,
+        session_id=parent_session_id,
+        managed_mode="restored",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    route_entry = SessionEntry(
+        session_key=topic_key,
+        session_id=parent_session_id,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+    )
+    runner.session_store._entries[topic_key] = route_entry
+    runner.session_store.get_or_create_session.side_effect = (
+        lambda source, force_new=False: route_entry
+    )
+
+    captured = {}
+    parent_history = [
+        {"role": "user", "content": f"parent message {i}"}
+        for i in range(20)
+    ]
+    compressed_history = [{"role": "user", "content": "compressed summary"}]
+
+    def _load_transcript(session_id):
+        captured["loaded_session_id"] = session_id
+        return (
+            compressed_history
+            if session_id == compressed_session_id
+            else parent_history
+        )
+
+    async def fake_run_agent(*args, **kwargs):
+        captured["run_session_id"] = kwargs.get("session_id")
+        captured["history"] = list(kwargs.get("history") or [])
+        history = list(kwargs.get("history") or [])
+        return {
+            "success": True,
+            "final_response": "compressed response",
+            "session_id": kwargs.get("session_id"),
+            "history_offset": len(history),
+            "messages": history
+            + [
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "compressed response"},
+            ],
+        }
+
+    runner.session_store.load_transcript.side_effect = _load_transcript
+    runner._run_agent = AsyncMock(side_effect=fake_run_agent)
+    runner._agent_cache[topic_key] = (
+        SimpleNamespace(session_id=parent_session_id),
+        "signature",
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("continue", thread_id="17585"))
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id=chat_id,
+        thread_id=thread_id,
+    )
+    assert result == "compressed response"
+    assert binding is not None
+    assert binding["session_id"] == compressed_session_id
+    assert binding["managed_mode"] == "restored"
+    assert captured["loaded_session_id"] == compressed_session_id
+    assert captured["run_session_id"] == compressed_session_id
+    assert captured["history"] == compressed_history
+    assert topic_key not in runner._agent_cache
+    runner.session_store.switch_session.assert_not_called()
+    assert session_db.get_session(parent_session_id)["end_reason"] == "compression"
 
 
 @pytest.mark.asyncio
@@ -1048,7 +1183,3 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
         ).fetchall()
     }
     assert tables == set()
-
-
-
-

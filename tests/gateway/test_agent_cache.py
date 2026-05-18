@@ -399,6 +399,40 @@ class TestAgentCacheLifecycle:
             assert "session-A" not in runner._agent_cache
             assert "session-B" in runner._agent_cache
 
+    def test_evicts_cached_agent_on_session_mismatch(self):
+        """Cached agents must agree with the canonical route session."""
+        runner = _make_runner()
+        stale_agent = MagicMock()
+        stale_agent.session_id = "compressed-child"
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["session-key"] = (stale_agent, "sig")
+
+        runner._evict_cached_agent_on_session_mismatch(
+            "session-key",
+            "route-parent",
+        )
+
+        with runner._agent_cache_lock:
+            assert "session-key" not in runner._agent_cache
+
+    def test_keeps_cached_agent_on_session_match(self):
+        """Matching cached agents remain reusable."""
+        runner = _make_runner()
+        cached_agent = MagicMock()
+        cached_agent.session_id = "route-session"
+
+        with runner._agent_cache_lock:
+            runner._agent_cache["session-key"] = (cached_agent, "sig")
+
+        runner._evict_cached_agent_on_session_mismatch(
+            "session-key",
+            "route-session",
+        )
+
+        with runner._agent_cache_lock:
+            assert runner._agent_cache["session-key"][0] is cached_agent
+
     def test_reasoning_config_updates_in_place(self):
         """Reasoning config can be set on a cached agent without eviction."""
         from run_agent import AIAgent
@@ -575,13 +609,13 @@ class TestAgentCacheBoundedGrowth:
         """_sweep_idle_cached_agents removes agents idle past the TTL."""
         from gateway import run as gw_run
 
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.05)
+        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 60.0)
         runner = self._bounded_runner()
         runner._cleanup_agent_resources = MagicMock()
 
         import time as _t
         fresh = self._fake_agent(last_activity=_t.time())
-        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+        stale = self._fake_agent(last_activity=_t.time() - 120.0)
         runner._agent_cache["fresh"] = (fresh, "s1")
         runner._agent_cache["stale"] = (stale, "s2")
 

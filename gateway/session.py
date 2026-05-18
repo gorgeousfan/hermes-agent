@@ -970,6 +970,48 @@ class SessionStore:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
 
+    def advance_session_after_compression(
+        self,
+        session_key: str,
+        old_session_id: str,
+        new_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Advance a gateway route after context compression.
+
+        This is deliberately narrower than ``switch_session()``. Compression
+        already ended ``old_session_id`` with ``end_reason='compression'`` and
+        created ``new_session_id`` as the continuation; following that lineage
+        must not re-end the parent as ``session_switch`` or reopen the child.
+        """
+        if not session_key or not new_session_id:
+            return None
+
+        with self._lock:
+            self._ensure_loaded_locked()
+
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+
+            if entry.session_id == new_session_id:
+                return entry
+
+            if old_session_id and entry.session_id != old_session_id:
+                logger.warning(
+                    "Compression route advance skipped for %s: route points at %s, expected %s -> %s",
+                    session_key,
+                    entry.session_id,
+                    old_session_id,
+                    new_session_id,
+                )
+                return entry
+
+            entry.session_id = new_session_id
+            entry.updated_at = _now()
+            entry.last_prompt_tokens = 0
+            self._save()
+            return entry
+
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.
 
