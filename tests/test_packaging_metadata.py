@@ -20,3 +20,29 @@ def test_manifest_includes_bundled_skills():
 
     assert "graft skills" in manifest
     assert "graft optional-skills" in manifest
+    assert "graft ui-tui" in manifest
+    assert "graft scripts" in manifest
+
+
+def test_pyproject_includes_all_namespace_wildcards():
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    includes = data["tool"]["setuptools"]["packages"]["find"]["include"]
+
+    # Every top-level namespace with subpackages must have a .* wildcard
+    # so that subpackages (e.g. hermes_cli.proxy) are included in the wheel.
+    # This is an invariant — adding a subpackage to any of these namespaces
+    # without adding the wildcard will silently drop it from packaged installs.
+    namespaces_that_need_wildcards = {
+        "acp_adapter",
+        "agent",
+        "gateway",
+        "hermes_cli",
+        "plugins",
+        "providers",
+        "tools",
+        "tui_gateway",
+    }
+
+    for ns in namespaces_that_need_wildcards:
+        assert f"{ns}.*" in includes, \
+            f"{ns} is missing its .* wildcard in pyproject.toml packages.find.include"
