@@ -1120,6 +1120,36 @@ def _normalize_empty_agent_response(
     return response
 
 
+REASONING_DISPLAY_HEADER = "\U0001f4ad **Reasoning:**"
+_REASONING_DISPLAY_LINE_BUDGET = 15
+
+
+def _prepend_reasoning_for_display(response: str, last_reasoning: str | None) -> str:
+    """Prepend the display-only reasoning block to ``response``.
+
+    The returned string is intended for **display only** — it must not be
+    persisted to the session transcript, or the reasoning block will be
+    replayed as ordinary assistant content when the session is resumed
+    (the leak fixed in #7233).
+
+    Returns ``response`` unchanged when there is nothing to prepend
+    (empty response or no reasoning text).  Reasoning longer than
+    ``_REASONING_DISPLAY_LINE_BUDGET`` lines is collapsed with a count
+    suffix to keep chat messages readable.
+    """
+    if not response or not last_reasoning:
+        return response
+    lines = last_reasoning.strip().splitlines()
+    if len(lines) > _REASONING_DISPLAY_LINE_BUDGET:
+        display_reasoning = "\n".join(lines[:_REASONING_DISPLAY_LINE_BUDGET])
+        display_reasoning += (
+            f"\n_... ({len(lines) - _REASONING_DISPLAY_LINE_BUDGET} more lines)_"
+        )
+    else:
+        display_reasoning = last_reasoning.strip()
+    return f"{REASONING_DISPLAY_HEADER}\n```\n{display_reasoning}\n```\n\n{response}"
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """Return True only when a gateway turn really completed successfully.
 
@@ -8013,7 +8043,12 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
-            # Prepend reasoning/thinking if display is enabled (per-platform)
+            # Prepend reasoning/thinking if display is enabled (per-platform).
+            # Snapshot the clean response BEFORE prepending so the transcript
+            # write below can persist the model's actual output without the
+            # display-only reasoning block leaking into resumed sessions
+            # (#7233).
+            _clean_response = response
             try:
                 from gateway.display_config import resolve_display_setting as _rds
                 _show_reasoning_effective = _rds(
@@ -8024,17 +8059,14 @@ class GatewayRunner:
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
-                last_reasoning = agent_result.get("last_reasoning")
-                if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+            if _show_reasoning_effective:
+                # Mutates only the local 'response' variable.  agent_messages
+                # (used by the primary transcript path below) is never passed
+                # through this helper, so the prefix cannot leak into the
+                # agent loop's persisted message list.
+                response = _prepend_reasoning_for_display(
+                    response, agent_result.get("last_reasoning")
+                )
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -8219,10 +8251,13 @@ class GatewayRunner:
                         session_entry.session_id,
                         _user_entry,
                     )
-                    if response:
+                    # Persist the reasoning-free response so internal reasoning
+                    # blocks don't reappear as assistant content when the
+                    # session is later resumed. (#7233)
+                    if _clean_response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts}
+                            {"role": "assistant", "content": _clean_response, "timestamp": ts}
                         )
                 else:
                     # The agent already persisted these messages to SQLite via
