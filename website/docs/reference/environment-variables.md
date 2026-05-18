@@ -483,6 +483,18 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### KimiClaw (Moonshot AI)
+
+Used by the bundled KimiClaw platform plugin (`plugins/platforms/kimiclaw/`). See [Messaging Gateway → KimiClaw](/docs/user-guide/messaging/kimiclaw) for full setup. Env-var names are kept as `KIMI_*` because the credentials are issued by kimi.com itself.
+
+| Variable | Description |
+|----------|-------------|
+| `KIMI_BOT_TOKEN` | Bot token from kimi.com's *Kimi Claw → Add Claw → Link existing OpenClaw* flow (format `km_b_prod_*`). Required. |
+| `KIMI_ALLOWED_USERS` | Comma-separated Kimi user IDs (`km_u_*`) allowed to talk to the bot. |
+| `KIMI_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any source. Default: `false`. |
+| `KIMI_HOME_CHANNEL` | Default delivery target for cron / notification sends. Must be a `room:<uuid>` value; DM cron delivery is not supported through the standalone send path (see [Known limitations](/docs/user-guide/messaging/kimiclaw#known-limitations)). |
+| `KIMI_HOME_CHANNEL_NAME` | Optional display name for the home channel. |
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.
