@@ -21,6 +21,12 @@ class TestSlackFullManifest:
         bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
         assert "groups:read" in bot_scopes
 
+    def test_custom_sender_identity_scope_is_included(self):
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+        assert "chat:write.customize" in bot_scopes
+
     def test_assistant_features_remain_enabled(self):
         manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
 

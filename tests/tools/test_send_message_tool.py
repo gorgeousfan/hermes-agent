@@ -474,6 +474,47 @@ class TestSendToPlatformChunking:
             "*hello* from <https://example.com|Hermes>",
         )
 
+    def test_slack_send_message_uses_hermes_profile_identity(self, monkeypatch):
+        _ensure_slack_mock(monkeypatch)
+
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(
+                        enabled=True,
+                        token="***",
+                        extra={
+                            "profile_identities": {
+                                "orchestrator": {
+                                    "username": "Orchestrator",
+                                    "icon_url": "https://example.com/orchestrator.png",
+                                },
+                            },
+                        },
+                    ),
+                    "C123",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            "***",
+            "C123",
+            "hello",
+            profile_identity={
+                "username": "Orchestrator",
+                "icon_url": "https://example.com/orchestrator.png",
+            },
+        )
+
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
         """Bold+italic ***text*** survives tool-layer formatting."""
         _ensure_slack_mock(monkeypatch)

@@ -70,6 +70,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "channels:history",
                     "channels:read",
                     "chat:write",
+                    "chat:write.customize",
                     "commands",
                     "files:read",
                     "files:write",

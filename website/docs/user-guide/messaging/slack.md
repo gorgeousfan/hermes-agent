@@ -69,6 +69,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | Scope | Purpose |
 |-------|---------|
 | `chat:write` | Send messages as the bot |
+| `chat:write.customize` | Use configured Hermes profile names/avatars on outgoing messages |
 | `app_mentions:read` | Detect when @mentioned in channels |
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |
@@ -565,6 +566,25 @@ Notes:
 - The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
 - The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
+
+## Profile Visual Identities
+
+Slack can show a configured Hermes profile name and avatar on outgoing messages. This is useful when a single Slack app hosts multiple Hermes profiles or Kanban workers, so a reply from `orchestrator` can visibly appear as "Orchestrator" without creating another Slack bot.
+
+```yaml
+slack:
+  profile_identities:
+    orchestrator:
+      username: "Orchestrator"
+      icon_url: "https://example.com/orchestrator.png"
+    support:
+      username: "Support Agent"
+      icon_emoji: ":office:"
+```
+
+Hermes resolves the sender profile from `metadata.profile`, then `HERMES_PROFILE` (set for Kanban-dispatched workers), then a profile-shaped `HERMES_HOME`, and falls back to `default`. If no matching profile identity is configured, Slack messages use the normal Hermes bot identity.
+
+Slack requires the `chat:write.customize` bot scope for custom `username`, `icon_url`, or `icon_emoji` fields. After adding the scope, reinstall the Slack app to the workspace. Use this for assistant/profile identities only, not for impersonating people.
 
 ## Troubleshooting
 

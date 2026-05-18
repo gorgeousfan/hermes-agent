@@ -120,6 +120,29 @@ class TestSlackExecApproval:
         assert kwargs.get("thread_ts") == "9999.0000"
 
     @pytest.mark.asyncio
+    async def test_applies_profile_identity(self):
+        adapter = _make_adapter()
+        adapter.config.extra["profile_identities"] = {
+            "orchestrator": {
+                "username": "Orchestrator",
+                "icon_url": "https://example.com/orchestrator.png",
+            },
+        }
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5678"})
+
+        await adapter.send_exec_approval(
+            chat_id="C1",
+            command="echo test",
+            session_key="test-session",
+            metadata={"profile": "orchestrator"},
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert kwargs["username"] == "Orchestrator"
+        assert kwargs["icon_url"] == "https://example.com/orchestrator.png"
+
+    @pytest.mark.asyncio
     async def test_not_connected(self):
         adapter = _make_adapter()
         adapter._app = None

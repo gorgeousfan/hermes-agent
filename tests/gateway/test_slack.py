@@ -2477,6 +2477,98 @@ class TestMessageSplitting:
 
 
 # ---------------------------------------------------------------------------
+# TestProfileIdentities
+# ---------------------------------------------------------------------------
+
+
+class TestProfileIdentities:
+    """Slack profile visual identities are optional and config-driven."""
+
+    @pytest.mark.asyncio
+    async def test_send_without_profile_identity_preserves_kwargs(self, adapter, monkeypatch):
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "hello")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs == {
+            "channel": "C123",
+            "text": "hello",
+            "mrkdwn": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_profile_identity(self, adapter):
+        adapter.config.extra["profile_identities"] = {
+            "orchestrator": {
+                "username": "Orchestrator",
+                "icon_url": "https://example.com/orchestrator.png",
+            },
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "hello", metadata={"profile": "orchestrator"})
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["username"] == "Orchestrator"
+        assert kwargs["icon_url"] == "https://example.com/orchestrator.png"
+
+    @pytest.mark.asyncio
+    async def test_send_uses_hermes_profile_env_identity(self, adapter, monkeypatch):
+        monkeypatch.setenv("HERMES_PROFILE", "support")
+        adapter.config.extra["profile_identities"] = {
+            "support": {
+                "username": "Support Agent",
+                "icon_emoji": ":office:",
+            },
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "hello")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["username"] == "Support Agent"
+        assert kwargs["icon_emoji"] == ":office:"
+
+    @pytest.mark.asyncio
+    async def test_send_uses_profile_name_from_hermes_home(self, adapter, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        profile_home = tmp_path / ".hermes" / "profiles" / "orchestrator"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        adapter.config.extra["profile_identities"] = {
+            "orchestrator": {"username": "Orchestrator"},
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "hello")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["username"] == "Orchestrator"
+
+    @pytest.mark.asyncio
+    async def test_send_ignores_invalid_profile_identity_entries(self, adapter):
+        adapter.config.extra["profile_identities"] = {
+            "orchestrator": {
+                "username": "   ",
+                "icon_url": "",
+                "icon_emoji": ":robot_face:",
+                "unexpected": "ignored",
+            },
+        }
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "hello", metadata={"profile": "orchestrator"})
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "username" not in kwargs
+        assert "icon_url" not in kwargs
+        assert kwargs["icon_emoji"] == ":robot_face:"
+
+
+# ---------------------------------------------------------------------------
 # TestReplyBroadcast
 # ---------------------------------------------------------------------------
 

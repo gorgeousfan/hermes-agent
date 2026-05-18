@@ -849,6 +849,12 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                if plat is Platform.SLACK and "profile_identities" in platform_cfg:
+                    profile_identities = platform_cfg["profile_identities"]
+                    if isinstance(profile_identities, dict):
+                        bridged["profile_identities"] = {str(k): v for k, v in profile_identities.items()}
+                    else:
+                        bridged["profile_identities"] = profile_identities
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

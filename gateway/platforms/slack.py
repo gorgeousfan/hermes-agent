@@ -264,6 +264,59 @@ _SLACK_PROXY_HOSTS = (
     "wss-primary.slack.com",
 )
 
+_SLACK_PROFILE_IDENTITY_FIELDS = ("username", "icon_url", "icon_emoji")
+
+
+def _resolve_slack_sender_profile(metadata: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the Hermes profile name for Slack visual identity lookup."""
+    if isinstance(metadata, dict):
+        profile = str(metadata.get("profile") or "").strip()
+        if profile:
+            return profile
+
+    profile = os.getenv("HERMES_PROFILE", "").strip()
+    if profile:
+        return profile
+
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if hermes_home:
+        try:
+            home_path = _Path(hermes_home)
+            if home_path.parent.name == "profiles" and home_path.name:
+                return home_path.name
+        except Exception:
+            pass
+
+    return "default"
+
+
+def resolve_slack_profile_identity(
+    config_extra: Optional[Dict[str, Any]],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Return configured Slack message identity fields for the sender profile.
+
+    The config is intentionally best-effort: malformed entries are ignored so
+    Slack delivery never fails before reaching the API.
+    """
+    if not isinstance(config_extra, dict):
+        return {}
+    identities = config_extra.get("profile_identities") or {}
+    if not isinstance(identities, dict):
+        return {}
+
+    profile = _resolve_slack_sender_profile(metadata)
+    entry = identities.get(profile)
+    if not isinstance(entry, dict):
+        return {}
+
+    resolved: Dict[str, str] = {}
+    for key in _SLACK_PROFILE_IDENTITY_FIELDS:
+        value = str(entry.get(key) or "").strip()
+        if value:
+            resolved[key] = value
+    return resolved
+
 
 def _resolve_slack_proxy_url() -> Optional[str]:
     """Resolve a proxy URL that Slack SDK clients can safely use."""
@@ -797,6 +850,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                kwargs.update(self._profile_identity_kwargs(metadata))
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
@@ -831,6 +885,13 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    def _profile_identity_kwargs(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """Resolve optional Slack per-message identity fields."""
+        return resolve_slack_profile_identity(self.config.extra, metadata)
 
     async def send_private_notice(
         self,
@@ -2306,6 +2367,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
                 "blocks": blocks,
             }
+            kwargs.update(self._profile_identity_kwargs(metadata))
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
@@ -2374,6 +2436,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "text": f"{title or 'Confirm'}: {body[:100]}",
                 "blocks": blocks,
             }
+            kwargs.update(self._profile_identity_kwargs(metadata))
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 

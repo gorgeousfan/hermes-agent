@@ -535,7 +535,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.discord import DiscordAdapter
-    from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.slack import SlackAdapter, resolve_slack_profile_identity
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -559,6 +559,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             message = slack_adapter.format_message(message)
         except Exception:
             logger.debug("Failed to apply Slack mrkdwn formatting in _send_to_platform", exc_info=True)
+    slack_profile_identity = {}
+    if platform == Platform.SLACK:
+        try:
+            slack_profile_identity = resolve_slack_profile_identity(getattr(pconfig, "extra", {}) or {})
+        except Exception:
+            logger.debug("Failed to resolve Slack profile identity in _send_to_platform", exc_info=True)
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
@@ -713,7 +719,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            if slack_profile_identity:
+                result = await _send_slack(
+                    pconfig.token,
+                    chat_id,
+                    chunk,
+                    profile_identity=slack_profile_identity,
+                )
+            else:
+                result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1134,7 +1148,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, profile_identity=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1148,6 +1162,11 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if isinstance(profile_identity, dict):
+                for key in ("username", "icon_url", "icon_emoji"):
+                    value = str(profile_identity.get(key) or "").strip()
+                    if value:
+                        payload[key] = value
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
