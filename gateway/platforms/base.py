@@ -2136,8 +2136,13 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
+        # Accept ``FILE:`` as an alias for ``MEDIA:`` — large reasoning models
+        # (Claude Opus 4.x notably) routinely hallucinate ``FILE:`` instead of
+        # the documented ``MEDIA:`` marker even when the system prompt is
+        # explicit. Treat them interchangeably so user-facing delivery does
+        # not silently degrade into a literal path string.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?(?:MEDIA|FILE):\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -3128,7 +3133,7 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = text_content.replace("[[as_document]]", "").strip()
-                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                text_content = re.sub(r"(?:MEDIA|FILE):\s*\S+", "", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
