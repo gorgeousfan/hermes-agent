@@ -1008,9 +1008,15 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
 
 def _parse_optional_int_env(name: str) -> int | None:
     """Parse an int env var that may be unset/empty — returning None lets the
-    backend keep the SDK default rather than override it to 0."""
+    backend keep the SDK default rather than override it to 0.
+
+    YAML ``null`` round-trips through the config→env bridge as the literal
+    string ``"None"`` (see cli.py / gateway/run.py); ``"none"``/``"null"`` are
+    also common manual spellings. Treat them all as unset so a default-shaped
+    config.yaml does not error out terminal startup.
+    """
     raw = os.getenv(name, "").strip()
-    if not raw:
+    if not raw or raw.lower() in {"none", "null"}:
         return None
     try:
         return int(raw)

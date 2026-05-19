@@ -761,6 +761,12 @@ if _config_path.exists():
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
                     _val = _terminal_cfg[_cfg_key]
+                    # YAML null / Python None means "keep the SDK / parser
+                    # default" for optional ints (daytona_auto_archive_interval
+                    # etc.). Writing str(None) here would export the literal
+                    # "None" string, which terminal_tool then has to special-case.
+                    if _val is None:
+                        continue
                     # Skip cwd placeholder values (".", "auto", "cwd") — the
                     # gateway resolves these to Path.home() later (line ~255).
                     # Writing the raw placeholder here would just be noise.

@@ -608,6 +608,12 @@ def load_cli_config() -> Dict[str, Any]:
                 continue
             if _file_has_terminal_config or env_var not in os.environ:
                 val = terminal_config[config_key]
+                # YAML null / Python None means "keep the SDK / parser default"
+                # for optional ints (daytona_auto_archive_interval, etc.).
+                # Writing str(None) here would export the literal "None" string,
+                # which _parse_optional_int_env then has to special-case.
+                if val is None:
+                    continue
                 if isinstance(val, (list, dict)):
                     os.environ[env_var] = json.dumps(val)
                 else:

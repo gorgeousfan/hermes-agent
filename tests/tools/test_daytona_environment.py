@@ -472,3 +472,77 @@ class TestAutoStopConfig:
         params = env._mock_client.create.call_args.args[0]
         assert "auto_archive_interval" not in params.kwargs
         assert "auto_delete_interval" not in params.kwargs
+
+
+class TestResumedSandboxIntervals:
+    """Resumed (persistent_filesystem) sandboxes must accept current config —
+    create_params don't apply on resume, so the SDK runtime setters carry it."""
+
+    def test_resumed_sandbox_pushes_intervals_via_setters(self, make_env):
+        existing = _make_sandbox(sandbox_id="sb-resumed")
+        existing.process.exec.return_value = _make_exec_response(result="/root")
+        env = make_env(
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+            auto_stop_interval=15,
+            auto_archive_interval=60,
+            auto_delete_interval=1440,
+        )
+        existing.set_autostop_interval.assert_called_once_with(15)
+        existing.set_auto_archive_interval.assert_called_once_with(60)
+        existing.set_auto_delete_interval.assert_called_once_with(1440)
+        # And resume path must not also call create()
+        env._mock_client.create.assert_not_called()
+
+    def test_resumed_sandbox_skips_setters_for_none_intervals(self, make_env):
+        existing = _make_sandbox(sandbox_id="sb-resumed")
+        existing.process.exec.return_value = _make_exec_response(result="/root")
+        make_env(
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+            auto_stop_interval=15,
+            auto_archive_interval=None,
+            auto_delete_interval=None,
+        )
+        existing.set_autostop_interval.assert_called_once_with(15)
+        existing.set_auto_archive_interval.assert_not_called()
+        existing.set_auto_delete_interval.assert_not_called()
+
+    def test_resumed_sandbox_tolerates_missing_setter(self, make_env):
+        """Older Daytona SDK versions may not expose every setter; the resume
+        path must not raise when a setter is absent."""
+        existing = _make_sandbox(sandbox_id="sb-resumed")
+        existing.process.exec.return_value = _make_exec_response(result="/root")
+        # Remove the archive setter entirely (simulating older SDK).
+        # MagicMock auto-creates attributes on access, so wire it through spec.
+        existing.set_autostop_interval = MagicMock()
+        existing.set_auto_delete_interval = MagicMock()
+        del existing.set_auto_archive_interval
+
+        make_env(
+            get_side_effect=lambda name: existing,
+            persistent=True,
+            task_id="mytask",
+            auto_stop_interval=15,
+            auto_archive_interval=60,
+            auto_delete_interval=1440,
+        )
+        existing.set_autostop_interval.assert_called_once_with(15)
+        existing.set_auto_delete_interval.assert_called_once_with(1440)
+
+    def test_freshly_created_sandbox_does_not_call_setters(
+        self, make_env, daytona_sdk
+    ):
+        """On the create path, intervals already ride in create_params — the
+        runtime setters are reserved for the resume path."""
+        daytona_sdk.CreateSandboxFromImageParams = _CapturedParams
+        env = make_env(
+            persistent=False,
+            auto_stop_interval=15,
+            auto_archive_interval=60,
+        )
+        env._sandbox.set_autostop_interval.assert_not_called()
+        env._sandbox.set_auto_archive_interval.assert_not_called()
+        env._sandbox.set_auto_delete_interval.assert_not_called()
