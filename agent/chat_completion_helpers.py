@@ -89,6 +89,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     configured timeout, the connection is killed and an error raised so
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
+
+    Pre-emptive RPM throttling is applied at ``run_conversation`` (the
+    outer loop), not here — so callers that wrap multiple sub-calls per
+    turn don't double-throttle.
     """
     result = {"response": None, "error": None}
     request_client_holder = {"client": None}
@@ -226,7 +230,20 @@ def interruptible_api_call(agent, api_kwargs: dict):
             raise InterruptedError("Agent interrupted during API call")
     if result["error"] is not None:
         raise result["error"]
-    return result["response"]
+    # Capture rate-limit headers from the non-streaming response.  The
+    # streaming path already captures via stream.response in its finalizer;
+    # non-streaming OpenAI/Anthropic SDK responses expose the underlying
+    # httpx response as ``.response`` or ``._response``.  Feeds the
+    # x-ratelimit-* values into _maybe_rpm_throttle() on the next turn.
+    resp = result["response"]
+    if resp is not None:
+        http_resp = getattr(resp, "response", None) or getattr(resp, "_response", None)
+        if http_resp is not None:
+            try:
+                agent._capture_rate_limits(http_resp)
+            except Exception:
+                logger.debug("rate-limit capture failed", exc_info=True)
+    return resp
 
 
 

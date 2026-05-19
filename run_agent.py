@@ -1866,6 +1866,21 @@ class AIAgent:
         """Return the last captured RateLimitState, or None."""
         return self._rate_limit_state
 
+    def _maybe_rpm_throttle(self) -> float:
+        """Pre-emptive RPM throttle — sleep if near the provider's RPM limit.
+
+        Called before each LLM API call.  Returns seconds slept (``0.0`` if
+        none).  Failures are swallowed so throttle logic can never break the
+        agent loop (except for ``KeyboardInterrupt`` / ``SystemExit``).
+        """
+        try:
+            from agent.rpm_throttler import maybe_throttle
+            return maybe_throttle(self._rate_limit_state, self.provider or "")
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            return 0.0
+
     def _check_openrouter_cache_status(self, http_response: Any) -> None:
         """Read X-OpenRouter-Cache-Status from response headers and log it.
 
