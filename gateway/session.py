@@ -9,9 +9,10 @@ Handles:
 """
 
 import hashlib
+import json
 import logging
 import os
-import json
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -1293,9 +1294,11 @@ class SessionStore:
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
-        
+
         Used by /retry, /undo, and /compress to persist modified conversation history.
-        Rewrites both SQLite and legacy JSONL storage.
+        Rewrites both SQLite and legacy JSONL storage atomically so a crash
+        mid-rewrite cannot leave the session with a partially written or
+        empty transcript.  (#8029)
         """
         # SQLite: replace atomically so a mid-rewrite failure doesn't leave
         # the session half-empty in the DB while JSONL still has history.
@@ -1304,12 +1307,23 @@ class SessionStore:
                 self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
-        
-        # JSONL: overwrite the file
+
+        # JSONL: write to temp file, then atomic rename
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            for msg in messages:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=transcript_path.parent, suffix=".jsonl.tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for msg in messages:
+                    f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+            os.replace(tmp_path, transcript_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
