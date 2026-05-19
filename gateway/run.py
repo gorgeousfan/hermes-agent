@@ -1659,7 +1659,7 @@ class GatewayRunner:
             return
 
         connected = self.config.get_connected_platforms()
-        messaging_platforms = [p for p in connected if p not in {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}]
+        messaging_platforms = [p for p in connected if p not in {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK, Platform.SVIX}]
         if not messaging_platforms:
             return
 
@@ -6058,6 +6058,18 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.SVIX:
+            from gateway.platforms.svix import SvixAdapter, check_svix_requirements
+            if not check_svix_requirements():
+                logger.warning(
+                    "Svix: svix SDK not installed. Run: pip install svix "
+                    "(per-route auth tokens are validated at connect() time, not here)."
+                )
+                return None
+            adapter = SvixAdapter(config)
+            adapter.gateway_runner = self  # For cross-platform delivery
+            return adapter
+
         elif platform == Platform.MSGRAPH_WEBHOOK:
             from gateway.platforms.msgraph_webhook import (
                 MSGraphWebhookAdapter,
@@ -6105,8 +6117,10 @@ class GatewayRunner:
         # user-initiated messages.  The HASS_TOKEN already authenticates the
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
-        # the adapter itself — no user allowlist applies.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+        # the adapter itself — no user allowlist applies. Svix polling
+        # events are authenticated via per-route Bearer tokens used to fetch
+        # them from Svix.
+        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.SVIX}:
             return True
 
         user_id = source.user_id
@@ -8349,8 +8363,8 @@ class GatewayRunner:
             )
         
         # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        # Skip for webhook-style sources - they deliver directly to configured targets (github_comment, etc.)
+        if not history and source.platform and source.platform not in {Platform.LOCAL, Platform.WEBHOOK, Platform.SVIX}:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
@@ -15490,15 +15504,17 @@ class GatewayRunner:
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
-        # Disable tool progress for webhooks - they don't support message editing,
-        # so each progress line would be sent as a separate message.
+        # Disable tool progress for webhook-style sources - they don't support
+        # message editing, so each progress line would be sent as a separate
+        # message. Svix events behave like webhooks in this respect.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        _is_webhook_style = source.platform in {Platform.WEBHOOK, Platform.SVIX}
+        tool_progress_enabled = progress_mode != "off" and not _is_webhook_style
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            not _is_webhook_style
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,

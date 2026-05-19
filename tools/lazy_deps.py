@@ -148,6 +148,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.5.3",
         "qrcode==7.4.2",
     ),
+    # Svix adapter — Python SDK for fetching events from Svix
+    # polling endpoints. The svix CLI (used at setup time, not at runtime)
+    # is installed separately via Homebrew / the user's package manager.
+    "platform.svix": ("svix>=1.93.0,<2",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
