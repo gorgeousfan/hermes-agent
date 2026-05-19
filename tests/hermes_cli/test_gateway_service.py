@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -450,6 +451,26 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_launchd_plist_uses_extended_exit_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+        expected_timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
+        assert plist["ExitTimeOut"] == expected_timeout
+        assert plist["ExitTimeOut"] > DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+
+    def test_launchd_plist_exit_timeout_tracks_custom_drain_timeout(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 240.0)
+
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+        assert plist["ExitTimeOut"] == 270
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

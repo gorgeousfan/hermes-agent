@@ -2159,8 +2159,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
     # by a force-interrupted agent get reaped by systemd instead of us
     # (#8202). 30s of headroom covers the worst case we've observed.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout) + 30
+    restart_timeout = _service_restart_exit_timeout()
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -2435,6 +2434,17 @@ def _get_restart_drain_timeout() -> float:
             )
         )
     return parse_restart_drain_timeout(raw)
+
+
+def _service_restart_exit_timeout() -> int:
+    """Return service-manager stop/exit timeout with cleanup headroom."""
+    # The gateway drain loop can legitimately run for the full configured
+    # restart timeout, then still needs a little time to clean up adapter
+    # connections, tool subprocesses, and the session DB. Service managers
+    # should therefore wait longer than ``agent.restart_drain_timeout`` before
+    # escalating to SIGKILL.
+    drain_timeout = int(_get_restart_drain_timeout() or 0)
+    return max(60, drain_timeout) + 30
 
 
 def systemd_install(force: bool = False, system: bool = False, run_as_user: str | None = None):
@@ -2779,6 +2789,7 @@ def generate_launchd_plist() -> str:
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
+    exit_timeout = _service_restart_exit_timeout()
     profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
@@ -2848,6 +2859,9 @@ def generate_launchd_plist() -> str:
         <key>SuccessfulExit</key>
         <false/>
     </dict>
+
+    <key>ExitTimeOut</key>
+    <integer>{exit_timeout}</integer>
     
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
