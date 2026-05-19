@@ -430,6 +430,10 @@ SLACK_ALLOW_BOTS=mentions   # default: none
 | `mentions` | Accept only when the peer bot @mentions Hermes. |
 | `all` | Accept every peer bot message. |
 
+:::warning
+Prefer `mentions` in shared or busy channels. `all` accepts every peer bot message and can sharply increase inbound traffic — including feedback loops with automations that react to Hermes' own replies (Hermes drops self-originated traffic, but other bots may not). Reserve `all` for tightly controlled environments where the set of peer bots is known and trusted.
+:::
+
 Also configurable as `platforms.slack.extra.allow_bots` in `config.yaml`:
 
 ```yaml
