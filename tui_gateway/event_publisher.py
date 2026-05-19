@@ -43,7 +43,8 @@ _QUEUE_MAX = 256
 # its open timeout.  A short exponential backoff (0.25s → 0.5s → 1s) covers the
 # observed bind delay on WSL2 without meaningfully extending startup latency
 # in the happy path.
-_CONNECT_ATTEMPTS = 3
+# 4 attempts ≈ 1.75s total backoff (0.25 + 0.5 + 1.0) — N attempts → N-1 sleeps.
+_CONNECT_ATTEMPTS = 4
 _CONNECT_BACKOFF_S = 0.25
 
 
