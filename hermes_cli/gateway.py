@@ -2769,7 +2769,14 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+
+
+_LAUNCHD_JOB_UNLOADED_EXIT_CODES = {3, 113, 125}
+
+
+def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
+    return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
 
 
 def generate_launchd_plist() -> str:
@@ -2839,6 +2846,12 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+        <string>Background</string>
+    </array>
     
     <key>RunAtLoad</key>
     <true/>
@@ -2945,7 +2958,7 @@ def launchd_start():
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
             raise
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
@@ -2969,7 +2982,7 @@ def launchd_stop():
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
-        if e.returncode in {3, 113}:
+        if _launchd_error_indicates_unloaded(e):
             pass  # Already unloaded — nothing to stop.
         else:
             raise
@@ -3041,7 +3054,7 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")

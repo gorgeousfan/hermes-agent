@@ -554,6 +554,38 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_reloads_on_kickstart_exit_code_125(self, tmp_path, monkeypatch):
+        """Exit code 125 can mean the launchd job is absent from the GUI domain."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    125,
+                    cmd,
+                    stderr="Domain does not support specified action",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+        ]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"

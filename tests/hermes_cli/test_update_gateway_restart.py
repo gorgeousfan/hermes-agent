@@ -132,6 +132,12 @@ class TestLaunchdPlistReplace:
         plist = gateway_cli.generate_launchd_plist()
         assert "--replace" in plist
 
+    def test_plist_supports_aqua_and_background_sessions(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>LimitLoadToSessionType</key>" in plist
+        assert "<string>Aqua</string>" in plist
+        assert "<string>Background</string>" in plist
+
     def test_plist_program_arguments_order(self):
         """--replace comes after 'run' in the ProgramArguments."""
         plist = gateway_cli.generate_launchd_plist()
