@@ -7,7 +7,7 @@ import sys
 _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
 if _src_root and _src_root not in sys.path:
     sys.path.insert(0, _src_root)
-# Strip '' and '.' — both resolve to CWD at import time and can let a local
+# Strip '' and '.' - both resolve to CWD at import time and can let a local
 # directory shadow installed packages.
 sys.path = [p for p in sys.path if p not in {"", "."}]
 
@@ -15,6 +15,15 @@ import json
 import signal
 import time
 import traceback
+
+# Register shell hooks (pre_tool_call, post_tool_call, etc.) so they fire
+# during TUI tool dispatch - matches what CLI and gateway modes already do.
+try:
+    from hermes_cli.config import load_config
+    from agent.shell_hooks import register_from_config
+    register_from_config(load_config(), accept_hooks=False)
+except Exception:
+    pass
 
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
@@ -68,12 +77,12 @@ def _log_signal(signum: int, frame) -> None:
     SIG_DFL for SIGPIPE kills the process silently the instant any
     background thread (TTS playback, beep, voice status emitter, etc.)
     writes to a stdout the TUI has stopped reading.  Without this
-    handler the gateway-exited banner in the TUI has no trace — the
+    handler the gateway-exited banner in the TUI has no trace - the
     crash log never sees a Python exception because the kernel reaps
     the process before the interpreter runs anything.
 
     Termination semantics: ``sys.exit(0)`` here used to race the worker
-    pool — a thread holding ``_stdout_lock`` mid-flush would block the
+    pool - a thread holding ``_stdout_lock`` mid-flush would block the
     interpreter shutdown indefinitely.  We now log the stack, give the
     process the configured shutdown grace
     (``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S``, default
@@ -81,7 +90,7 @@ def _log_signal(signum: int, frame) -> None:
     thread, and fall back to ``os._exit(0)`` so a wedged write/flush
     can never strand the process.
     """
-    # SIGPIPE and SIGHUP don't exist on Windows — build the lookup
+    # SIGPIPE and SIGHUP don't exist on Windows - build the lookup
     # dict from attributes that actually exist on the current platform.
     _signal_names: dict[int, str] = {}
     for _attr in ("SIGPIPE", "SIGTERM", "SIGHUP", "SIGINT", "SIGBREAK"):
@@ -98,7 +107,7 @@ def _log_signal(signum: int, frame) -> None:
             if frame is not None:
                 f.write("main-thread stack at signal delivery:\n")
                 traceback.print_stack(frame, file=f)
-            # All live threads — signal may have been triggered by a
+            # All live threads - signal may have been triggered by a
             # background thread (write to broken stdout from TTS, etc.).
             import threading as _threading
             for tid, th in _threading._active.items():
@@ -137,7 +146,7 @@ def _log_signal(signum: int, frame) -> None:
 # SIGPIPE: ignore, don't exit. The old SIG_DFL killed the process
 # silently whenever a *background* thread (TTS playback chain, voice
 # debug stderr emitter, beep thread) wrote to a pipe the TUI had gone
-# quiet on — even though the main thread was perfectly fine waiting on
+# quiet on - even though the main thread was perfectly fine waiting on
 # stdin.  Ignoring the signal lets Python raise BrokenPipeError on the
 # offending write (write_json already handles that with a clean
 # sys.exit(0) + _log_exit), which keeps the gateway alive as long as
@@ -169,7 +178,7 @@ def _log_exit(reason: str) -> None:
     dispatch-response write fail, stdin EOF) all collapse into a silent
     sys.exit(0) here.  Without this trail the TUI shows "gateway exited"
     with no actionable clue about WHICH broken pipe or WHICH message
-    triggered it — the main reason voice-mode turns look like phantom
+    triggered it - the main reason voice-mode turns look like phantom
     crashes when the real story is "TUI read pipe closed on this event".
     """
     try:
@@ -187,18 +196,18 @@ def _log_exit(reason: str) -> None:
 def main():
     _install_sidecar_publisher()
 
-    # MCP tool discovery — inline is safe here: TUI entry is a plain
+    # MCP tool discovery - inline is safe here: TUI entry is a plain
     # sync loop with no asyncio event loop to block.  Previously ran as
     # a model_tools.py module-level side effect; moved to explicit
     # startup calls to avoid freezing the gateway's loop on lazy import
     # (#16856).
     #
     # Cold-start guard: importing ``tools.mcp_tool`` transitively pulls the
-    # full MCP SDK (mcp, pydantic, httpx, jsonschema, starlette parsers —
+    # full MCP SDK (mcp, pydantic, httpx, jsonschema, starlette parsers -
     # ~200ms on macOS), which runs on the TUI's critical path before
     # ``gateway.ready`` can be emitted.  The overwhelming majority of users
     # have no ``mcp_servers`` configured, in which case every byte of that
-    # import is wasted.  Check the config first (cheap — it's already been
+    # import is wasted.  Check the config first (cheap - it's already been
     # loaded once by ``_config_mtime`` elsewhere) and only pay the import
     # cost when there's actually MCP work to do.
     try:
