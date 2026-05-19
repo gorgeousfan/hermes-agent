@@ -44,6 +44,27 @@ MARKER = 'LINUX = sys.platform.startswith("linux")'
 REPLACEMENT = 'LINUX = sys.platform.startswith(("linux", "android"))'
 
 
+def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
+    """Extract regular files/dirs from a tarball without path traversal."""
+    dest_resolved = dest.resolve()
+    for member in tf.getmembers():
+        name = member.name
+        target = (dest / name).resolve()
+        if not (target == dest_resolved or dest_resolved in target.parents):
+            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+        if not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(f"refusing to extract unsafe member: {name!r}")
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = tf.extractfile(member)
+        if source is None:
+            raise tarfile.TarError(f"failed to read tar member: {name!r}")
+        with source, open(target, "wb") as out:
+            shutil.copyfileobj(source, out)
+
+
 def _resolve_install_cmd(pip_arg: str | None, prefer_uv: bool) -> list[str]:
     if pip_arg:
         return pip_arg.split()
@@ -83,7 +104,7 @@ def main() -> int:
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(PSUTIL_URL, archive)
         with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
+            _safe_extract_tar(tar, tmp_path)
 
         try:
             src_root = next(

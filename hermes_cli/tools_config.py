@@ -645,18 +645,21 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     """
     import shutil
     import subprocess
+    import tempfile
+    import urllib.request
 
-    install_cmd = (
-        "/bin/bash -c \"$(curl -fsSL "
-        "https://raw.githubusercontent.com/trycua/cua/main/"
-        "libs/cua-driver/scripts/install.sh)\""
-    )
+    install_url = "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh"
+    manual_cmd = f"/bin/bash -c \"$(curl -fsSL {install_url})\""
     if verbose:
         _print_info(f"    {label} cua-driver (macOS background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
+        with tempfile.NamedTemporaryFile("wb", suffix="-cua-driver-install.sh") as script:
+            with urllib.request.urlopen(install_url, timeout=30) as resp:
+                script.write(resp.read())
+            script.flush()
+            result = subprocess.run(["/bin/bash", script.name], timeout=300)
         if result.returncode == 0 and shutil.which("cua-driver"):
             if verbose:
                 _print_success("    cua-driver installed.")
@@ -666,7 +669,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
                 _print_info("    Both must allow the terminal / Hermes process.")
             return True
         _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
-        _print_info(f"      {install_cmd}")
+        _print_info(f"      {manual_cmd}")
         return False
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")

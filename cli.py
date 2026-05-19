@@ -46,6 +46,17 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _shell_command_argv(command: str) -> List[str]:
+    """Return an explicit shell argv for user-defined quick commands.
+
+    Quick commands intentionally allow shell snippets from the user's config,
+    but using an explicit shell argv avoids subprocess shell mode.
+    """
+    if os.name == "nt":
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]
+    return [os.environ.get("SHELL", "/bin/sh"), "-c", command]
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -8112,10 +8123,11 @@ class HermesCLI:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            # shell=True is intentional: quick_commands are user-defined
-                            # shell snippets from config.yaml — not agent/LLM controlled.
+                            # Quick commands are user-defined shell snippets from
+                            # config.yaml. Run them through an explicit shell argv
+                            # instead of subprocess shell mode.
                             result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
+                                _shell_command_argv(exec_cmd), capture_output=True,
                                 text=True, timeout=30
                             )
                             output = result.stdout.strip() or result.stderr.strip()

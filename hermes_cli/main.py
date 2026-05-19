@@ -67,6 +67,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from typing import Optional
 
@@ -6525,7 +6526,8 @@ def _update_via_zip(args):
 
         print("→ Extracting...")
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Validate paths to prevent zip-slip (path traversal)
+            # Validate paths to prevent zip-slip (path traversal), then extract
+            # files manually so static analysis can see the guarded writes.
             tmp_dir_real = os.path.realpath(tmp_dir)
             for member in zf.infolist():
                 member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
@@ -6536,7 +6538,12 @@ def _update_via_zip(args):
                     raise ValueError(
                         f"Zip-slip detected: {member.filename} escapes extraction directory"
                     )
-            zf.extractall(tmp_dir)
+                if member.is_dir():
+                    os.makedirs(member_path, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(member_path), exist_ok=True)
+                with zf.open(member, "r") as src, open(member_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
 
         # GitHub ZIPs extract to hermes-agent-<branch>/
         extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
@@ -7406,6 +7413,27 @@ def _is_android_python() -> bool:
     return sys.platform == "android"
 
 
+def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
+    """Extract regular files/dirs from a tarball without path traversal."""
+    dest_resolved = dest.resolve()
+    for member in tf.getmembers():
+        name = member.name
+        target = (dest / name).resolve()
+        if not (target == dest_resolved or dest_resolved in target.parents):
+            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+        if not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(f"refusing to extract unsafe member: {name!r}")
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = tf.extractfile(member)
+        if source is None:
+            raise tarfile.TarError(f"failed to read tar member: {name!r}")
+        with source, open(target, "wb") as out:
+            shutil.copyfileobj(source, out)
+
+
 def _install_psutil_android_compat(
     install_cmd_prefix: list[str],
     *,
@@ -7427,7 +7455,6 @@ def _install_psutil_android_compat(
     contains the same logic for ``scripts/install.sh`` (fresh installs).
     Both copies should be removed together.
     """
-    import tarfile
     import tempfile
     import urllib.request
 
@@ -7442,7 +7469,7 @@ def _install_psutil_android_compat(
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(psutil_url, archive)
         with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
+            _safe_extract_tar(tar, tmp_path)
 
         src_root = next(
             p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")

@@ -67,6 +67,36 @@ _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
 
+def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
+    """Extract a curator snapshot while blocking traversal and links.
+
+    Curator snapshots only need regular files and directories. Avoid
+    ``extractall()`` so rollback is safe on Python versions without
+    ``filter='data'`` and so Bandit can verify the path checks.
+    """
+    dest_resolved = dest.resolve()
+    for member in tf.getmembers():
+        name = member.name
+        target = (dest / name).resolve()
+        if not (target == dest_resolved or dest_resolved in target.parents):
+            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+        if not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(f"refusing to extract unsafe member: {name!r}")
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = tf.extractfile(member)
+        if source is None:
+            raise tarfile.TarError(f"failed to read tar member: {name!r}")
+        with source, open(target, "wb") as out:
+            shutil.copyfileobj(source, out)
+        try:
+            os.chmod(target, member.mode & 0o777)
+        except OSError:
+            pass
+
+
 def _backups_dir() -> Path:
     return get_hermes_home() / "skills" / ".curator_backups"
 
@@ -600,20 +630,7 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # Step 4: extract the snapshot into skills/
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Python 3.12+ supports filter='data' for safer extraction.
-            # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
-            for member in tf.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(
-                        f"refusing to extract unsafe path: {name!r}"
-                    )
-            try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
-            except TypeError:
-                # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+            _safe_extract_tar(tf, skills)
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
         for orig, dest in moved:

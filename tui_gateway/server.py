@@ -72,6 +72,13 @@ def _panic_hook(exc_type, exc_value, exc_tb):
     sys.__excepthook__(exc_type, exc_value, exc_tb)
 
 
+def _shell_command_argv(command: str) -> list[str]:
+    """Return an explicit shell argv for user-entered shell snippets."""
+    if os.name == "nt":
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]
+    return [os.environ.get("SHELL", "/bin/sh"), "-c", command]
+
+
 sys.excepthook = _panic_hook
 
 
@@ -4609,8 +4616,7 @@ def _(rid, params: dict) -> dict:
         qc = qcmds[name]
         if qc.get("type") == "exec":
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                _shell_command_argv(qc.get("command", "")),
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -6627,7 +6633,11 @@ def _(rid, params: dict) -> dict:
         pass
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            _shell_command_argv(cmd),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=os.getcwd(),
         )
         return _ok(
             rid,

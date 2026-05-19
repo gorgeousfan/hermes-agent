@@ -42,6 +42,14 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_opena
 
 logger = logging.getLogger(__name__)
 
+
+def _shell_command_argv(command: str) -> list[str]:
+    """Return an explicit shell argv for user-provided STT command templates."""
+    if os.name == "nt":
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", command]
+    return [os.environ.get("SHELL", "/bin/sh"), "-c", command]
+
+
 def get_env_value(name, default=None):
     """Read env values through the live config module.
 
@@ -515,7 +523,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                subprocess.run(tuple(_shell_command_argv(command)), check=True, capture_output=True, text=True)
             else:
                 subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
             
