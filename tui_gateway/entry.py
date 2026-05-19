@@ -96,7 +96,7 @@ def _log_signal(signum: int, frame) -> None:
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(
-                f"\n=== {name} received \u00b7 {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+                f"\n=== {name} received · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
             )
             if frame is not None:
                 f.write("main-thread stack at signal delivery:\n")
@@ -179,8 +179,8 @@ def _log_exit(reason: str) -> None:
         os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
         with open(_CRASH_LOG, "a", encoding="utf-8") as f:
             f.write(
-                f"\n=== gateway exit \u00b7 {time.strftime('%Y-%m-%d %H:%M:%S')} "
-                f"\u00b7 reason={reason} ===\n"
+                f"\n=== gateway exit · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"· reason={reason} ===\n"
             )
     except Exception:
         pass
