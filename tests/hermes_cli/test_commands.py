@@ -258,6 +258,21 @@ class TestTelegramBotCommands:
         assert "codex_runtime" in names
         assert "codex-runtime" not in names
 
+    def test_includes_commands_with_required_args(self):
+        """Arg-required commands (``<prompt>``) must be registered so
+        Telegram parses ``/cmd <text>`` typed by the user with a
+        ``bot_command`` entity.  Without registration Telegram delivers
+        the whole line as plain chat text (see #21790).
+        """
+        cmds = dict(telegram_bot_commands())
+        assert "steer" in cmds
+        assert "queue" in cmds
+        assert "background" in cmds
+        # The required argument must surface in the description so the
+        # menu entry is self-documenting when selected without args.
+        assert "<prompt>" in cmds["steer"]
+        assert "background" in GATEWAY_KNOWN_COMMANDS
+
 
 class TestSlackSubcommandMap:
     def test_returns_dict(self):
@@ -1683,8 +1698,10 @@ class TestPluginCommandEnumeration:
         names = {name for name, _desc in telegram_bot_commands()}
         assert "metricas" in names
 
-    def test_plugin_command_with_required_args_excluded_from_telegram_menu(self, monkeypatch):
-        """Telegram BotCommand selections cannot supply required arguments."""
+    def test_plugin_command_with_required_args_included_in_telegram_menu(self, monkeypatch):
+        """Plugin commands with ``<arg>`` hints must be registered so Telegram
+        tags ``/cmd <text>`` with a ``bot_command`` entity (see #21790).
+        """
         self._patch_plugin_commands(monkeypatch, {
             "background-job": {
                 "handler": lambda _a: "ok",
@@ -1693,8 +1710,9 @@ class TestPluginCommandEnumeration:
                 "plugin": "jobs-plugin",
             }
         })
-        names = {name for name, _desc in telegram_bot_commands()}
-        assert "background_job" not in names
+        cmds = dict(telegram_bot_commands())
+        assert "background_job" in cmds
+        assert "<prompt>" in cmds["background_job"]
 
     def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
         """/hermes metricas must route through the Slack subcommand map."""
