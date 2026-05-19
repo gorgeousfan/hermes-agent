@@ -12681,9 +12681,26 @@ Examples:
             # so inline is safe.  Moved here from model_tools.py module scope
             # to avoid freezing the gateway's event loop on its first message
             # via the same lazy import path (#16856).
-            from tools.mcp_tool import discover_mcp_tools
-
-            discover_mcp_tools()
+            #
+            # Skip-child-spawn 2026-05-14 (cascade-14): when this Hermes instance
+            # is invoked as an MCP CHILD by another MCP client (e.g., Claude Code
+            # running `hermes mcp serve`), spawning our own MCP children creates
+            # a recursive 27s fork tax (macOS fork × 13 stdio children). Skip
+            # discovery in that case via env var or CLI flag.
+            # Backup: ~/.hermes/hermes-agent/hermes_cli/main.py.bak.skip-child-spawn-20260514T1156Z
+            # Upstream PR target: github.com/NousResearch/hermes-agent
+            _skip_mcp_discovery = (
+                os.environ.get("HERMES_SKIP_MCP_DISCOVERY", "").lower() in ("1", "true", "yes")
+                or "--skip-child-mcps" in sys.argv
+            )
+            if _skip_mcp_discovery:
+                logger.info(
+                    "HERMES_SKIP_MCP_DISCOVERY/--skip-child-mcps set — skipping MCP child spawn "
+                    "(saves ~27s fork tax when running as a child MCP server)"
+                )
+            else:
+                from tools.mcp_tool import discover_mcp_tools
+                discover_mcp_tools()
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",
