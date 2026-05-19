@@ -440,6 +440,12 @@ export function useMainApp(gw: GatewayClient) {
     process.exit(0)
   }, [exit, gw])
 
+  const dieWithCode = useCallback((code: number) => {
+    gw.kill()
+    exit()
+    process.exit(code)
+  }, [exit, gw])
+
   const session = useSessionLifecycle({
     colsRef,
     composerActions,
@@ -736,6 +742,7 @@ export function useMainApp(gw: GatewayClient) {
         session: {
           closeSession: session.closeSession,
           die,
+          dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newLiveSession: session.newLiveSession,
           newSession: session.newSession,

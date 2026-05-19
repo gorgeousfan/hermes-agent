@@ -279,6 +279,7 @@ export interface SlashHandlerContext {
   session: {
     closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
+    dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
