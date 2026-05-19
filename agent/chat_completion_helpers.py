@@ -35,7 +35,11 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from agent.error_classifier import classify_api_error, FailoverReason
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_tokens_rough,
+    is_local_endpoint,
+)
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
@@ -73,6 +77,31 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def apply_streaming_token_fallback(usage_obj, api_messages, content_parts):
+    """Fall back to rough estimation for providers that don't send usage data.
+
+    Providers like MiniMax and Kimi don't include token counts in stream
+    chunks. A ``None`` usage object — or one missing both ``prompt_tokens``
+    and ``completion_tokens`` — is treated as "no usage data received" and
+    replaced with rough character-based estimates so token accounting and
+    context-window decisions downstream don't see 0/0.
+
+    Uses ``is None`` checks (not falsiness) so legitimate zero values
+    (e.g. cache hits reporting ``prompt_tokens=0``) are preserved instead
+    of being overwritten with an estimate. (#12023)
+    """
+    _prompt = getattr(usage_obj, "prompt_tokens", None) if usage_obj is not None else None
+    _completion = getattr(usage_obj, "completion_tokens", None) if usage_obj is not None else None
+    if _prompt is None and _completion is None:
+        _est_prompt = estimate_messages_tokens_rough(api_messages)
+        _comp_text = "".join(content_parts) if content_parts else ""
+        usage_obj = SimpleNamespace(
+            prompt_tokens=_est_prompt,
+            completion_tokens=estimate_tokens_rough(_comp_text),
+        )
+    return usage_obj
 
 
 
@@ -1549,6 +1578,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             index=0,
             message=mock_message,
             finish_reason=effective_finish_reason,
+        )
+        usage_obj = apply_streaming_token_fallback(
+            usage_obj, api_messages, content_parts
         )
         return SimpleNamespace(
             id="stream-" + str(uuid.uuid4()),
