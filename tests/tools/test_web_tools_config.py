@@ -259,6 +259,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SERPAPI_API_KEY",
     )
 
     def setup_method(self):
@@ -304,6 +305,12 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}):
             assert _get_backend() == "tavily"
+
+    def test_config_serpapi(self):
+        """web.backend=serpapi in config → 'serpapi' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "serpapi"}):
+            assert _get_backend() == "serpapi"
 
     def test_config_tavily_overrides_env_keys(self):
         """web.backend=tavily in config → 'tavily' even if Firecrawl key set."""
@@ -353,6 +360,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_serpapi_only_key(self):
+        """Only SERPAPI_API_KEY set → 'serpapi'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SERPAPI_API_KEY": "serp-test"}):
+            assert _get_backend() == "serpapi"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -558,6 +572,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SERPAPI_API_KEY",
     )
 
     def setup_method(self):
@@ -598,6 +613,11 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_serpapi_key_only(self):
+        with patch.dict(os.environ, {"SERPAPI_API_KEY": "serp-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -642,7 +662,8 @@ class TestCheckWebApiKey:
                     assert check_web_api_key() is True
 
 
-def test_web_requires_env_includes_exa_key():
+def test_web_requires_env_includes_exa_and_serpapi_keys():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "SERPAPI_API_KEY" in _web_requires_env()

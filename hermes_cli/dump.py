@@ -282,6 +282,7 @@ def run_dump(args):
         ("KILOCODE_API_KEY", "kilocode"),
         ("FIRECRAWL_API_KEY", "firecrawl"),
         ("TAVILY_API_KEY", "tavily"),
+        ("SERPAPI_API_KEY", "serpapi"),
         ("BROWSERBASE_API_KEY", "browserbase"),
         ("FAL_KEY", "fal"),
         ("ELEVENLABS_API_KEY", "elevenlabs"),

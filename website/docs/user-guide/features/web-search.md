@@ -1,6 +1,6 @@
 ---
 title: Web Search & Extract
-description: Search the web, extract page content, and crawl websites with multiple backend providers — including free self-hosted SearXNG.
+description: Search the web, extract page content, and crawl websites with multiple backend providers — including SerpApi and free self-hosted SearXNG.
 sidebar_label: Web Search
 sidebar_position: 6
 ---
@@ -23,10 +23,11 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | — | ✔ Free |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ | 1 000 searches/mo |
+| **SerpApi** | `SERPAPI_API_KEY` | ✔ | — | — | 250 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — | Paid |
 
-Brave Search and DDGS are **search-only** — pair either with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use).
+Brave Search, SerpApi and DDGS are **search-only** — pair either with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -234,6 +235,31 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 ---
 
+### SerpApi
+
+Structured search results from Google and many other search engines. Hermes defaults to SerpApi's fast `google_light` engine and normalizes organic results into `web_search` output.
+
+```bash
+# ~/.hermes/.env
+SERPAPI_API_KEY=your-serpapi-key-here
+```
+
+Get a key at [serpapi.com](https://serpapi.com). The free plan includes 250 searches/month.
+
+SerpApi is **search-only** — pair it with Firecrawl, Tavily, Exa, or Parallel when you also need `web_extract`.
+
+Optional tuning:
+
+```bash
+# ~/.hermes/.env
+SERPAPI_ENGINE=google_light
+SERPAPI_LOCATION="Austin, Texas, United States"
+SERPAPI_GL=us
+SERPAPI_HL=en
+```
+
+---
+
 ### Tavily
 
 AI-optimised search, extract, and crawl with a generous free tier.
@@ -282,7 +308,7 @@ Set one provider for all web capabilities:
 ```yaml
 # ~/.hermes/config.yaml
 web:
-  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel
+  backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | serpapi | tavily | exa | parallel
 ```
 
 ### Per-capability configuration
@@ -312,6 +338,7 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` | firecrawl |
 | `PARALLEL_API_KEY` | parallel |
 | `TAVILY_API_KEY` | tavily |
+| `SERPAPI_API_KEY` | serpapi |
 | `EXA_API_KEY` | exa |
 | `SEARXNG_URL` | searxng |
 
