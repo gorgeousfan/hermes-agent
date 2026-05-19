@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -16,18 +17,11 @@ import signal
 import time
 import traceback
 
-# Register shell hooks (pre_tool_call, post_tool_call, etc.) so they fire
-# during TUI tool dispatch - matches what CLI and gateway modes already do.
-try:
-    from hermes_cli.config import load_config
-    from agent.shell_hooks import register_from_config
-    register_from_config(load_config(), accept_hooks=False)
-except Exception:
-    pass
-
 from tui_gateway import server
 from tui_gateway.server import _CRASH_LOG, dispatch, resolve_skin, write_json
 from tui_gateway.transport import TeeTransport
+
+logger = logging.getLogger(__name__)
 
 
 def _install_sidecar_publisher() -> None:
@@ -224,6 +218,29 @@ def main():
             discover_mcp_tools()
         except Exception:
             pass
+
+    # Discover Python plugins before shell hooks so plugin block decisions
+    # take precedence in tie cases (mirrors gateway/run.py startup sequence).
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception:
+        logger.debug("plugin discovery failed at tui_gateway startup", exc_info=True)
+
+    # Register declarative shell hooks from cli-config.yaml so pre_tool_call,
+    # post_tool_call, etc. fire during TUI tool dispatch - matches what the
+    # CLI and messaging gateway already do.  TUI has no TTY, so consent must
+    # come from --accept-hooks, HERMES_ACCEPT_HOOKS, or hooks_auto_accept in
+    # config; register_from_config resolves that itself.  Failures must never
+    # block TUI startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at tui_gateway startup", exc_info=True
+        )
 
     if not write_json({
         "jsonrpc": "2.0",
