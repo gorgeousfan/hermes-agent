@@ -2024,33 +2024,59 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         await self._join_room_by_id(room_id)
 
-    async def _join_room_by_id(self, room_id: str) -> bool:
-        """Join a room by ID and refresh local caches on success."""
+    async def _join_room_by_id(self, room_id: str, timeout: float = 10.0) -> bool:
+        """Join a room by ID and refresh local caches on success.
+
+        The join is bounded by ``timeout`` so a dead room (deleted, or on an
+        unresponsive homeserver) cannot block the caller indefinitely. Without
+        this guard the gateway can boot-loop: the connect path calls
+        ``_join_pending_invites`` during initial sync, and a single hung
+        federation request exceeds the supervisor's 30s connect timeout, which
+        triggers reconnect and replays the same hang forever (#29303).
+        """
         if not room_id:
             return False
         if room_id in self._joined_rooms:
             return True
         try:
-            await self._client.join_room(RoomID(room_id))
+            await asyncio.wait_for(
+                self._client.join_room(RoomID(room_id)),
+                timeout=timeout,
+            )
             self._joined_rooms.add(room_id)
             logger.info("Matrix: joined %s", room_id)
             await self._refresh_dm_cache()
             return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Matrix: timed out joining %s after %.0fs (dead room or unresponsive homeserver, skipping)",
+                room_id,
+                timeout,
+            )
+            return False
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
             return False
 
     async def _join_pending_invites(self, sync_data: Dict[str, Any]) -> None:
-        """Join rooms still present in rooms.invite after sync processing."""
+        """Join rooms still present in rooms.invite after sync processing.
+
+        Joins run concurrently so one unresponsive homeserver cannot serialise
+        the others into an aggregate stall that exceeds the connect-supervisor
+        timeout (#29303).
+        """
         rooms = sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
+        tasks = []
         for room_id in invites:
             if room_id in self._joined_rooms:
                 continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
-            await self._join_room_by_id(str(room_id))
+            tasks.append(self._join_room_by_id(str(room_id)))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)
