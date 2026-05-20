@@ -470,16 +470,34 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
 
 
 def _serialize_assistant_message(message: Any) -> dict[str, Any]:
-    # Providers that emit chain-of-thought via the `reasoning_content`
-    # convention (LM Studio, Moonshot, Qwen3 thinking, DeepSeek) leave the
-    # top-level `reasoning` field unset and stash the text under
-    # `provider_data["reasoning_content"]`, which NormalizedResponse exposes
-    # as the `reasoning_content` property.  Read `reasoning` first to keep
-    # Anthropic / Codex behaviour unchanged, then fall back so Langfuse's
-    # observation actually shows the thinking instead of `reasoning: None`.
+    # Mirrors agent.agent_runtime_helpers.extract_reasoning so the Langfuse
+    # observation shows whichever reasoning surface the provider actually
+    # populated: top-level `reasoning` (Anthropic / Codex), `reasoning_content`
+    # (LM Studio / Moonshot / Qwen3 thinking / DeepSeek), then the
+    # `reasoning_details` array (OpenRouter's unified format, list of
+    # ``{type, summary|thinking|content|text}`` dicts).  Without the
+    # `reasoning_details` branch, OpenRouter-routed traffic still records
+    # `reasoning: None` even though the structured payload is present.
     reasoning = getattr(message, "reasoning", None)
     if not reasoning:
         reasoning = getattr(message, "reasoning_content", None)
+    if not reasoning:
+        details = getattr(message, "reasoning_details", None)
+        if isinstance(details, list):
+            parts: list[str] = []
+            for detail in details:
+                if not isinstance(detail, dict):
+                    continue
+                text = (
+                    detail.get("summary")
+                    or detail.get("thinking")
+                    or detail.get("content")
+                    or detail.get("text")
+                )
+                if isinstance(text, str) and text.strip() and text not in parts:
+                    parts.append(text)
+            if parts:
+                reasoning = "\n\n".join(parts)
     return {
         "content": _safe_value(getattr(message, "content", None)),
         "reasoning": _safe_value(reasoning),

@@ -706,11 +706,12 @@ class TestToolObservationKeying:
 
 
 class TestSerializeAssistantMessageReasoning:
-    """`_serialize_assistant_message` must surface reasoning for both the
-    top-level `reasoning` convention (Anthropic, Codex) and the
-    `reasoning_content` convention (LM Studio / Moonshot / Qwen3 thinking /
-    DeepSeek), which NormalizedResponse exposes via a property reading from
-    `provider_data["reasoning_content"]`.  Regression coverage for #29482."""
+    """`_serialize_assistant_message` must surface reasoning for the three
+    conventions ``agent.agent_runtime_helpers.extract_reasoning`` covers:
+    top-level `reasoning` (Anthropic, Codex), `reasoning_content` (LM Studio /
+    Moonshot / Qwen3 thinking / DeepSeek — exposed by NormalizedResponse via
+    `provider_data["reasoning_content"]`), and the `reasoning_details` array
+    (OpenRouter's unified format).  Regression coverage for #29482."""
 
     def _mod(self):
         sys.modules.pop("plugins.observability.langfuse", None)
@@ -786,3 +787,61 @@ class TestSerializeAssistantMessageReasoning:
 
         out = mod._serialize_assistant_message(_Msg())
         assert out["reasoning"] is None
+
+    def test_falls_back_to_reasoning_details_openrouter_unified(self):
+        """OpenRouter's unified `reasoning_details` array — keys mirror
+        ``agent.agent_runtime_helpers.extract_reasoning`` precedence
+        (``summary`` > ``thinking`` > ``content`` > ``text``).  When the
+        top-level `reasoning` / `reasoning_content` fields are unset, the
+        Langfuse observation must still surface the structured payload."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                {"type": "reasoning.summary", "summary": "first summary"},
+                {"type": "reasoning.thinking", "thinking": "deeper thought"},
+                {"type": "reasoning.text", "text": "trailing text"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == (
+            "first summary\n\ndeeper thought\n\ntrailing text"
+        )
+
+    def test_reasoning_details_skips_non_dict_and_empty(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                "not a dict",
+                {"type": "reasoning.summary", "summary": "   "},
+                {"type": "reasoning.summary"},  # no recognised key
+                {"type": "reasoning.summary", "summary": "kept"},
+                {"type": "reasoning.summary", "summary": "kept"},  # duplicate
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "kept"
+
+    def test_top_level_reasoning_wins_over_reasoning_details(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = "top-level wins"
+            reasoning_content = None
+            reasoning_details = [
+                {"type": "reasoning.summary", "summary": "should be ignored"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "top-level wins"
