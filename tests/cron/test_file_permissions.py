@@ -30,8 +30,8 @@ class TestCronFilePermissions(unittest.TestCase):
         cron_dir = Path(self.tmpdir) / "cron"
         output_dir = cron_dir / "output"
 
-        with patch("cron.jobs.CRON_DIR", cron_dir), \
-             patch("cron.jobs.OUTPUT_DIR", output_dir):
+        with patch("cron.jobs._resolve_cron_dir", return_value=cron_dir), \
+             patch("cron.jobs._resolve_output_dir", return_value=output_dir):
             from cron.jobs import ensure_dirs
             ensure_dirs()
 
@@ -48,9 +48,9 @@ class TestCronFilePermissions(unittest.TestCase):
         output_dir = cron_dir / "output"
         jobs_file = cron_dir / "jobs.json"
 
-        with patch("cron.jobs.CRON_DIR", cron_dir), \
-             patch("cron.jobs.OUTPUT_DIR", output_dir), \
-             patch("cron.jobs.JOBS_FILE", jobs_file):
+        with patch("cron.jobs._resolve_cron_dir", return_value=cron_dir), \
+             patch("cron.jobs._resolve_output_dir", return_value=output_dir), \
+             patch("cron.jobs._resolve_jobs_file", return_value=jobs_file):
             from cron.jobs import save_jobs
             save_jobs([{"id": "test", "prompt": "hello"}])
 
@@ -59,8 +59,9 @@ class TestCronFilePermissions(unittest.TestCase):
 
     def test_save_job_output_sets_0600(self):
         output_dir = Path(self.tmpdir) / "output"
-        with patch("cron.jobs.OUTPUT_DIR", output_dir), \
-             patch("cron.jobs.CRON_DIR", Path(self.tmpdir)), \
+        cron_dir = Path(self.tmpdir)
+        with patch("cron.jobs._resolve_output_dir", return_value=output_dir), \
+             patch("cron.jobs._resolve_cron_dir", return_value=cron_dir), \
              patch("cron.jobs.ensure_dirs"):
             output_dir.mkdir(parents=True, exist_ok=True)
             from cron.jobs import save_job_output
