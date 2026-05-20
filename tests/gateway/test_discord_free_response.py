@@ -348,6 +348,118 @@ async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, mo
 
 
 @pytest.mark.asyncio
+async def test_discord_mention_patterns_satisfy_required_mention(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._mention_patterns = discord_platform.compile_mention_patterns([
+        r"(?<![a-z0-9_./-])ensoprime(?![a-z0-9_./-])",
+    ])
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="ensoprime please check status",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "please check status"
+
+
+@pytest.mark.asyncio
+async def test_discord_mention_patterns_strip_leading_separator(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._mention_patterns = discord_platform.compile_mention_patterns([
+        r"(?<![a-z0-9_./-])ep(?![a-z0-9_./-])",
+    ])
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="ep: status?",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "status?"
+
+
+@pytest.mark.asyncio
+async def test_discord_mention_patterns_do_not_match_embedded_words(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter._mention_patterns = discord_platform.compile_mention_patterns([
+        r"(?<![a-z0-9_./-])ep(?![a-z0-9_./-])",
+    ])
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="step through this",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_mid_message_mention_pattern_triggers_without_stripping(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter._mention_patterns = discord_platform.compile_mention_patterns([
+        r"(?<![a-z0-9_./-])ensoprime(?![a-z0-9_./-])",
+    ])
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="can ensoprime check this?",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "can ensoprime check this?"
+
+
+@pytest.mark.asyncio
+async def test_discord_invalid_mention_pattern_is_ignored(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    adapter._mention_patterns = discord_platform.compile_mention_patterns([
+        r"(",
+    ])
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="ensoprime please check status",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_ignored_channels_still_block_mention_patterns(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "321")
+    adapter._mention_patterns = discord_platform.compile_mention_patterns([
+        r"(?<![a-z0-9_./-])ensoprime(?![a-z0-9_./-])",
+    ])
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=321),
+        content="ensoprime please check status",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discord_dms_ignore_mention_requirement(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
@@ -882,5 +994,4 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     if adapter.handle_message.await_args is not None:
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
-
 

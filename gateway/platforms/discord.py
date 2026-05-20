@@ -63,6 +63,9 @@ from gateway.platforms.base import (
     cache_audio_from_url,
     cache_audio_from_bytes,
     cache_document_from_bytes,
+    compile_mention_patterns,
+    match_mention_pattern,
+    strip_leading_mention_pattern,
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
@@ -590,6 +593,10 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        self._mention_patterns = compile_mention_patterns(
+            self.config.extra.get("mention_patterns"),
+            log=logger,
+        )
         # In-memory cache of the bot's last message ID per channel, used by
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
@@ -4458,6 +4465,7 @@ class DiscordAdapter(BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        text_mention_match = None
 
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
@@ -4474,6 +4482,12 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        text_mention_match = match_mention_pattern(normalized_content, self._mention_patterns)
+        if text_mention_match:
+            stripped_content = strip_leading_mention_pattern(normalized_content, text_mention_match)
+            if stripped_content != normalized_content:
+                normalized_content = stripped_content
+                message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -4522,7 +4536,11 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions and not mention_prefix:
+                if (
+                    self._client.user not in message.mentions
+                    and not mention_prefix
+                    and not text_mention_match
+                ):
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

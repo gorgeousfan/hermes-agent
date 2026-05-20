@@ -40,6 +40,59 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+def compile_mention_patterns(raw_patterns, *, log: logging.Logger | None = None) -> list[re.Pattern]:
+    """Compile user-configured text wake patterns.
+
+    Platform configs accept either a list of regex strings or a comma-separated
+    string for convenience. Invalid patterns are skipped so one typo does not
+    prevent the gateway from starting.
+    """
+    if not raw_patterns:
+        return []
+    if isinstance(raw_patterns, str):
+        candidates = [part.strip() for part in raw_patterns.split(",")]
+    elif isinstance(raw_patterns, (list, tuple, set)):
+        candidates = [str(part).strip() for part in raw_patterns]
+    else:
+        candidates = [str(raw_patterns).strip()]
+
+    compiled: list[re.Pattern] = []
+    for pattern in candidates:
+        if not pattern:
+            continue
+        try:
+            compiled.append(re.compile(pattern, re.IGNORECASE))
+        except re.error as exc:
+            (log or logger).warning("Ignoring invalid mention pattern %r: %s", pattern, exc)
+    return compiled
+
+
+def match_mention_pattern(text: str, patterns: list[re.Pattern]):
+    """Return the first configured wake-pattern match in ``text``, if any."""
+    if not text or not patterns:
+        return None
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            return match
+    return None
+
+
+def strip_leading_mention_pattern(text: str, match) -> str:
+    """Remove a leading text wake phrase while preserving mid-message mentions.
+
+    A wake phrase only gets stripped when it begins after leading whitespace.
+    Common separators after the phrase are also removed so inputs like
+    ``"agent: status"`` dispatch as ``"status"``.
+    """
+    if not text or match is None:
+        return text
+    leading = len(text) - len(text.lstrip())
+    if match.start() != leading:
+        return text
+    return text[:leading] + text[match.end():].lstrip(" \t\r\n:,-\u2013\u2014")
+
+
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
