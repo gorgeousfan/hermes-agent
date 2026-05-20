@@ -28,7 +28,13 @@ def test_minimax_curated_includes_highspeed_variants():
 @patch.dict(os.environ, {"MINIMAX_API_KEY": "test-key"}, clear=False)
 def test_minimax_picker_lists_highspeed_when_api_key_set():
     """When MINIMAX_API_KEY is set, the /model picker must list the highspeed variants."""
-    providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
+    # Mock models.dev so the test doesn't depend on network reachability; the
+    # section-1 loop in list_authenticated_providers skips a provider when
+    # ``data.get(mdev_id)`` isn't a dict, so an unreachable registry on CI
+    # would otherwise drop minimax even when MINIMAX_API_KEY is set.
+    fake_registry = {"minimax": {"name": "MiniMax", "env": ["MINIMAX_API_KEY"], "models": {}}}
+    with patch("agent.models_dev.fetch_models_dev", return_value=fake_registry):
+        providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
 
     minimax = next((p for p in providers if p["slug"] == "minimax"), None)
     assert minimax is not None, "minimax should appear when MINIMAX_API_KEY is set"
