@@ -432,7 +432,7 @@ class GitHubSource(SkillSource):
         if not content:
             return None
 
-        fm = self._parse_frontmatter_quick(content)
+        fm = self._parse_frontmatter_quick(content.decode("utf-8", errors="replace"))
         skill_name = fm.get("name", skill_path.split("/")[-1])
         description = fm.get("description", "")
 
@@ -560,13 +560,16 @@ class GitHubSource(SkillSource):
                     "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr."
                 )
 
-    def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
-        """Recursively download all text files from a GitHub directory.
+    def _download_directory(self, repo: str, path: str) -> Dict[str, Union[str, bytes]]:
+        """Recursively download all files from a GitHub directory.
 
         Uses the Git Trees API first (single call for the entire tree) to
         avoid per-directory rate limiting that causes silent subdirectory
         loss.  Falls back to the recursive Contents API when the tree
         endpoint is unavailable or the response is truncated.
+
+        Returns raw bytes per file; SKILL.md parsing and other text
+        consumers decode at point of use.
         """
         files = self._download_directory_via_tree(repo, path)
         if files is not None:
@@ -574,7 +577,7 @@ class GitHubSource(SkillSource):
         logger.debug("Tree API unavailable for %s/%s, falling back to Contents API", repo, path)
         return self._download_directory_recursive(repo, path)
 
-    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
+    def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, Union[str, bytes]]]:
         """Download an entire directory using the Git Trees API (single request).
 
         Returns:
@@ -601,7 +604,7 @@ class GitHubSource(SkillSource):
             return {}
 
         # Filter to blobs under our target path and fetch content
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for item in tree_entries:
             if item.get("type") != "blob":
                 continue
@@ -617,7 +620,7 @@ class GitHubSource(SkillSource):
 
         return files if files else None
 
-    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
+    def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, Union[str, bytes]]:
         """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
         try:
@@ -632,7 +635,7 @@ class GitHubSource(SkillSource):
         if not isinstance(entries, list):
             return {}
 
-        files: Dict[str, str] = {}
+        files: Dict[str, Union[str, bytes]] = {}
         for entry in entries:
             name = entry.get("name", "")
             entry_type = entry.get("type", "")
@@ -677,8 +680,10 @@ class GitHubSource(SkillSource):
 
         return None
 
-    def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
-        """Fetch a single file's content from GitHub."""
+    def _fetch_file_content(self, repo: str, path: str) -> Optional[bytes]:
+        """Fetch a file's raw bytes from GitHub. Callers decode to text at the boundary."""
+        # GitHub serves binary blobs with `charset=utf-8`; `resp.text` would
+        # corrupt them via `errors='replace'`. Return raw bytes instead.
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         try:
             resp = httpx.get(
@@ -687,7 +692,7 @@ class GitHubSource(SkillSource):
                 timeout=15, follow_redirects=True,
             )
             if resp.status_code == 200:
-                return resp.text
+                return resp.content
             self._check_rate_limit_response(resp)
         except httpx.HTTPError as e:
             logger.debug("GitHub contents API fetch failed: %s", e)
