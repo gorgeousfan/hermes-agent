@@ -284,6 +284,7 @@ class PlatformConfig:
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
+    briefing_channel: Optional[HomeChannel] = None
     
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
@@ -314,6 +315,8 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.briefing_channel:
+            result["briefing_channel"] = self.briefing_channel.to_dict()
         return result
 
     @classmethod
@@ -321,6 +324,9 @@ class PlatformConfig:
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
+        briefing_channel = None
+        if "briefing_channel" in data:
+            briefing_channel = HomeChannel.from_dict(data["briefing_channel"])
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
@@ -335,6 +341,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
+            briefing_channel=briefing_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             extra=data.get("extra", {}),
@@ -543,7 +550,14 @@ class GatewayConfig:
         if config:
             return config.home_channel
         return None
-    
+
+    def get_briefing_channel(self, platform: Platform) -> Optional[HomeChannel]:
+        """Get the briefing channel for a platform."""
+        config = self.platforms.get(platform)
+        if config:
+            return config.briefing_channel
+        return None
+
     def get_reset_policy(
         self, 
         platform: Optional[Platform] = None,

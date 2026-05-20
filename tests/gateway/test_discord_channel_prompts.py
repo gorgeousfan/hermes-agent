@@ -175,6 +175,43 @@ class TestResolveChannelPrompts:
         dispatched_event = adapter.handle_message.await_args.args[0]
         assert dispatched_event.channel_prompt == "Parent prompt"
 
+    @pytest.mark.asyncio
+    async def test_briefing_channel_sets_briefing_mode(self):
+        from gateway.config import GatewayConfig, HomeChannel, PlatformConfig
+        from gateway.session import SessionContext, SessionSource
+        from gateway.session_context import clear_session_vars, get_session_env
+
+        briefing = HomeChannel(
+            platform=Platform.DISCORD,
+            chat_id="1506193753742774323",
+            name="05-briefings",
+            thread_id="1506316384538198066",
+        )
+        runner = _make_runner()
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(enabled=True, briefing_channel=briefing)
+            }
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="1506316384538198066",
+            chat_type="thread",
+            thread_id="1506316384538198066",
+            user_id="user-1",
+        )
+        ctx = SessionContext(
+            source=source,
+            connected_platforms=[Platform.DISCORD],
+            home_channels={},
+            session_key="agent:main:discord:thread:1506316384538198066",
+        )
+        tokens = runner._set_session_env(ctx)
+        try:
+            assert get_session_env("HERMES_BRIEFING_MODE") == "1"
+        finally:
+            clear_session_vars(tokens)
+
     def test_blank_prompts_are_ignored(self):
         adapter = _make_adapter()
         adapter.config.extra = {"channel_prompts": {"100": "   "}}

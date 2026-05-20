@@ -86,6 +86,16 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from hermes_cli.orchestration_contracts import (
+    is_orchestration_profile,
+    is_workflow_template_id,
+    load_orchestration_docs,
+    WORKFLOW_TEMPLATE_ID,
+    workflow_template_first_step,
+    workflow_template_next_step,
+    workflow_template_step_assignee,
+    workflow_template_step_for_assignee,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -1358,6 +1368,8 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    workflow_template_id: Optional[str] = None,
+    current_step_key: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1401,6 +1413,37 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
+
+    workflow_template_id = (
+        str(workflow_template_id).strip() if workflow_template_id else None
+    )
+    current_step_key = str(current_step_key).strip() if current_step_key else None
+    if current_step_key and not workflow_template_id:
+        raise ValueError("current_step_key requires workflow_template_id")
+    if workflow_template_id:
+        if not is_workflow_template_id(workflow_template_id):
+            raise ValueError(
+                f"unknown workflow_template_id {workflow_template_id!r}; "
+                f"available: ['{WORKFLOW_TEMPLATE_ID}']"
+            )
+        if current_step_key is None:
+            current_step_key = workflow_template_step_for_assignee(assignee)
+        if current_step_key is None:
+            first_step = workflow_template_first_step(workflow_template_id)
+            current_step_key = first_step[0] if first_step else None
+        step_assignee = workflow_template_step_assignee(current_step_key)
+        if step_assignee is None:
+            raise ValueError(
+                f"unknown current_step_key {current_step_key!r} for template "
+                f"{workflow_template_id!r}"
+            )
+        if assignee is None:
+            assignee = step_assignee
+        elif assignee != step_assignee:
+            raise ValueError(
+                f"assignee {assignee!r} does not match workflow step "
+                f"{current_step_key!r} ({step_assignee!r})"
+            )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -1516,8 +1559,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, session_id,
+                        workflow_template_id, current_step_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1537,6 +1581,8 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
+                        workflow_template_id,
+                        current_step_key,
                     ),
                 )
                 for pid in parents:
@@ -2732,38 +2778,86 @@ def complete_task(
     else:
         verified_cards = []
 
+    task_row = conn.execute(
+        "SELECT workflow_template_id, current_step_key FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    workflow_next = workflow_template_next_step(
+        task_row["workflow_template_id"] if task_row else None,
+        task_row["current_step_key"] if task_row else None,
+    )
+
     with write_txn(conn):
         if expected_run_id is None:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                """,
-                (result, now, task_id),
-            )
+            if workflow_next:
+                next_step_key, next_assignee = workflow_next
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           result       = ?,
+                           completed_at = NULL,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL,
+                           assignee     = ?,
+                           current_step_key = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                    """,
+                    (result, next_assignee, next_step_key, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'done',
+                           result       = ?,
+                           completed_at = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                    """,
+                    (result, now, task_id),
+                )
         else:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'done',
-                       result       = ?,
-                       completed_at = ?,
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
-                   AND current_run_id = ?
-                """,
-                (result, now, task_id, int(expected_run_id)),
-            )
+            if workflow_next:
+                next_step_key, next_assignee = workflow_next
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'ready',
+                           result       = ?,
+                           completed_at = NULL,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL,
+                           assignee     = ?,
+                           current_step_key = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                       AND current_run_id = ?
+                    """,
+                    (result, next_assignee, next_step_key, task_id, int(expected_run_id)),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status       = 'done',
+                           result       = ?,
+                           completed_at = ?,
+                           claim_lock   = NULL,
+                           claim_expires= NULL,
+                           worker_pid   = NULL
+                     WHERE id = ?
+                       AND status IN ('running', 'ready', 'blocked')
+                       AND current_run_id = ?
+                    """,
+                    (result, now, task_id, int(expected_run_id)),
+                )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
@@ -2789,31 +2883,55 @@ def complete_task(
         # full summary stays on the run row.
         ev_summary = (summary if summary is not None else result) or ""
         ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
-        completed_payload: dict = {
-            "result_len": len(result) if result else 0,
-            "summary": ev_summary or None,
-        }
-        if verified_cards:
-            completed_payload["verified_cards"] = verified_cards
-        # Carry artifact paths in the event payload so the gateway
-        # notifier can upload them as native attachments alongside the
-        # completion message. Workers pass these via
-        # ``kanban_complete(artifacts=[...])`` which stashes the list in
-        # ``metadata["artifacts"]`` — we promote it onto the event so
-        # consumers don't have to fetch the run row to find it.
-        if isinstance(metadata, dict):
-            md_artifacts = metadata.get("artifacts")
-            if isinstance(md_artifacts, (list, tuple)):
-                cleaned_artifacts = [
-                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
-                ]
-                if cleaned_artifacts:
-                    completed_payload["artifacts"] = cleaned_artifacts
-        _append_event(
-            conn, task_id, "completed",
-            completed_payload,
-            run_id=run_id,
-        )
+        if workflow_next:
+            next_step_key, next_assignee = workflow_next
+            advanced_payload: dict = {
+                "workflow_template_id": task_row["workflow_template_id"] if task_row else None,
+                "from_step": task_row["current_step_key"] if task_row else None,
+                "to_step": next_step_key,
+                "assignee": next_assignee,
+                "summary": ev_summary or None,
+            }
+            if verified_cards:
+                advanced_payload["verified_cards"] = verified_cards
+            _append_event(
+                conn, task_id, "workflow_advanced",
+                advanced_payload,
+                run_id=run_id,
+            )
+        else:
+            completed_payload: dict = {
+                "result_len": len(result) if result else 0,
+                "summary": ev_summary or None,
+            }
+            if verified_cards:
+                completed_payload["verified_cards"] = verified_cards
+            # Carry artifact paths in the event payload so the gateway
+            # notifier can upload them as native attachments alongside the
+            # completion message. Workers pass these via
+            # ``kanban_complete(artifacts=[...])`` which stashes the list in
+            # ``metadata["artifacts"]`` — we promote it onto the event so
+            # consumers don't have to fetch the run row to find it.
+            if isinstance(metadata, dict):
+                md_artifacts = metadata.get("artifacts")
+                if isinstance(md_artifacts, (list, tuple)):
+                    cleaned_artifacts = [
+                        str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
+                    ]
+                    if cleaned_artifacts:
+                        completed_payload["artifacts"] = cleaned_artifacts
+            _append_event(
+                conn, task_id, "completed",
+                completed_payload,
+                run_id=run_id,
+            )
+    # Stage advance: the run is done, but the workflow continues on the same
+    # logical task. Clear breaker state and hand control back to the next
+    # assignee without final cleanup or dependency promotion.
+    if workflow_next:
+        _clear_failure_counter(conn, task_id)
+        return True
+
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -5316,14 +5434,11 @@ def _default_spawn(
     # this skill is the deeper reference. Users can point a profile
     # at a different/additional skill via config if they want —
     # --skills is additive to the profile's default skill set.
-    #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
+    # Always preload the worker skill. The profile setup path seeds
+    # bundled skills into real profile homes; in the rare case a temp
+    # test home has no copy yet, the dispatcher still wants the worker
+    # argv to be stable and the caller can observe the startup failure.
+    cmd.extend(["--skills", "kanban-worker"])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but
@@ -5638,6 +5753,13 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             safe_author = (c.author or "").replace("`", "")
             lines.append(f"comment from worker `{safe_author}` at {ts}:")
             lines.append(_cap(c.body, _CTX_MAX_COMMENT_BYTES))
+            lines.append("")
+
+    if is_orchestration_profile(task.assignee) or os.environ.get("HERMES_KANBAN_TASK"):
+        docs = load_orchestration_docs()
+        if docs:
+            lines.append("## Hermes orchestration contracts")
+            lines.append(docs)
             lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
