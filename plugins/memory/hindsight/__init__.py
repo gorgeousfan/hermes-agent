@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import importlib
 import json
 import logging
@@ -165,13 +166,6 @@ def _strip_patterns(text: str, patterns: list[str]) -> str:
         except re.error as exc:
             logger.warning("Invalid Hindsight strip regex %r: %s", pattern, exc)
     return result.strip()
-
-
-def _short_preview(text: str, limit: int = 240) -> str:
-    preview = " ".join((text or "").split())
-    if len(preview) <= limit:
-        return preview
-    return preview[: limit - 1] + "…"
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -666,6 +660,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
         self._session_turns: list[str] = []  # pending turns since last retain
+        self._session_turn_fingerprints: list[str] = []
+        self._retained_turn_fingerprints: set[str] = set()
         self._auto_retain_filter_enabled = True
         self._auto_retain_strip_patterns: list[str] = list(_DEFAULT_AUTO_RETAIN_STRIP_PATTERNS)
         self._auto_retain_skip_patterns: list[str] = list(_DEFAULT_AUTO_RETAIN_SKIP_PATTERNS)
@@ -1211,10 +1207,13 @@ class HindsightMemoryProvider(MemoryProvider):
             "thread_id": self._thread_id,
             "action": action,
             "reason": reason,
-            "preview": _short_preview(f"{raw_user}\n{raw_assistant}"),
+            "raw_user_chars": len(raw_user or ""),
+            "raw_assistant_chars": len(raw_assistant or ""),
+            "raw_total_chars": len((raw_user or "") + (raw_assistant or "")),
+            "sanitized_user_chars": len(sanitized_user or ""),
+            "sanitized_assistant_chars": len(sanitized_assistant or ""),
+            "sanitized_total_chars": len((sanitized_user or "") + (sanitized_assistant or "")),
         }
-        if action == "sanitize_turn":
-            entry["sanitized_preview"] = _short_preview(f"{sanitized_user}\n{sanitized_assistant}")
         try:
             path = Path(self._auto_retain_audit_log_path)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1318,6 +1317,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
         self._session_turns = []
+        self._session_turn_fingerprints = []
+        self._retained_turn_fingerprints = set()
         self._mode = self._config.get("mode", "cloud")
         # Read timeout from config or env var, fall back to default
         self._timeout = _parse_int_setting(
@@ -1672,7 +1673,32 @@ class HindsightMemoryProvider(MemoryProvider):
             )
 
         turn = json.dumps(self._build_turn_messages(sanitized_user, sanitized_assistant), ensure_ascii=False)
+        turn_fingerprint_payload = {
+            "user_prefix": self._retain_user_prefix,
+            "assistant_prefix": self._retain_assistant_prefix,
+            "user": sanitized_user,
+            "assistant": sanitized_assistant,
+        }
+        turn_fingerprint = hashlib.sha256(
+            json.dumps(turn_fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        if (
+            turn_fingerprint in self._retained_turn_fingerprints
+            or turn_fingerprint in self._session_turn_fingerprints
+        ):
+            logger.debug("sync_turn: skipped replayed turn fingerprint")
+            self._audit_auto_retain_filter(
+                "skip_replayed_turn",
+                "duplicate_turn_fingerprint",
+                raw_user,
+                raw_assistant,
+                sanitized_user,
+                sanitized_assistant,
+            )
+            return
+
         self._session_turns.append(turn)
+        self._session_turn_fingerprints.append(turn_fingerprint)
         self._turn_counter += 1
         self._turn_index = self._turn_counter
 
@@ -1682,10 +1708,13 @@ class HindsightMemoryProvider(MemoryProvider):
             return
 
         pending_turns = list(self._session_turns)
+        pending_fingerprints = list(self._session_turn_fingerprints)
         logger.debug("sync_turn: retaining %d pending turns, content %d chars",
                      len(pending_turns), sum(len(t) for t in pending_turns))
         content = "[" + ",".join(pending_turns) + "]"
         self._session_turns = []
+        self._session_turn_fingerprints = []
+        self._retained_turn_fingerprints.update(pending_fingerprints)
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -1926,6 +1955,8 @@ class HindsightMemoryProvider(MemoryProvider):
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
         self._session_turns = []
+        self._session_turn_fingerprints = []
+        self._retained_turn_fingerprints = set()
         self._turn_counter = 0
         self._turn_index = 0
         logger.debug(

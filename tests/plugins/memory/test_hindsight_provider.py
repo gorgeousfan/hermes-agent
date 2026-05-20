@@ -788,6 +788,33 @@ class TestSyncTurn:
         assert "turn4-user" in second_content
         assert p._session_turns == []
 
+    def test_sync_turn_skips_replayed_recovered_turn_before_new_delta(self, provider_with_config):
+        """Crash recovery may replay an already-observed restored turn.
+
+        The replay must not enqueue another retain for the same recovered
+        content, and the next genuinely new turn should still retain as a
+        bounded delta without the replayed transcript content.
+        """
+        p = provider_with_config(retain_every_n_turns=1)
+
+        p.sync_turn("recovered-user", "recovered-asst")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 1
+        first_item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "recovered-user" in first_item["content"]
+
+        p.sync_turn("recovered-user", "recovered-asst")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 1
+        assert p._session_turns == []
+
+        p.sync_turn("new-user", "new-asst")
+        p._retain_queue.join()
+        assert p._client.aretain_batch.call_count == 2
+        new_item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert "new-user" in new_item["content"]
+        assert "recovered-user" not in new_item["content"]
+
     def test_sync_turn_skips_model_switch_noise(self, provider_with_config):
         p = provider_with_config(auto_retain_filter_enabled=True)
         p.sync_turn(
@@ -811,6 +838,29 @@ class TestSyncTurn:
         content = item["content"]
         assert "model was just switched" not in content
         assert "Remember: user prefers concise answers." in content
+
+    def test_auto_retain_audit_log_uses_sizes_not_raw_transcript(self, tmp_path, provider_with_config):
+        audit_path = tmp_path / "hindsight" / "audit.jsonl"
+        p = provider_with_config(
+            auto_retain_filter_enabled=True,
+            auto_retain_audit_log_path=str(audit_path),
+        )
+        secret_turn_text = "Remember this private transcript payload"
+
+        p.sync_turn(
+            "[Note: model was just switched from gpt-5.4 to gpt-5.5 via OpenAI Codex.]\n" + secret_turn_text,
+            "done",
+        )
+        p._retain_queue.join()
+
+        entry = json.loads(audit_path.read_text().splitlines()[0])
+        serialized = json.dumps(entry, ensure_ascii=False)
+        assert secret_turn_text not in serialized
+        assert "model was just switched" not in serialized
+        assert "preview" not in entry
+        assert "sanitized_preview" not in entry
+        assert entry["raw_user_chars"] > entry["sanitized_user_chars"]
+        assert entry["raw_assistant_chars"] == entry["sanitized_assistant_chars"]
 
     def test_sync_turn_preserve_pattern_overrides_skip_pattern(self, provider_with_config):
         p = provider_with_config(
