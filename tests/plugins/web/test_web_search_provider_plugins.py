@@ -87,6 +87,7 @@ class TestBundledPluginsRegister:
             "parallel",
             "searxng",
             "tavily",
+            "xai",
         ]
 
     @pytest.mark.parametrize(
@@ -99,6 +100,7 @@ class TestBundledPluginsRegister:
             ("exa", True, True, False),
             ("parallel", True, True, False),
             ("tavily", True, True, True),
+            ("xai", True, False, False),
             # firecrawl: search + extract + crawl. Crawl was originally
             # disabled in the migration (fell through to a legacy inline
             # path); the follow-up commit enabled it natively.

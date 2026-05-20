@@ -140,14 +140,15 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-search", "brave-free", "ddgs"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-search", "brave-free", "ddgs", "xai"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
-    # brave-free keeps precedence for auto-detection because existing users
-    # with BRAVE_SEARCH_API_KEY should not be silently moved to brave-search.
+    # brave-free keeps precedence over brave-search for auto-detection because
+    # existing users with BRAVE_SEARCH_API_KEY should not be silently moved to
+    # the richer paid Brave backend unless they choose it in config.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -199,7 +200,7 @@ def _get_capability_backend(capability: str) -> str:
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-search", "brave-free", "ddgs"}:
+    if specific in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-search", "brave-free", "ddgs", "xai"}:
         return specific
     return _get_backend()
 
@@ -222,6 +223,16 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "xai":
+        # Cheap probe — env var OR auth.json has OAuth tokens. Must not
+        # call resolve_xai_http_credentials() here because the OAuth path
+        # can trigger a network token refresh, and _is_backend_available
+        # runs on every web_search dispatch + every `hermes tools` repaint.
+        try:
+            from tools.xai_http import has_xai_credentials
+            return has_xai_credentials()
+        except Exception:
+            return False
     return False
 
 
