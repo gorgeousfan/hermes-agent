@@ -15847,6 +15847,18 @@ class GatewayRunner:
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
+                        # Flush any pending tail before clearing — a tool
+                        # event that arrived inside the throttle window has
+                        # been appended to progress_lines but not yet edited,
+                        # and __reset__ would otherwise drop it (#29371).
+                        # Mirrors the drain handler in the CancelledError path.
+                        if can_edit and progress_lines and progress_msg_id:
+                            try:
+                                await _edit_progress_message(
+                                    progress_msg_id, _progress_text(progress_lines)
+                                )
+                            except Exception:
+                                pass
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None
