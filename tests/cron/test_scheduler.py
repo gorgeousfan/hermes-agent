@@ -978,12 +978,58 @@ class TestDeliverResultCronMetadata:
         assert "schedule" not in cron_ctx
         # job_id is present (required), job_name falls back to it,
         # deliver and origin are present.
+        # status defaults to "ok"; ran_at is always set (ISO timestamp).
+        ran_at = cron_ctx.pop("ran_at", None)
+        assert isinstance(ran_at, str) and "T" in ran_at
         assert cron_ctx == {
             "job_id": "min-job",
             "job_name": "min-job",
             "deliver": "origin",
             "origin": {"platform": "telegram", "chat_id": "5"},
+            "status": "ok",
         }
+
+    def test_cron_metadata_attached_on_failed_run_with_wrap_disabled(self):
+        """Failed run + wrap_response=false must still surface status=error and full context.
+
+        Regression guard for #26004 step 2: without this, adapters that rely on
+        `metadata["cron"]["status"]` to distinguish success from failure (e.g.
+        for routing failure summaries to a different chat) would always see
+        the default "ok" even when the agent raised.
+        """
+        from gateway.config import Platform
+
+        adapter, loop, fake_run_coro = self._build_adapter_send_mock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "fail-job",
+            "name": "nightly-report",
+            "schedule": "0 3 * * *",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "999"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Job hit an exception",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+                status_hint="error",
+            )
+
+        cron_ctx = adapter.send.call_args.kwargs["metadata"]["cron"]
+        assert cron_ctx["status"] == "error"
+        assert cron_ctx["job_id"] == "fail-job"
+        assert cron_ctx["job_name"] == "nightly-report"
+        assert cron_ctx["schedule"] == "0 3 * * *"
+        assert "ran_at" in cron_ctx and "T" in cron_ctx["ran_at"]
 
 
 class TestDeliverResultErrorReturns:

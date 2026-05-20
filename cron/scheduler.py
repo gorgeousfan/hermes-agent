@@ -566,7 +566,13 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    status_hint: str = "ok",
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -636,6 +642,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "schedule": job.get("schedule"),
         "deliver": job.get("deliver"),
         "origin": origin or None,
+        "status": status_hint,
+        "ran_at": _hermes_now().isoformat(),
     }
     cron_meta = {k: v for k, v in cron_meta_full.items() if v is not None}
 
@@ -1901,7 +1909,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                            status_hint="ok" if success else "error",
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
