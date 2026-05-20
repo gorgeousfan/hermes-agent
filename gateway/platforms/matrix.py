@@ -2049,7 +2049,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return True
         except asyncio.TimeoutError:
             logger.warning(
-                "Matrix: timed out joining %s after %.0fs (dead room or unresponsive homeserver, skipping)",
+                "Matrix: timed out joining %s after %gs (dead room or unresponsive homeserver, skipping)",
                 room_id,
                 timeout,
             )
@@ -2061,22 +2061,39 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _join_pending_invites(self, sync_data: Dict[str, Any]) -> None:
         """Join rooms still present in rooms.invite after sync processing.
 
-        Joins run concurrently so one unresponsive homeserver cannot serialise
-        the others into an aggregate stall that exceeds the connect-supervisor
-        timeout (#29303).
+        Joins run with bounded concurrency so one unresponsive homeserver
+        cannot serialise the others into an aggregate stall that exceeds the
+        connect-supervisor timeout (#29303). The semaphore caps outbound burst
+        on large invite backlogs (resource use, log volume, federation noise).
         """
         rooms = sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}
         invites = rooms.get("invite", {})
         if not isinstance(invites, dict):
             return
-        tasks = []
-        for room_id in invites:
-            if room_id in self._joined_rooms:
-                continue
-            logger.info("Matrix: reconciling pending invite for %s", room_id)
-            tasks.append(self._join_room_by_id(str(room_id)))
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        pending = [
+            str(room_id) for room_id in invites if room_id not in self._joined_rooms
+        ]
+        if not pending:
+            return
+
+        semaphore = asyncio.Semaphore(8)
+
+        async def _join_one(rid: str) -> None:
+            async with semaphore:
+                logger.info("Matrix: reconciling pending invite for %s", rid)
+                await self._join_room_by_id(rid)
+
+        results = await asyncio.gather(
+            *[_join_one(rid) for rid in pending],
+            return_exceptions=True,
+        )
+        for rid, result in zip(pending, results):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Matrix: unexpected error reconciling invite for %s: %r",
+                    rid,
+                    result,
+                )
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)
