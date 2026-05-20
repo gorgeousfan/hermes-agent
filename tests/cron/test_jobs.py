@@ -317,6 +317,24 @@ class TestUpdateJob:
         assert updated["schedule"]["kind"] == "interval"
         assert updated["schedule"]["minutes"] == 2
 
+    def test_update_schedule_promotes_pre_parsed_dict_with_existing_repeat(
+        self, tmp_cron_dir,
+    ):
+        # `update_job()` accepts a pre-parsed schedule dict in addition to the
+        # raw string form. A duration-style dict (``kind="once"`` +
+        # ``interval_minutes``) paired with the job's existing ``repeat > 1``
+        # must be promoted to a recurring interval, same as the string path —
+        # otherwise the promotion only protects callers who go through the
+        # string entry point (#29392).
+        job = create_job(prompt="Watchdog", schedule="every 1h", repeat=3)
+        duration_dict = parse_schedule("2m")
+        assert duration_dict["kind"] == "once"
+        assert duration_dict["interval_minutes"] == 2
+        updated = update_job(job["id"], {"schedule": duration_dict})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["schedule"]["minutes"] == 2
+
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
         assert job["enabled"] is True

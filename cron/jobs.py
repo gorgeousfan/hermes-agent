@@ -187,13 +187,18 @@ def parse_duration(s: str) -> int:
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     Parse schedule string into structured format.
-    
+
     Returns dict with:
         - kind: "once" | "interval" | "cron"
         - For "once": "run_at" (ISO timestamp)
         - For "interval": "minutes" (int)
         - For "cron": "expr" (cron expression)
-    
+        - For duration-style "once" (e.g. "2m", "30m", "1h"):
+          ``interval_minutes`` (int) is also attached so
+          ``_promote_once_to_interval_for_repeat`` can lift the schedule to
+          a recurring interval when the caller pairs it with ``repeat > 1``.
+          Internal — do not rely on this key outside ``cron/jobs.py``.
+
     Examples:
         "30m"              → once in 30 minutes
         "2h"               → once in 2 hours
@@ -808,11 +813,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # create_job() does so downstream code can call .get() safely.
             if isinstance(updated_schedule, str):
                 updated_schedule = parse_schedule(updated_schedule)
-                # Mirror create_job's promotion of "2m" + repeat>1 → recurring
-                # interval so swapping a schedule via update_job doesn't
-                # silently re-introduce the one-shot-with-repeat completion
-                # bug (#29392). The promotion keys off the job's current
-                # ``repeat.times``, which is also updatable in this call.
+            # Mirror create_job's promotion of "2m" + repeat>1 → recurring
+            # interval so swapping a schedule via update_job doesn't silently
+            # re-introduce the one-shot-with-repeat completion bug (#29392).
+            # Promotion runs for both freshly-parsed strings AND pre-parsed
+            # dicts, since callers may construct a duration-style dict from
+            # ``parse_schedule("2m")`` directly and pass it in. The promotion
+            # keys off the job's current ``repeat.times``, which is also
+            # updatable in this call.
+            if isinstance(updated_schedule, dict):
                 _repeat_blob = updated.get("repeat")
                 updated_repeat = (
                     _repeat_blob.get("times") if isinstance(_repeat_blob, dict) else None
