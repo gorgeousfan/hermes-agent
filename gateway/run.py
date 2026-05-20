@@ -10010,10 +10010,7 @@ class GatewayRunner:
                         lines = [t("gateway.model.switched", model=result.new_model)]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
                         mi = result.model_info
-                        from hermes_cli.model_switch import (
-                            format_context_detection_suffix,
-                            resolve_display_context_length,
-                        )
+                        from hermes_cli.model_switch import resolve_display_context_length
                         _sw_config_ctx = None
                         try:
                             _sw_cfg = _load_gateway_config()
@@ -10034,12 +10031,7 @@ class GatewayRunner:
                             config_context_length=_sw_config_ctx,
                         )
                         if ctx:
-                            lines.append(
-                                t(
-                                    "gateway.model.context_label",
-                                    tokens=f"{ctx:,}{format_context_detection_suffix(_sw_config_ctx)}",
-                                )
-                            )
+                            lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
                         if mi:
                             if mi.max_output:
                                 lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
@@ -10178,10 +10170,7 @@ class GatewayRunner:
         # Context: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry.
         mi = result.model_info
-        from hermes_cli.model_switch import (
-            format_context_detection_suffix,
-            resolve_display_context_length,
-        )
+        from hermes_cli.model_switch import resolve_display_context_length
         _sw2_config_ctx = None
         try:
             _sw2_cfg = _load_gateway_config()
@@ -10202,12 +10191,7 @@ class GatewayRunner:
             config_context_length=_sw2_config_ctx,
         )
         if ctx:
-            lines.append(
-                t(
-                    "gateway.model.context_label",
-                    tokens=f"{ctx:,}{format_context_detection_suffix(_sw2_config_ctx)}",
-                )
-            )
+            lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
         if mi:
             if mi.max_output:
                 lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
