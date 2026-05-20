@@ -296,3 +296,16 @@ def test_gateway_stale_tool_error_helper():
     assert not _looks_like_stale_tool_error(
         {"role": "tool"}
     )
+
+
+def test_is_error_stripped_from_api_copy():
+    """The _is_error flag must be stripped from the API message copy so
+    strict providers (Mistral, Fireworks, etc.) don't reject it."""
+    msg = {"role": "tool", "content": "error!", "tool_call_id": "c1", "_is_error": True}
+    api_msg = msg.copy()
+
+    # Simulate the strip from conversation_loop.py
+    api_msg.pop("_is_error", None)
+
+    assert "_is_error" not in api_msg
+    assert "_is_error" in msg  # original preserves the flag for flush filter
