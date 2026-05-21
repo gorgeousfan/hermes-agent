@@ -675,8 +675,9 @@ def test_add_notify_sub_snaps_cursor_past_existing_events(kanban_home):
         tid = kb.create_task(conn, title="pre-existing events", assignee="worker1")
         # Pre-populate task_events so a fresh sub created now would otherwise
         # see them all on the next tick.
-        kb._append_event(conn, tid, kind="completed")
-        kb._append_event(conn, tid, kind="blocked")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind="completed")
+            kb._append_event(conn, tid, kind="blocked")
         max_id_before = conn.execute(
             "SELECT MAX(id) FROM task_events WHERE task_id = ?", (tid,),
         ).fetchone()[0]
@@ -685,7 +686,7 @@ def test_add_notify_sub_snaps_cursor_past_existing_events(kanban_home):
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-late")
 
         sub = kb.list_notify_subs(conn, tid)[0]
-        assert sub["last_event_id"] == max_id_before, (
+        assert int(sub["last_event_id"]) == max_id_before, (
             "Expected new sub to start at the current MAX(id); got "
             f"{sub['last_event_id']} vs {max_id_before}"
         )
@@ -702,7 +703,8 @@ def test_add_notify_sub_snaps_cursor_past_existing_events(kanban_home):
         assert replayed == []
 
         # And a NEW event after subscription must still be delivered.
-        kb._append_event(conn, tid, kind="gave_up")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind="gave_up")
         _, _, fresh = kb.claim_unseen_events_for_sub(
             conn,
             task_id=tid,
@@ -728,7 +730,8 @@ def test_add_notify_sub_idempotent_does_not_rewind_cursor(kanban_home):
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-x")
 
         # Simulate the watcher having advanced the cursor.
-        kb._append_event(conn, tid, kind="completed")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, kind="completed")
         kb.claim_unseen_events_for_sub(
             conn,
             task_id=tid,
@@ -737,12 +740,12 @@ def test_add_notify_sub_idempotent_does_not_rewind_cursor(kanban_home):
             kinds=("completed", "blocked", "gave_up", "crashed", "timed_out"),
         )
         sub_before = kb.list_notify_subs(conn, tid)[0]
-        cursor_before = sub_before["last_event_id"]
+        cursor_before = int(sub_before["last_event_id"])
         assert cursor_before > 0
 
         # Re-subscribe (no-op insert). Cursor must not move.
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-x")
         sub_after = kb.list_notify_subs(conn, tid)[0]
-        assert sub_after["last_event_id"] == cursor_before
+        assert int(sub_after["last_event_id"]) == cursor_before
     finally:
         conn.close()
