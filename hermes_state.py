@@ -29,6 +29,12 @@ from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
 
+# Auto-backup evicted entries to memo.txt (超长期备份)
+try:
+    from tools.memo_append import memo_append_memory
+except ImportError:
+    memo_append_memory = None  # type: ignore
+
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
@@ -3017,7 +3023,7 @@ class SessionDB:
                        WHERE section=? AND is_active=1
                        {"AND id!=?" if exclude_id else ""}
                        ORDER BY
-                          (access_count + 1.0) / ((1.0 + (CAST(? AS REAL) - last_accessed) / 86400.0) ** 0.5) ASC,
+                          (access_count + 1.0) / (1.0 + SQRT((CAST(? AS REAL) - last_accessed) / 86400.0)) ASC,
                           last_accessed ASC,
                           id ASC
                        LIMIT 1""",
@@ -3031,6 +3037,9 @@ class SessionDB:
                     (now, row["id"]),
                 )
                 total -= row["chars"]
+                # 超长期备份：淘汰内容写入 memo.txt
+                if memo_append_memory is not None:
+                    memo_append_memory("evict", row["value"], section)
             return evicted_rows
         return self._execute_write(_do)
 
