@@ -87,6 +87,7 @@ from agent.usage_pricing import (
     format_duration_compact,
     format_token_count_compact,
 )
+from agent.memory_manager import sanitize_context
 from agent.markdown_tables import (
     is_table_divider,
     looks_like_table_row,
@@ -4882,6 +4883,7 @@ class HermesCLI:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
+                text = sanitize_context(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
@@ -11366,8 +11368,21 @@ class HermesCLI:
             sys.stdout.flush()
             time.sleep(0.15)
 
-            # Update history with full conversation
-            self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+            # Update history with full conversation (sanitize injected
+            # memory-context fence blocks from user messages before storing)
+            if result:
+                _raw_messages = result.get("messages")
+                if _raw_messages:
+                    _clean = []
+                    for _m in _raw_messages:
+                        _mc = _m.copy()
+                        _content = _mc.get("content")
+                        if isinstance(_content, str) and _mc.get("role") == "user":
+                            _mc["content"] = sanitize_context(_content)
+                        _clean.append(_mc)
+                    self.conversation_history = _clean
+                else:
+                    self.conversation_history = self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync
