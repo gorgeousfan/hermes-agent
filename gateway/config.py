@@ -856,6 +856,13 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat == Platform.DISCORD:
+                    for approval_key in (
+                        "kanban_review_approval_user_ids",
+                        "kanban_review_approval_role_ids",
+                    ):
+                        if approval_key in platform_cfg:
+                            bridged[approval_key] = platform_cfg[approval_key]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):
@@ -1338,6 +1345,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
+
+    discord_kanban_review_approval_user_ids = os.getenv(
+        "DISCORD_KANBAN_REVIEW_APPROVAL_USER_IDS"
+    )
+    if discord_kanban_review_approval_user_ids:
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].extra[
+            "kanban_review_approval_user_ids"
+        ] = discord_kanban_review_approval_user_ids
+
+    discord_kanban_review_approval_role_ids = os.getenv(
+        "DISCORD_KANBAN_REVIEW_APPROVAL_ROLE_IDS"
+    )
+    if discord_kanban_review_approval_role_ids:
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].extra[
+            "kanban_review_approval_role_ids"
+        ] = discord_kanban_review_approval_role_ids
     
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in {"true", "1", "yes"}

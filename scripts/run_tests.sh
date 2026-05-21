@@ -81,6 +81,11 @@ unset HERMES_YOLO_MODE HERMES_INTERACTIVE HERMES_QUIET HERMES_TOOL_PROGRESS \
       HERMES_REDACT_SECRETS HERMES_BACKGROUND_NOTIFICATIONS HERMES_EXEC_ASK \
       HERMES_HOME_MODE 2>/dev/null || true
 
+# Unset non-secret platform toggles that can be loaded from a developer's
+# profile during test collection and change gateway config behavior.
+unset DISCORD_KANBAN_REVIEW_APPROVAL_USER_IDS \
+      DISCORD_KANBAN_REVIEW_APPROVAL_ROLE_IDS 2>/dev/null || true
+
 # Pin deterministic runtime.
 export TZ=UTC
 export LANG=C.UTF-8

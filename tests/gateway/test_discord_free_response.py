@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from gateway.config import PlatformConfig
+from hermes_cli import kanban_db as kb
 
 
 def _ensure_discord_mock():
@@ -114,6 +115,8 @@ def adapter(monkeypatch):
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_KANBAN_REVIEW_APPROVAL_USER_IDS",
+        "DISCORD_KANBAN_REVIEW_APPROVAL_ROLE_IDS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -125,8 +128,8 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
-    author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
+def make_message(*, channel, content: str, mentions=None, msg_type=None, author=None):
+    author = author or SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
@@ -884,3 +887,142 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
         assert event.channel_context is None
 
 
+def _create_blocked_review_task(tmp_path, monkeypatch, *, reason="review-required: needs human eyes"):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="review me", assignee="worker")
+        kb.block_task(conn, task_id, reason=reason)
+        kb.add_notify_sub(
+            conn,
+            task_id=task_id,
+            platform="discord",
+            chat_id="456",
+            thread_id="456",
+        )
+        return task_id
+    finally:
+        conn.close()
+
+
+def _task_status_and_comments(task_id):
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        return task.status, kb.list_comments(conn, task_id)
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_discord_kanban_review_reply_is_disabled_without_allowlist(
+    adapter, monkeypatch, tmp_path,
+):
+    task_id = _create_blocked_review_task(tmp_path, monkeypatch)
+    adapter.send = AsyncMock(return_value=None)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    thread = FakeThread(channel_id=456, name="review thread")
+    message = make_message(channel=thread, content="approved")
+
+    await adapter._handle_message(message)
+
+    status, comments = _task_status_and_comments(task_id)
+    assert status == "blocked"
+    assert not any("Discord approved reply" in c.body for c in comments)
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_kanban_review_reply_allows_configured_user(
+    adapter, monkeypatch, tmp_path,
+):
+    task_id = _create_blocked_review_task(tmp_path, monkeypatch)
+    adapter.config.extra["kanban_review_approval_user_ids"] = ["<@42>"]
+    adapter.send = AsyncMock(return_value=None)
+
+    thread = FakeThread(channel_id=456, name="review thread")
+    message = make_message(channel=thread, content="approved")
+
+    await adapter._handle_message(message)
+
+    status, comments = _task_status_and_comments(task_id)
+    assert status == "ready"
+    assert comments[-1].body.startswith("Discord approved reply")
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_kanban_review_reply_denies_unlisted_user(
+    adapter, monkeypatch, tmp_path,
+):
+    task_id = _create_blocked_review_task(tmp_path, monkeypatch)
+    adapter.config.extra["kanban_review_approval_user_ids"] = ["99"]
+    adapter.send = AsyncMock(return_value=None)
+
+    thread = FakeThread(channel_id=456, name="review thread")
+    message = make_message(channel=thread, content="approved")
+
+    await adapter._handle_message(message)
+
+    status, comments = _task_status_and_comments(task_id)
+    assert status == "blocked"
+    assert not any("approved reply" in c.body for c in comments)
+    assert "not authorized" in adapter.send.await_args.kwargs["content"].lower()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_kanban_review_reply_allows_configured_role(
+    adapter, monkeypatch, tmp_path,
+):
+    task_id = _create_blocked_review_task(
+        tmp_path,
+        monkeypatch,
+        reason="approval-required: ship it?",
+    )
+    adapter.config.extra["kanban_review_approval_role_ids"] = ["role:7"]
+    adapter.send = AsyncMock(return_value=None)
+    author = SimpleNamespace(
+        id=42,
+        display_name="Jezza",
+        name="Jezza",
+        roles=[SimpleNamespace(id=7)],
+    )
+
+    thread = FakeThread(channel_id=456, name="review thread")
+    message = make_message(channel=thread, content="declined", author=author)
+
+    await adapter._handle_message(message)
+
+    status, comments = _task_status_and_comments(task_id)
+    assert status == "blocked"
+    assert comments[-1].body.startswith("Discord declined reply")
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_kanban_review_reply_rejects_synonyms(
+    adapter, monkeypatch, tmp_path,
+):
+    task_id = _create_blocked_review_task(tmp_path, monkeypatch)
+    adapter.config.extra["kanban_review_approval_user_ids"] = ["42"]
+    adapter.send = AsyncMock(return_value=None)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+
+    thread = FakeThread(channel_id=456, name="review thread")
+    message = make_message(channel=thread, content="ok")
+
+    await adapter._handle_message(message)
+
+    status, comments = _task_status_and_comments(task_id)
+    assert status == "blocked"
+    assert not comments
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()

@@ -454,6 +454,58 @@ class TestLoadGatewayConfig:
             "789": "Creative writing",
         }
 
+    def test_bridges_discord_kanban_review_approval_allowlists_from_config_yaml(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  kanban_review_approval_user_ids:\n"
+            "    - \"42\"\n"
+            "  kanban_review_approval_role_ids:\n"
+            "    - \"7\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.DISCORD]
+            .extra["kanban_review_approval_user_ids"]
+            == ["42"]
+        )
+        assert (
+            config.platforms[Platform.DISCORD]
+            .extra["kanban_review_approval_role_ids"]
+            == ["7"]
+        )
+
+    def test_bridges_discord_kanban_review_approval_allowlists_from_env(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_KANBAN_REVIEW_APPROVAL_USER_IDS", "42,99")
+        monkeypatch.setenv("DISCORD_KANBAN_REVIEW_APPROVAL_ROLE_IDS", "7")
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.DISCORD]
+            .extra["kanban_review_approval_user_ids"]
+            == "42,99"
+        )
+        assert (
+            config.platforms[Platform.DISCORD]
+            .extra["kanban_review_approval_role_ids"]
+            == "7"
+        )
+
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

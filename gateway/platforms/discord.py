@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -30,6 +31,10 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_KANBAN_REVIEW_REPLY_DECISIONS = {
+    "approved": "approved",
+    "declined": "declined",
+}
 
 try:
     import discord
@@ -48,7 +53,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -83,6 +87,28 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _clean_discord_role_id(entry: str) -> str:
+    """Normalize Discord role IDs pasted as raw IDs, role:IDs, or mentions."""
+    entry = entry.strip()
+    if entry.startswith("<@&") and entry.endswith(">"):
+        entry = entry[3:-1]
+    if entry.lower().startswith("role:"):
+        entry = entry[5:]
+    return entry.strip()
+
+
+def _iter_discord_config_values(raw: Any) -> list[str]:
+    """Return string-ish config values from list or comma-separated scalar."""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(part).strip() for part in raw if str(part).strip()]
+    text = str(raw).strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
 
 
 def check_discord_requirements() -> bool:
@@ -3790,6 +3816,200 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] Failed to fetch channel history: %s", self.name, e)
             return ""
 
+    async def _maybe_handle_kanban_review_reply(
+        self,
+        message: DiscordMessage,
+        *,
+        thread_id: Optional[str],
+        normalized_content: str,
+    ) -> bool:
+        """Handle allowlisted Discord replies to Kanban review-required blocks.
+
+        This is intentionally separate from the gateway `/approve` command
+        surface. It only applies to blocked Kanban tasks already subscribed to
+        the current Discord thread, and it is disabled unless an explicit
+        Kanban review approval user or role allowlist is configured.
+        """
+        if not thread_id:
+            return False
+
+        decision = _KANBAN_REVIEW_REPLY_DECISIONS.get(
+            (normalized_content or "").strip().lower()
+        )
+        if not decision:
+            return False
+
+        if not (
+            self._discord_kanban_review_approval_user_ids()
+            or self._discord_kanban_review_approval_role_ids()
+        ):
+            return False
+
+        try:
+            from hermes_cli import kanban_db as _kb
+        except Exception as exc:  # pragma: no cover - environmental import failure
+            logger.debug("[%s] kanban review reply import failed: %s", self.name, exc)
+            return False
+
+        conn = None
+        try:
+            conn = _kb.connect()
+            channel_id = str(getattr(message.channel, "id", "") or "")
+            if not channel_id:
+                return False
+            parent_channel_id = self._get_parent_channel_id(message.channel)
+            channel_ids = {channel_id}
+            if parent_channel_id:
+                channel_ids.add(str(parent_channel_id))
+
+            matched = None
+            for sub in _kb.list_notify_subs(conn):
+                if str(sub.get("platform", "")).lower() != "discord":
+                    continue
+                if str(sub.get("chat_id", "") or "") not in channel_ids:
+                    continue
+                if str(sub.get("thread_id") or "") != thread_id:
+                    continue
+                task_id = str(sub.get("task_id") or "")
+                if not task_id:
+                    continue
+                task = _kb.get_task(conn, task_id)
+                if not task or task.status != "blocked":
+                    continue
+                reason = self._latest_kanban_block_reason(_kb, conn, task_id)
+                if not self._kanban_block_reason_needs_review(reason):
+                    continue
+                matched = (task, reason)
+                break
+
+            if not matched:
+                return False
+
+            task, reason = matched
+            if not self._kanban_review_reply_authorized(message):
+                await self.send(
+                    chat_id=channel_id,
+                    content=(
+                        f"⛔ {task.id} review reply was not authorized. "
+                        "Ask a configured Kanban reviewer to reply here."
+                    ),
+                    reply_to=str(message.id),
+                    metadata={"thread_id": thread_id},
+                )
+                return True
+
+            author = (
+                getattr(message.author, "display_name", None)
+                or getattr(message.author, "name", None)
+                or str(getattr(message.author, "id", "unknown"))
+            )
+            comment = f"Discord {decision} reply from {author}"
+            if reason:
+                comment += f" for {reason}"
+            _kb.add_comment(conn, task.id, author, comment)
+
+            if decision == "approved":
+                unblocked = _kb.unblock_task(conn, task.id)
+                if unblocked:
+                    ack = (
+                        f"✅ Recorded approval for {task.id}; it has been "
+                        "unblocked and will resume automatically."
+                    )
+                else:
+                    ack = (
+                        f"⚠️ Recorded approval for {task.id}, but it could "
+                        "not be unblocked."
+                    )
+            else:
+                ack = (
+                    f"❌ Recorded decline for {task.id}; it remains blocked "
+                    "until updated."
+                )
+
+            await self.send(
+                chat_id=channel_id,
+                content=ack,
+                reply_to=str(message.id),
+                metadata={"thread_id": thread_id},
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[%s] Kanban review reply handling failed: %s",
+                self.name,
+                exc,
+                exc_info=True,
+            )
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _latest_kanban_block_reason(self, kb_module: Any, conn: Any, task_id: str) -> str:
+        try:
+            events = kb_module.list_events(conn, task_id)
+        except Exception:
+            return ""
+        for ev in reversed(events):
+            if getattr(ev, "kind", None) != "blocked":
+                continue
+            payload = getattr(ev, "payload", None) or {}
+            if isinstance(payload, dict) and payload.get("reason"):
+                return str(payload["reason"])
+            break
+        return ""
+
+    @staticmethod
+    def _kanban_block_reason_needs_review(reason: str) -> bool:
+        lowered = (reason or "").strip().lower()
+        return lowered.startswith(("review-required:", "approval-required:"))
+
+    def _kanban_review_reply_authorized(self, message: DiscordMessage) -> bool:
+        allowed_users = self._discord_kanban_review_approval_user_ids()
+        allowed_roles = self._discord_kanban_review_approval_role_ids()
+        if not allowed_users and not allowed_roles:
+            return False
+
+        author = getattr(message, "author", None)
+        if author is None:
+            return False
+
+        user_id = str(getattr(author, "id", "") or "")
+        if user_id and user_id in allowed_users:
+            return True
+
+        roles = getattr(author, "roles", None) or []
+        try:
+            author_role_ids = {str(getattr(role, "id", "") or "") for role in roles}
+        except TypeError:
+            return False
+        author_role_ids.discard("")
+        return bool(author_role_ids & allowed_roles)
+
+    def _discord_kanban_review_approval_user_ids(self) -> set[str]:
+        raw = None
+        if isinstance(getattr(self.config, "extra", None), dict):
+            raw = self.config.extra.get("kanban_review_approval_user_ids")
+        if raw is None:
+            raw = os.getenv("DISCORD_KANBAN_REVIEW_APPROVAL_USER_IDS", "")
+        return {
+            _clean_discord_id(part)
+            for part in _iter_discord_config_values(raw)
+            if _clean_discord_id(part)
+        }
+
+    def _discord_kanban_review_approval_role_ids(self) -> set[str]:
+        raw = None
+        if isinstance(getattr(self.config, "extra", None), dict):
+            raw = self.config.extra.get("kanban_review_approval_role_ids")
+        if raw is None:
+            raw = os.getenv("DISCORD_KANBAN_REVIEW_APPROVAL_ROLE_IDS", "")
+        return {
+            _clean_discord_role_id(part)
+            for part in _iter_discord_config_values(raw)
+            if _clean_discord_role_id(part)
+        }
+
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
@@ -4474,6 +4694,12 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        if await self._maybe_handle_kanban_review_reply(
+            message,
+            thread_id=thread_id,
+            normalized_content=normalized_content,
+        ):
+            return
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
