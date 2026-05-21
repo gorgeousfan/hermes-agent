@@ -1,0 +1,83 @@
+import type { TUITranslations } from './types.js';
+
+export const en: TUITranslations = {
+  session: {
+    available_tools: 'Available Tools',
+    available_skills: 'Available Skills',
+    system_prompt: 'System Prompt',
+    mcp_servers: 'MCP Servers',
+    scanning_skills: 'scanning skills',
+    no_system_prompt: 'No system prompt loaded.',
+    more_categories: 'and {count} more categories…',
+    more_toolsets: 'and {count} more toolsets…',
+    tools_count: '{count} tools',
+    skills_count: '{count} skills',
+    help_commands: '/help for commands',
+    behind: '! {count} {commits} behind',
+    to_update: 'to update',
+  },
+  thinking: {
+    thinking: 'Thinking',
+    tool_calls: 'Tool calls',
+    progress: 'Progress',
+    spawned: 'Spawned',
+    delegate_task: 'Delegate Task',
+    spawn_tree: 'Spawn tree',
+    activity: 'Activity',
+  },
+  prompts: {
+    always_allow: 'Always allow',
+    allow_once: 'Allow once',
+    allow_session: 'Allow this session',
+  },
+  agents: {
+    budget: 'Budget',
+    tool_calls: 'Tool calls',
+    output: 'Output',
+    progress: 'Progress',
+    summary: 'Summary',
+    last_turn: 'Last turn',
+    files: 'Files',
+  },
+  branding: {
+    nous_research: 'Nous Research',
+    messenger: 'Messenger of the Digital Gods',
+  },
+  status: {
+    running: 'Running…',
+    ready: 'Ready',
+  },
+  statusBar: {
+    voiceOn: 'voice on',
+    voiceOff: 'voice off',
+    voiceRec: '● REC',
+    voiceStt: '◉ STT',
+  },
+  sessionCmd: {
+    newStarted: 'new session started',
+    titleSet: 'session title set: {next}',
+    titleSetQueued: ' (queued while session initializes)',
+    titleSetFailed: 'warning: failed to set session title: {message}',
+  },
+  confirm: {
+    newSessionTitle: 'Start a new session?',
+    clearSessionTitle: 'Clear the current session?',
+    newSessionConfirm: 'Yes, start a new session',
+    clearSessionConfirm: 'Yes, clear the session',
+    cancelLabel: 'No, keep going',
+    sessionDetail: 'This ends the current conversation and clears the transcript.',
+  },
+  voice: {
+    modeOff: 'voice: mode is off — enable with /voice on',
+    helpTts: '  /voice tts  to toggle speech output',
+    helpOff: '  /voice off  to disable voice mode',
+  },
+  subagent: {
+    queued: 'queued',
+    running: 'running',
+    done: 'done',
+    error: 'error',
+    cancelled: 'cancelled',
+    interrupted: 'interrupted',
+  },
+};

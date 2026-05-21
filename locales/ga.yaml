@@ -1,93 +1,101 @@
-# Hermes static-message catalog -- Gaeilge (Irish)
-# See locales/en.yaml for the source of truth; keep keys in sync.
-#
-# Modern Irish technical writing freely uses English loanwords for terms
-# without good native equivalents (e.g. "session", "tokens", "API").
-# Where Irish has a settled term we use it; otherwise we keep the English.
-
 approval:
-  dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
-  choose_long:     "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"
-  choose_short:    "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
-  prompt_long:     "      Rogha [o/s/a/D]: "
-  prompt_short:    "      Rogha [o/s/D]: "
-  timeout:         "      ⏱ Am istigh — ag diúltú don ordú"
-  allowed_once:    "      ✓ Ceadaithe uair amháin"
-  allowed_session: "      ✓ Ceadaithe don seisiún seo"
-  allowed_always:  "      ✓ Curtha leis an liosta ceadaithe buan"
-  denied:          "      ✗ Diúltaithe"
-  cancelled:       "      ✗ Cealaithe"
-  blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
-
+  dangerous_header: '⚠️  ORDÚ CONTÚIRTEACH: {description}'
+  choose_long: '      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh'
+  choose_short: '      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh'
+  prompt_long: '      Rogha [o/s/a/D]: '
+  prompt_short: '      Rogha [o/s/D]: '
+  timeout: '      ⏱ Am istigh — ag diúltú don ordú'
+  allowed_once: '      ✓ Ceadaithe uair amháin'
+  allowed_session: '      ✓ Ceadaithe don seisiún seo'
+  allowed_always: '      ✓ Curtha leis an liosta ceadaithe buan'
+  denied: '      ✗ Diúltaithe'
+  cancelled: '      ✗ Cealaithe'
+  blocklist_message: Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú.
 gateway:
-  approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
-  draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
-  goal_cleared:     "✓ Sprioc glanta."
-  no_active_goal:   "Níl aon sprioc ghníomhach ann."
-  config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
-  config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"
-
+  approval_expired: ⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile
+    a dhéanamh.
+  draining: ⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú...
+  goal_cleared: ✓ Sprioc glanta.
+  no_active_goal: Níl aon sprioc ghníomhach ann.
+  config_read_failed: '⚠️ Níorbh fhéidir config.yaml a léamh: {error}'
+  config_save_failed: '⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}'
   model:
-    error_prefix:           "Earráid: {error}"
-    switched:               "Athraíodh an tsamhail go `{model}`"
-    provider_label:         "Soláthraí: {provider}"
-    context_label:          "Comhthéacs: {tokens} comhartha"
-    max_output_label:       "Aschur uasta: {tokens} comhartha"
-    cost_label:             "Costas: {cost}"
-    capabilities_label:     "Cumais: {capabilities}"
-    prompt_caching_enabled: "Taisceadh leid: cumasaithe"
-    warning_prefix:         "Rabhadh: {warning}"
-    saved_global:           "Sábháilte i config.yaml (`--global`)"
-    session_only_hint:      "_(seisiún amháin — cuir `--global` leis chun é a choinneáil)_"
-    current_label:          "Reatha: `{model}` ar {provider}"
-    current_tag:            " (reatha)"
-    more_models_suffix:     " (+{count} eile)"
-    usage_switch_model:     "`/model <name>` — athraigh an tsamhail"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — athraigh an soláthraí"
-    usage_persist:          "`/model <name> --global` — coinnigh"
-
+    error_prefix: 'Earráid: {error}'
+    switched: Athraíodh an tsamhail go `{model}`
+    provider_label: 'Soláthraí: {provider}'
+    context_label: 'Comhthéacs: {tokens} comhartha'
+    max_output_label: 'Aschur uasta: {tokens} comhartha'
+    cost_label: 'Costas: {cost}'
+    capabilities_label: 'Cumais: {capabilities}'
+    prompt_caching_enabled: 'Taisceadh leid: cumasaithe'
+    warning_prefix: 'Rabhadh: {warning}'
+    saved_global: Sábháilte i config.yaml (`--global`)
+    session_only_hint: _(seisiún amháin — cuir `--global` leis chun é a choinneáil)_
+    current_label: 'Reatha: `{model}` ar {provider}'
+    current_tag: ' (reatha)'
+    more_models_suffix: ' (+{count} eile)'
+    usage_switch_model: '`/model <name>` — athraigh an tsamhail'
+    usage_switch_provider: '`/model <name> --provider <slug>` — athraigh an soláthraí'
+    usage_persist: '`/model <name> --global` — coinnigh'
   agents:
-    header:                "🤖 **Gníomhairí & Tascanna Gníomhacha**"
-    active_agents:         "**Gníomhairí gníomhacha:** {count}"
-    this_chat:             " · an comhrá seo"
-    more:                  "... agus {count} eile"
-    running_processes:     "**Próisis chúlra ag rith:** {count}"
-    async_jobs:            "**Tascanna asincrónacha gateway:** {count}"
-    none:                  "Níl aon ghníomhairí gníomhacha ná tascanna ag rith."
-    state_starting:        "ag tosú"
-    state_running:         "ag rith"
-
+    header: 🤖 **Gníomhairí & Tascanna Gníomhacha**
+    active_agents: '**Gníomhairí gníomhacha:** {count}'
+    this_chat: ' · an comhrá seo'
+    more: '... agus {count} eile'
+    running_processes: '**Próisis chúlra ag rith:** {count}'
+    async_jobs: '**Tascanna asincrónacha gateway:** {count}'
+    none: Níl aon ghníomhairí gníomhacha ná tascanna ag rith.
+    state_starting: ag tosú
+    state_running: ag rith
   approve:
-    no_pending:            "Níl aon ordú ag fanacht le ceadú."
-    once_singular:         "✅ Ordú ceadaithe. Tá an gníomhaire ag atosú..."
-    once_plural:           "✅ Orduithe ceadaithe ({count} ordú). Tá an gníomhaire ag atosú..."
-    session_singular:      "✅ Ordú ceadaithe (patrún ceadaithe don seisiún seo). Tá an gníomhaire ag atosú..."
-    session_plural:        "✅ Orduithe ceadaithe (patrún ceadaithe don seisiún seo) ({count} ordú). Tá an gníomhaire ag atosú..."
-    always_singular:       "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
-    always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
-
+    no_pending: Níl aon ordú ag fanacht le ceadú.
+    once_singular: ✅ Ordú ceadaithe. Tá an gníomhaire ag atosú...
+    once_plural: ✅ Orduithe ceadaithe ({count} ordú). Tá an gníomhaire ag atosú...
+    session_singular: ✅ Ordú ceadaithe (patrún ceadaithe don seisiún seo). Tá an gníomhaire ag atosú...
+    session_plural: ✅ Orduithe ceadaithe (patrún ceadaithe don seisiún seo) ({count} ordú). Tá an gníomhaire ag atosú...
+    always_singular: ✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú...
+    always_plural: ✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú...
   background:
-    usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
-    started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
+    usage: 'Úsáid: /background <leid>
 
+      Sampla: /background Déan achoimre ar phríomhscéalta HN inniu
+
+
+      Ritheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh
+      sé críochnaithe.'
+    started: '🔄 Tasc cúlra tosaithe: "{preview}"
+
+      Aitheantas an tasc: {task_id}
+
+      Is féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe.'
   branch:
-    db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
-    no_conversation:       "Níl aon chomhrá le brainseáil — seol teachtaireacht ar dtús."
-    create_failed:         "Theip ar an mbrainse a chruthú: {error}"
-    switch_failed:         "Cruthaíodh an brainse ach theip ar athrú chuige."
-    branched_one:          "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
-    branched_many:         "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
+    db_unavailable: Níl bunachar sonraí na seisiún ar fáil.
+    no_conversation: Níl aon chomhrá le brainseáil — seol teachtaireacht ar dtús.
+    create_failed: 'Theip ar an mbrainse a chruthú: {error}'
+    switch_failed: Cruthaíodh an brainse ach theip ar athrú chuige.
+    branched_one: '⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)
 
+      Bunaidh: `{parent}`
+
+      Brainse: `{new}`
+
+      Úsáid `/resume` chun filleadh ar an mbunaidh.'
+    branched_many: '⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)
+
+      Bunaidh: `{parent}`
+
+      Brainse: `{new}`
+
+      Úsáid `/resume` chun filleadh ar an mbunaidh.'
   commands:
-    usage:                 "Úsáid: `/commands [page]`"
-    skill_header:          "⚡ **Orduithe Scileanna**:"
-    default_desc:          "Ordú scile"
-    none:                  "Níl aon ordú ar fáil."
-    header:                "📚 **Orduithe** ({total} san iomlán, leathanach {page}/{total_pages})"
-    nav_prev:              "`/commands {page}` ← roimhe seo"
-    nav_next:              "ar aghaidh → `/commands {page}`"
-    out_of_range:          "_(Bhí leathanach {requested} a iarradh as raon, ag taispeáint leathanach {page}.)_"
-
+    usage: 'Úsáid: `/commands [page]`'
+    skill_header: '⚡ **Orduithe Scileanna**:'
+    default_desc: Ordú scile
+    none: Níl aon ordú ar fáil.
+    header: 📚 **Orduithe** ({total} san iomlán, leathanach {page}/{total_pages})
+    nav_prev: '`/commands {page}` ← roimhe seo'
+    nav_next: ar aghaidh → `/commands {page}`
+    out_of_range: _(Bhí leathanach {requested} a iarradh as raon, ag taispeáint leathanach {page}.)_
   compress:
     not_enough:            "Níl go leor comhrá le dlúthú (teastaíonn 4 theachtaireacht ar a laghad)."
     no_provider:           "Níl aon soláthraí cumraithe — ní féidir dlúthú."
@@ -99,257 +107,1048 @@ gateway:
     failed:                "Theip ar dhlúthú: {error}"
 
   debug:
-    upload_failed:         "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
-    header:                "**Tuairisc dhífhabhtaithe uaslódáilte:**"
-    auto_delete:           "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
-    full_logs_hint:        "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
-    share_hint:            "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
-
+    upload_failed: '✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}'
+    header: '**Tuairisc dhífhabhtaithe uaslódáilte:**'
+    auto_delete: ⏱ Scriosfar na pastes go huathoibríoch i 6 huaire.
+    full_logs_hint: Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI.
+    share_hint: Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta.
   deny:
-    stale:                 "❌ Ordú diúltaithe (bhí an cead imithe i léig)."
-    no_pending:            "Níl aon ordú ag fanacht le diúltú."
-    denied_singular:       "❌ Ordú diúltaithe."
-    denied_plural:         "❌ Orduithe diúltaithe ({count} ordú)."
-
+    stale: ❌ Ordú diúltaithe (bhí an cead imithe i léig).
+    no_pending: Níl aon ordú ag fanacht le diúltú.
+    denied_singular: ❌ Ordú diúltaithe.
+    denied_plural: ❌ Orduithe diúltaithe ({count} ordú).
   fast:
-    not_supported:         "⚡ Tá /fast ar fáil amháin do shamhlacha OpenAI a thacaíonn le Priority Processing."
-    status:                "⚡ Priority Processing\n\nMód reatha: `{mode}`\n\n_Úsáid:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Argóint anaithnid: `{arg}`\n\n**Roghanna bailí:** normal, fast, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (an seisiún seo amháin)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
+    not_supported: ⚡ Tá /fast ar fáil amháin do shamhlacha OpenAI a thacaíonn le Priority Processing.
+    status: '⚡ Priority Processing
 
+
+      Mód reatha: `{mode}`
+
+
+      _Úsáid:_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ Argóint anaithnid: `{arg}`
+
+
+      **Roghanna bailí:** normal, fast, status'
+    saved: '⚡ ✓ Priority Processing: **{label}** (sábháilte sa chumraíocht)
+
+      _(éifeachtach ón gcéad teachtaireacht eile)_'
+    session_only: '⚡ ✓ Priority Processing: **{label}** (an seisiún seo amháin)'
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: fast
+    status_normal: normal
   footer:
-    status:                "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
-    usage:                 "Úsáid: `/footer [on|off|status]`"
-    saved:                 "📎 Buntásc rite: **{state}**{example}\n_(sábháilte go domhanda — éifeachtach ón gcéad teachtaireacht eile)_"
-    example_line:          "\nSampla: `{preview}`"
-    state_on:              "AR"
-    state_off:             "AS"
+    status: '📎 Buntásc rite: **{state}**
 
+      Réimsí: `{fields}`
+
+      Ardán: `{platform}`'
+    usage: 'Úsáid: `/footer [on|off|status]`'
+    saved: '📎 Buntásc rite: **{state}**{example}
+
+      _(sábháilte go domhanda — éifeachtach ón gcéad teachtaireacht eile)_'
+    example_line: '
+
+      Sampla: `{preview}`'
+    state_on: AR
+    state_off: AS
   goal:
-    unavailable:           "Níl spriocanna ar fáil sa seisiún seo."
-    no_goal_set:           "Níl aon sprioc socraithe."
-    paused:                "⏸ Sprioc curtha ar sos: {goal}"
-    no_resume:             "Níl aon sprioc le hatosú."
-    resumed:               "▶ Sprioc atosaithe: {goal}\nSeol teachtaireacht ar bith chun leanúint, nó fan — déanfaidh mé an chéad chéim eile sa chéad seal eile."
-    invalid:               "Sprioc neamhbhailí: {error}"
-    set:                   "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
+    unavailable: Níl spriocanna ar fáil sa seisiún seo.
+    no_goal_set: Níl aon sprioc socraithe.
+    paused: '⏸ Sprioc curtha ar sos: {goal}'
+    no_resume: Níl aon sprioc le hatosú.
+    resumed: '▶ Sprioc atosaithe: {goal}
 
+      Seol teachtaireacht ar bith chun leanúint, nó fan — déanfaidh mé an chéad chéim eile sa chéad seal eile.'
+    invalid: 'Sprioc neamhbhailí: {error}'
+    set: '⊙ Sprioc socraithe (buiséad {budget} seal): {goal}
+
+      Leanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear
+      an buiséad.
+
+      Smacht: /goal status · /goal pause · /goal resume · /goal clear'
   help:
-    header:                "📖 **Orduithe Hermes**\n"
-    skill_header:          "\n⚡ **Orduithe Scileanna** ({count} gníomhach):"
-    more_use_commands:     "\n... agus {count} eile. Úsáid `/commands` don liosta iomlán uimhrithe."
+    header: '📖 **Orduithe Hermes**
 
+      '
+    skill_header: '
+
+      ⚡ **Orduithe Scileanna** ({count} gníomhach):'
+    more_use_commands: '
+
+      ... agus {count} eile. Úsáid `/commands` don liosta iomlán uimhrithe.'
   insights:
-    invalid_days:          "Luach --days neamhbhailí: {value}"
-    error:                 "Earráid agus léargais á gcruthú: {error}"
-
+    invalid_days: 'Luach --days neamhbhailí: {value}'
+    error: 'Earráid agus léargais á gcruthú: {error}'
   kanban:
-    error_prefix:          "⚠ earráid kanban: {error}"
-    subscribed_suffix:     "(síntiúsaithe — cuirfear in iúl duit nuair a chríochnóidh nó a stopfaidh {task_id})"
-    truncated_suffix:      "… (giorraithe; úsáid `hermes kanban …` i do theirminéal le haghaidh aschur iomláin)"
-    no_output:             "(gan aschur)"
-
+    error_prefix: '⚠ earráid kanban: {error}'
+    subscribed_suffix: (síntiúsaithe — cuirfear in iúl duit nuair a chríochnóidh nó a stopfaidh {task_id})
+    truncated_suffix: … (giorraithe; úsáid `hermes kanban …` i do theirminéal le haghaidh aschur iomláin)
+    no_output: (gan aschur)
   personality:
-    none_configured:       "Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`"
-    header:                "🎭 **Pearsantachtaí ar fáil**\n"
-    none_option:           "• `none` — (gan forleagan pearsantachta)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\nÚsáid: `/personality <name>`"
-    save_failed:           "⚠️ Theip ar shábháil athraithe pearsantachta: {error}"
-    cleared:               "🎭 Pearsantacht glanta — ag úsáid iompair bunúsaigh an ghníomhaire.\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    set_to:                "🎭 Pearsantacht socraithe go **{name}**\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    unknown:               "Pearsantacht anaithnid: `{name}`\n\nAr fáil: {available}"
+    none_configured: Níl aon phearsantachtaí cumraithe in `{path}/config.yaml`
+    header: '🎭 **Pearsantachtaí ar fáil**
 
+      '
+    none_option: • `none` — (gan forleagan pearsantachta)
+    item: • `{name}` — {preview}
+    usage: '
+
+      Úsáid: `/personality <name>`'
+    save_failed: '⚠️ Theip ar shábháil athraithe pearsantachta: {error}'
+    cleared: '🎭 Pearsantacht glanta — ag úsáid iompair bunúsaigh an ghníomhaire.
+
+      _(éifeachtach ón gcéad teachtaireacht eile)_'
+    set_to: '🎭 Pearsantacht socraithe go **{name}**
+
+      _(éifeachtach ón gcéad teachtaireacht eile)_'
+    unknown: 'Pearsantacht anaithnid: `{name}`
+
+
+      Ar fáil: {available}'
   profile:
-    header:                "👤 **Próifíl:** `{profile}`"
-    home:                  "📂 **Baile:** `{home}`"
-
+    header: 👤 **Próifíl:** `{profile}`
+    home: 📂 **Baile:** `{home}`
   reasoning:
-    level_default:             "medium (réamhshocraithe)"
-    level_disabled:            "none (díchumasaithe)"
-    scope_session:             "sárú seisiúin"
-    scope_global:              "cumraíocht dhomhanda"
-    status:                    "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\n_Úsáid:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
-    display_on:                "ar ✓"
-    display_off:               "as"
-    display_set_on:            "🧠 ✓ Taispeáint réasúnaíochta: **AR**\nTaispeánfar smaointeoireacht na samhla roimh gach freagra ar **{platform}**."
-    display_set_off:           "🧠 ✓ Taispeáint réasúnaíochta: **AS** do **{platform}**"
-    reset_global_unsupported:  "⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an réamhshocrú domhanda a athrú."
-    reset_done:                "🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda."
-    unknown_arg:               "⚠️ Argóint anaithnid: `{arg}`\n\n**Leibhéil bhailí:** none, minimal, low, medium, high, xhigh\n**Taispeáint:** show, hide\n**Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo"
-    set_global:                "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (sábháilte sa chumraíocht)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    set_global_save_failed:    "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
-    set_session:               "🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    level_default: medium (réamhshocraithe)
+    level_disabled: none (díchumasaithe)
+    scope_session: sárú seisiúin
+    scope_global: cumraíocht dhomhanda
+    status: '🧠 **Socruithe Réasúnaíochta**
 
+
+      **Iarracht:** `{level}`
+
+      **Scóip:** {scope}
+
+      **Taispeáint:** {display}
+
+
+      _Úsáid:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: ar ✓
+    display_off: as
+    display_set_on: '🧠 ✓ Taispeáint réasúnaíochta: **AR**
+
+      Taispeánfar smaointeoireacht na samhla roimh gach freagra ar **{platform}**.'
+    display_set_off: '🧠 ✓ Taispeáint réasúnaíochta: **AS** do **{platform}**'
+    reset_global_unsupported: ⚠️ Ní thacaítear le `/reasoning reset --global`. Úsáid `/reasoning <level> --global` chun an
+      réamhshocrú domhanda a athrú.
+    reset_done: 🧠 ✓ Sárú réasúnaíochta seisiúin glanta; ag titim siar ar an gcumraíocht dhomhanda.
+    unknown_arg: '⚠️ Argóint anaithnid: `{arg}`
+
+
+      **Leibhéil bhailí:** none, minimal, low, medium, high, xhigh
+
+      **Taispeáint:** show, hide
+
+      **Coinnigh:** cuir `--global` leis chun sábháil thar an seisiún seo'
+    set_global: '🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (sábháilte sa chumraíocht)
+
+      _(éifeachtach ón gcéad teachtaireacht eile)_'
+    set_global_save_failed: '🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — theip ar shábháil cumraíochta)
+
+      _(éifeachtach ón gcéad teachtaireacht eile)_'
+    set_session: '🧠 ✓ Iarracht réasúnaíochta socraithe go `{effort}` (seisiún amháin — cuir `--global` leis chun é a choinneáil)
+
+      _(éifeachtach ón gcéad teachtaireacht eile)_'
   reload_mcp:
-    cancelled:             "🟡 /reload-mcp cealaithe. Tá uirlisí MCP gan athrú."
-    always_followup:       "ℹ️ Rithfear glaonna `/reload-mcp` amach anseo gan dearbhú. Athchumasaigh trí `approvals.mcp_reload_confirm: true` a shocrú in config.yaml."
-    confirm_prompt:        "⚠️ **Dearbhaigh /reload-mcp**\n\nAthlódáil freastalaithe MCP a athchruthaíonn an tacar uirlisí don seisiún seo agus **cuireann sé taisce leid an tsoláthraí ar neamhní** — seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir iomlána arís. Ar shamhlacha le comhthéacs fada nó réasúnaíocht ard, is féidir leis seo a bheith costasach.\n\nRoghnaigh:\n• **Approve Once** — athlódáil anois\n• **Always Approve** — athlódáil anois agus an leid seo a chiúnú go buan\n• **Cancel** — fág uirlisí MCP gan athrú\n\n_Cúltaca téacs: freagair `/approve`, `/always`, nó `/cancel`._"
-    header:                "🔄 **Freastalaithe MCP Athlódáilte**\n"
-    reconnected:           "♻️ Athcheanglaithe: {names}"
-    added:                 "➕ Curtha leis: {names}"
-    removed:               "➖ Bainte: {names}"
-    none_connected:        "Níl aon fhreastalaí MCP ceangailte."
-    tools_available:       "\n🔧 {tools} uirlis(í) ar fáil ó {servers} freastalaí(thí)"
-    failed:                "❌ Theip ar athlódáil MCP: {error}"
+    cancelled: 🟡 /reload-mcp cealaithe. Tá uirlisí MCP gan athrú.
+    always_followup: 'ℹ️ Rithfear glaonna `/reload-mcp` amach anseo gan dearbhú. Athchumasaigh trí `approvals.mcp_reload_confirm:
+      true` a shocrú in config.yaml.'
+    confirm_prompt: '⚠️ **Dearbhaigh /reload-mcp**
 
+
+      Athlódáil freastalaithe MCP a athchruthaíonn an tacar uirlisí don seisiún seo agus **cuireann sé taisce leid an tsoláthraí
+      ar neamhní** — seolfaidh an chéad teachtaireacht eile na comharthaí ionchuir iomlána arís. Ar shamhlacha le comhthéacs
+      fada nó réasúnaíocht ard, is féidir leis seo a bheith costasach.
+
+
+      Roghnaigh:
+
+      • **Approve Once** — athlódáil anois
+
+      • **Always Approve** — athlódáil anois agus an leid seo a chiúnú go buan
+
+      • **Cancel** — fág uirlisí MCP gan athrú
+
+
+      _Cúltaca téacs: freagair `/approve`, `/always`, nó `/cancel`._'
+    header: '🔄 **Freastalaithe MCP Athlódáilte**
+
+      '
+    reconnected: '♻️ Athcheanglaithe: {names}'
+    added: '➕ Curtha leis: {names}'
+    removed: '➖ Bainte: {names}'
+    none_connected: Níl aon fhreastalaí MCP ceangailte.
+    tools_available: '
+
+      🔧 {tools} uirlis(í) ar fáil ó {servers} freastalaí(thí)'
+    failed: '❌ Theip ar athlódáil MCP: {error}'
   reload_skills:
-    header:                "🔄 **Scileanna Athlódáilte**\n"
-    no_new:                "Níor braitheadh aon scil nua."
-    total:                 "\n📚 {count} scil(eanna) ar fáil"
-    added_header:          "➕ **Scileanna Curtha leis:**"
-    removed_header:        "➖ **Scileanna Bainte:**"
-    item_with_desc:        "    - {name}: {desc}"
-    item_no_desc:          "    - {name}"
-    failed:                "❌ Theip ar athlódáil scileanna: {error}"
+    header: '🔄 **Scileanna Athlódáilte**
 
+      '
+    no_new: Níor braitheadh aon scil nua.
+    total: '
+
+      📚 {count} scil(eanna) ar fáil'
+    added_header: ➕ **Scileanna Curtha leis:**
+    removed_header: ➖ **Scileanna Bainte:**
+    item_with_desc: '    - {name}: {desc}'
+    item_no_desc: '    - {name}'
+    failed: '❌ Theip ar athlódáil scileanna: {error}'
   reset:
-    header_default:        "✨ Seisiún athshocraithe! Ag tosú as an nua."
-    header_new:            "✨ Seisiún nua tosaithe!"
-    header_titled:         "✨ Seisiún nua tosaithe: {title}"
-    title_rejected:        "\n⚠️ Teideal diúltaithe: {error}"
-    title_error_untitled:  "\n⚠️ {error} — seisiún tosaithe gan teideal."
-    title_empty_untitled:  "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
-    tip:                   "\n✦ Leid: {tip}"
+    header_default: ✨ Seisiún athshocraithe! Ag tosú as an nua.
+    header_new: ✨ Seisiún nua tosaithe!
+    header_titled: '✨ Seisiún nua tosaithe: {title}'
+    title_rejected: '
 
+      ⚠️ Teideal diúltaithe: {error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — seisiún tosaithe gan teideal.'
+    title_empty_untitled: '
+
+      ⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal.'
+    tip: '
+
+      ✦ Leid: {tip}'
   restart:
-    in_progress:           "⏳ Tá atosú gateway ar siúl cheana féin..."
-    restarting:            "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."
-
+    in_progress: ⏳ Tá atosú gateway ar siúl cheana féin...
+    restarting: ♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway
+      restart`.
   resume:
-    db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
-    no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
-    list_header:           "📋 **Seisiúin Ainmnithe**\n"
-    list_item:             "• **{title}**{preview_part}"
-    list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\nÚsáid: `/resume <session name>`"
-    list_failed:           "Níorbh fhéidir seisiúin a liostáil: {error}"
-    not_found:             "Níor aimsíodh aon seisiún ag teacht le '**{name}**'.\nÚsáid `/resume` gan argóintí chun seisiúin atá ar fáil a fheiceáil."
-    already_on:            "📌 Cheana ar an seisiún **{name}**."
-    switch_failed:         "Theip ar athrú seisiúin."
-    resumed_one:           "↻ Seisiún **{title}** atosaithe ({count} teachtaireacht). Comhrá aischurtha."
-    resumed_many:          "↻ Seisiún **{title}** atosaithe ({count} teachtaireacht). Comhrá aischurtha."
-    resumed_no_count:      "↻ Seisiún **{title}** atosaithe. Comhrá aischurtha."
+    db_unavailable: Níl bunachar sonraí na seisiún ar fáil.
+    no_named_sessions: 'Níor aimsíodh aon seisiún ainmnithe.
 
+      Úsáid `/title M''Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M''Ainm Seisiúin` chun filleadh air
+      níos déanaí.'
+    list_header: '📋 **Seisiúin Ainmnithe**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' — _{preview}_'
+    list_footer: '
+
+      Úsáid: `/resume <session name>`'
+    list_failed: 'Níorbh fhéidir seisiúin a liostáil: {error}'
+    not_found: 'Níor aimsíodh aon seisiún ag teacht le ''**{name}**''.
+
+      Úsáid `/resume` gan argóintí chun seisiúin atá ar fáil a fheiceáil.'
+    already_on: 📌 Cheana ar an seisiún **{name}**.
+    switch_failed: Theip ar athrú seisiúin.
+    resumed_one: ↻ Seisiún **{title}** atosaithe ({count} teachtaireacht). Comhrá aischurtha.
+    resumed_many: ↻ Seisiún **{title}** atosaithe ({count} teachtaireacht). Comhrá aischurtha.
+    resumed_no_count: ↻ Seisiún **{title}** atosaithe. Comhrá aischurtha.
   retry:
-    no_previous:           "Níl aon teachtaireacht roimhe seo le hath-iarraidh."
-
+    no_previous: Níl aon teachtaireacht roimhe seo le hath-iarraidh.
   rollback:
-    not_enabled:           "Níl seicphointí cumasaithe.\nCumasaigh in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
-    none_found:            "Níor aimsíodh aon seicphointe do {cwd}"
-    invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
-    restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
-    restore_failed:        "❌ {error}"
+    not_enabled: "Níl seicphointí cumasaithe.\nCumasaigh in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: Níor aimsíodh aon seicphointe do {cwd}
+    invalid_number: Uimhir seicphointe neamhbhailí. Úsáid 1-{max}.
+    restored: '✅ Aischurtha go seicphointe {hash}: {reason}
 
+      Sábháladh roghchóip réamh-rollback go huathoibríoch.'
+    restore_failed: ❌ {error}
   set_home:
-    save_failed:           "Theip ar shábháil chainéil bhaile: {error}"
-    success:               "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."
+    save_failed: 'Theip ar shábháil chainéil bhaile: {error}'
+    success: '✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).
 
+      Seachadfar tascanna cron agus teachtaireachtaí trasardáin anseo.'
   status:
-    header:                "📊 **Stádas Hermes Gateway**"
-    session_id:            "**ID Seisiúin:** `{session_id}`"
-    title:                 "**Teideal:** {title}"
-    created:               "**Cruthaithe:** {timestamp}"
-    last_activity:         "**Gníomhaíocht is déanaí:** {timestamp}"
-    tokens:                "**Comharthaí:** {tokens}"
-    agent_running:         "**Gníomhaire ag rith:** {state}"
-    state_yes:             "Tá ⚡"
-    state_no:              "Níl"
-    queued:                "**Tascanna i scuaine:** {count}"
-    platforms:             "**Ardáin Cheangailte:** {platforms}"
-
+    header: 📊 **Stádas Hermes Gateway**
+    session_id: '**ID Seisiúin:** `{session_id}`'
+    title: '**Teideal:** {title}'
+    created: '**Cruthaithe:** {timestamp}'
+    last_activity: '**Gníomhaíocht is déanaí:** {timestamp}'
+    tokens: '**Comharthaí:** {tokens}'
+    agent_running: '**Gníomhaire ag rith:** {state}'
+    state_yes: Tá ⚡
+    state_no: Níl
+    queued: '**Tascanna i scuaine:** {count}'
+    platforms: '**Ardáin Cheangailte:** {platforms}'
   stop:
-    stopped_pending:       "⚡ Stoptha. Ní raibh an gníomhaire tosaithe fós — is féidir leat leanúint leis an seisiún seo."
-    stopped:               "⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo."
-    no_active:             "Níl aon tasc gníomhach le stopadh."
-
+    stopped_pending: ⚡ Stoptha. Ní raibh an gníomhaire tosaithe fós — is féidir leat leanúint leis an seisiún seo.
+    stopped: ⚡ Stoptha. Is féidir leat leanúint leis an seisiún seo.
+    no_active: Níl aon tasc gníomhach le stopadh.
   title:
-    db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
-    warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ Tá an teideal folamh tar éis glanta. Bain úsáid as carachtair inphriontáilte le do thoil."
-    set_to:                "✏️ Teideal seisiúin socraithe: **{title}**"
-    not_found:             "Seisiún gan a aimsiú sa bhunachar sonraí."
-    current_with_title:    "📌 Seisiún: `{session_id}`\nTeideal: **{title}**"
-    current_no_title:      "📌 Seisiún: `{session_id}`\nGan teideal socraithe. Úsáid: `/title M'Ainm Seisiúin`"
+    db_unavailable: Níl bunachar sonraí na seisiún ar fáil.
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ Tá an teideal folamh tar éis glanta. Bain úsáid as carachtair inphriontáilte le do thoil.
+    set_to: '✏️ Teideal seisiúin socraithe: **{title}**'
+    not_found: Seisiún gan a aimsiú sa bhunachar sonraí.
+    current_with_title: '📌 Seisiún: `{session_id}`
 
+      Teideal: **{title}**'
+    current_no_title: '📌 Seisiún: `{session_id}`
+
+      Gan teideal socraithe. Úsáid: `/title M''Ainm Seisiúin`'
   topic:
-    not_telegram_dm:         "Tá an t-ordú /topic ar fáil amháin i gcomhráite príobháideacha Telegram."
-    no_session_db:           "Níl bunachar sonraí na seisiún ar fáil."
-    unauthorized:            "Níl tú údaraithe chun /topic a úsáid ar an mbot seo."
-    restore_needs_topic:     "Chun seisiún a athchóiriú, cruthaigh nó oscail topaic Telegram ar dtús, ansin seol /topic <session-id> taobh istigh den topaic sin. Chun topaic nua a chruthú, oscail All Messages agus seol teachtaireacht ar bith ann."
-    topics_disabled:         "Níl topaicí Telegram cumasaithe don bhot seo fós.\n\nConas iad a chumasú:\n1. Oscail @BotFather.\n2. Roghnaigh do bhot.\n3. Oscail Bot Settings → Threads Settings.\n4. Casadh ar Threaded Mode agus déan cinnte go bhfuil cead ag úsáideoirí snáitheanna nua a chruthú.\n\nAnsin seol /topic arís."
-    topics_user_disallowed:  "Tá topaicí Telegram cumasaithe, ach níl cead ag úsáideoirí topaicí a chruthú.\n\nOscail @BotFather → roghnaigh do bhot → Bot Settings → Threads Settings, ansin múchadh 'Disallow users to create new threads'.\n\nAnsin seol /topic arís."
-    enable_failed:           "Theip ar mhodh topaice Telegram a chumasú: {error}"
-    bound_status:            "Tá an topaic seo nasctha le:\nSeisiún: {label}\nID: {session_id}\n\nÚsáid /new chun an topaic seo a athsholáthar le seisiún úr.\nLe haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú."
-    thread_ready:            "Tá topaicí il-seisiúin Telegram cumasaithe.\n\nÚsáidfear an topaic seo mar sheisiún Hermes neamhspleách. Úsáid /new chun seisiún reatha na topaice seo a athsholáthar. Le haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú."
-    untitled_session:        "Seisiún gan teideal"
+    not_telegram_dm: Tá an t-ordú /topic ar fáil amháin i gcomhráite príobháideacha Telegram.
+    no_session_db: Níl bunachar sonraí na seisiún ar fáil.
+    unauthorized: Níl tú údaraithe chun /topic a úsáid ar an mbot seo.
+    restore_needs_topic: Chun seisiún a athchóiriú, cruthaigh nó oscail topaic Telegram ar dtús, ansin seol /topic <session-id>
+      taobh istigh den topaic sin. Chun topaic nua a chruthú, oscail All Messages agus seol teachtaireacht ar bith ann.
+    topics_disabled: 'Níl topaicí Telegram cumasaithe don bhot seo fós.
 
+
+      Conas iad a chumasú:
+
+      1. Oscail @BotFather.
+
+      2. Roghnaigh do bhot.
+
+      3. Oscail Bot Settings → Threads Settings.
+
+      4. Casadh ar Threaded Mode agus déan cinnte go bhfuil cead ag úsáideoirí snáitheanna nua a chruthú.
+
+
+      Ansin seol /topic arís.'
+    topics_user_disallowed: 'Tá topaicí Telegram cumasaithe, ach níl cead ag úsáideoirí topaicí a chruthú.
+
+
+      Oscail @BotFather → roghnaigh do bhot → Bot Settings → Threads Settings, ansin múchadh ''Disallow users to create new
+      threads''.
+
+
+      Ansin seol /topic arís.'
+    enable_failed: 'Theip ar mhodh topaice Telegram a chumasú: {error}'
+    bound_status: 'Tá an topaic seo nasctha le:
+
+      Seisiún: {label}
+
+      ID: {session_id}
+
+
+      Úsáid /new chun an topaic seo a athsholáthar le seisiún úr.
+
+      Le haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú.'
+    thread_ready: 'Tá topaicí il-seisiúin Telegram cumasaithe.
+
+
+      Úsáidfear an topaic seo mar sheisiún Hermes neamhspleách. Úsáid /new chun seisiún reatha na topaice seo a athsholáthar.
+      Le haghaidh oibre comhthreomhaire, oscail All Messages agus seol teachtaireacht ann chun topaic eile a chruthú.'
+    untitled_session: Seisiún gan teideal
   undo:
-    nothing:               "Níl aon rud le cealú."
-    removed:               "↩️ Cealaíodh {count} teachtaireacht.\nBaineadh: \"{preview}\""
+    nothing: Níl aon rud le cealú.
+    removed: '↩️ Cealaíodh {count} teachtaireacht.
 
+      Baineadh: "{preview}"'
   update:
-    platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."
-    not_git_repo:            "✗ Ní stór git é seo — ní féidir nuashonrú."
-    hermes_cmd_not_found:    "✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a rith de láimh i do theirminéal."
-    start_failed:            "✗ Theip ar nuashonrú a thosú: {error}"
-    starting:                "⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo."
-
+    platform_not_messaging: ✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal.
+    not_git_repo: ✗ Ní stór git é seo — ní féidir nuashonrú.
+    hermes_cmd_not_found: ✗ Níorbh fhéidir an t-ordú `hermes` a aimsiú. Tá Hermes ag rith, ach níorbh fhéidir leis an ordú
+      nuashonraithe an inrite a aimsiú ar PATH ná tríd an léirmhínitheoir Python reatha. Bain triail as `hermes update` a
+      rith de láimh i do theirminéal.
+    start_failed: '✗ Theip ar nuashonrú a thosú: {error}'
+    starting: ⚕ Ag tosú nuashonrú Hermes… Cuirfidh mé an dul chun cinn ar shruth anseo.
   usage:
-    rate_limits:              "⏱️ **Teorainneacha Ráta:** {state}"
-    header_session:           "📊 **Úsáid Comharthaí Seisiúin**"
-    label_model:              "Samhail: `{model}`"
-    label_input_tokens:       "Comharthaí ionchuir: {count}"
-    label_cache_read:         "Comharthaí léite ón taisce: {count}"
-    label_cache_write:        "Comharthaí scríofa sa taisce: {count}"
-    label_output_tokens:      "Comharthaí aschuir: {count}"
-    label_total:              "Iomlán: {count}"
-    label_api_calls:          "Glaonna API: {count}"
-    label_cost:               "Costas: {prefix}${amount}"
-    label_cost_included:      "Costas: san áireamh"
-    label_context:            "Comhthéacs: {used} / {total} ({pct}%)"
-    label_compressions:       "Dlúthuithe: {count}"
-    header_session_info:      "📊 **Eolas Seisiúin**"
-    label_messages:           "Teachtaireachtaí: {count}"
-    label_estimated_context:  "Comhthéacs measta: ~{count} comhartha"
-    detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
-    no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
-
+    rate_limits: ⏱️ **Teorainneacha Ráta:** {state}
+    header_session: 📊 **Úsáid Comharthaí Seisiúin**
+    label_model: 'Samhail: `{model}`'
+    label_input_tokens: 'Comharthaí ionchuir: {count}'
+    label_cache_read: 'Comharthaí léite ón taisce: {count}'
+    label_cache_write: 'Comharthaí scríofa sa taisce: {count}'
+    label_output_tokens: 'Comharthaí aschuir: {count}'
+    label_total: 'Iomlán: {count}'
+    label_api_calls: 'Glaonna API: {count}'
+    label_cost: 'Costas: {prefix}${amount}'
+    label_cost_included: 'Costas: san áireamh'
+    label_context: 'Comhthéacs: {used} / {total} ({pct}%)'
+    label_compressions: 'Dlúthuithe: {count}'
+    header_session_info: 📊 **Eolas Seisiúin**
+    label_messages: 'Teachtaireachtaí: {count}'
+    label_estimated_context: 'Comhthéacs measta: ~{count} comhartha'
+    detailed_after_first: _(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_
+    no_data: Níl aon sonraí úsáide ar fáil don seisiún seo.
   verbose:
-    not_enabled:           "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
-    mode_off:              "⚙️ Dul chun cinn uirlise: **AS** — gan aon ghníomhaíocht uirlise á thaispeáint."
-    mode_new:              "⚙️ Dul chun cinn uirlise: **NUA** — taispeánta nuair a athraíonn an uirlis (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
-    mode_all:              "⚙️ Dul chun cinn uirlise: **GACH CEANN** — taispeántar gach glao uirlise (fad réamhamhairc: `display.tool_preview_length`, réamhshocrú 40)."
-    mode_verbose:          "⚙️ Dul chun cinn uirlise: **BÉALSCAOILTE** — gach glao uirlise le hargóintí iomlána."
-    saved_suffix:          "_(sábháilte do **{platform}** — éifeachtach ón gcéad teachtaireacht eile)_"
-    save_failed:           "_(níorbh fhéidir sábháil sa chumraíocht: {error})_"
-
+    not_enabled: "Níl an t-ordú `/verbose` cumasaithe d'ardáin teachtaireachtaí.\n\nCumasaigh in `config.yaml`:\n```yaml\n\
+      display:\n  tool_progress_command: true\n```"
+    mode_off: '⚙️ Dul chun cinn uirlise: **AS** — gan aon ghníomhaíocht uirlise á thaispeáint.'
+    mode_new: '⚙️ Dul chun cinn uirlise: **NUA** — taispeánta nuair a athraíonn an uirlis (fad réamhamhairc: `display.tool_preview_length`,
+      réamhshocrú 40).'
+    mode_all: '⚙️ Dul chun cinn uirlise: **GACH CEANN** — taispeántar gach glao uirlise (fad réamhamhairc: `display.tool_preview_length`,
+      réamhshocrú 40).'
+    mode_verbose: '⚙️ Dul chun cinn uirlise: **BÉALSCAOILTE** — gach glao uirlise le hargóintí iomlána.'
+    saved_suffix: _(sábháilte do **{platform}** — éifeachtach ón gcéad teachtaireacht eile)_
+    save_failed: '_(níorbh fhéidir sábháil sa chumraíocht: {error})_'
   voice:
-    enabled_voice_only:    "Mód gutha cumasaithe.\nFreagróidh mé le guth nuair a sheolann tú teachtaireachtaí gutha.\nÚsáid /voice tts chun freagraí gutha a fháil do gach teachtaireacht."
-    disabled_text:         "Mód gutha díchumasaithe. Freagraí téacs amháin."
-    tts_enabled:           "Auto-TTS cumasaithe.\nBeidh teachtaireacht gutha mar chuid de gach freagra."
-    status_mode:           "Mód gutha: {label}"
-    status_channel:        "Cainéal gutha: #{channel}"
-    status_participants:   "Rannpháirtithe: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (ag labhairt)"
-    enabled_short:         "Mód gutha cumasaithe."
-    disabled_short:        "Mód gutha díchumasaithe."
-    label_off:             "As (téacs amháin)"
-    label_voice_only:      "Ar (freagra gutha do theachtaireachtaí gutha)"
-    label_all:             "TTS (freagra gutha do gach teachtaireacht)"
+    enabled_voice_only: 'Mód gutha cumasaithe.
 
+      Freagróidh mé le guth nuair a sheolann tú teachtaireachtaí gutha.
+
+      Úsáid /voice tts chun freagraí gutha a fháil do gach teachtaireacht.'
+    disabled_text: Mód gutha díchumasaithe. Freagraí téacs amháin.
+    tts_enabled: 'Auto-TTS cumasaithe.
+
+      Beidh teachtaireacht gutha mar chuid de gach freagra.'
+    status_mode: 'Mód gutha: {label}'
+    status_channel: 'Cainéal gutha: #{channel}'
+    status_participants: 'Rannpháirtithe: {count}'
+    status_member: '  - {name}{status}'
+    speaking: ' (ag labhairt)'
+    enabled_short: Mód gutha cumasaithe.
+    disabled_short: Mód gutha díchumasaithe.
+    label_off: As (téacs amháin)
+    label_voice_only: Ar (freagra gutha do theachtaireachtaí gutha)
+    label_all: TTS (freagra gutha do gach teachtaireacht)
   yolo:
-    disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."
-    enabled:                    "⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach."
-
+    disabled: ⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha.
+    enabled: ⚡ Mód YOLO **AR** don seisiún seo — gach ordú ceadaithe go huathoibríoch. Úsáid go cúramach.
   shared:
-    session_db_unavailable:      "Níl bunachar sonraí na seisiún ar fáil."
-    session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"
-    session_not_found:           "Seisiún gan a aimsiú sa bhunachar sonraí."
-    warn_passthrough:            "⚠️ {error}"
+    session_db_unavailable: Níl bunachar sonraí na seisiún ar fáil.
+    session_db_unavailable_prefix: Níl bunachar sonraí na seisiún ar fáil
+    session_not_found: Seisiún gan a aimsiú sa bhunachar sonraí.
+    warn_passthrough: ⚠️ {error}
+tip:
+  '001': /background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.
+  '002': /branch forks the current session so you can explore a different direction without losing progress.
+  '003': /compress manually compresses conversation context when things get long.
+  '004': /rollback lists filesystem checkpoints — restore files the agent modified to any prior state.
+  '005': /rollback diff 2 previews what changed since checkpoint 2 without restoring anything.
+  '006': /rollback 2 src/file.py restores a single file from a specific checkpoint.
+  '007': /title \"my project\" names your session — resume it later with /resume or hermes -c.
+  008: /resume picks up where you left off in a previously named session.
+  009: /queue <prompt> queues a message for the next turn without interrupting the current one.
+  '010': /undo removes the last user/assistant exchange from the conversation.
+  '011': /retry resends your last message — useful when the agent's response wasn't quite right.
+  '012': '/verbose cycles tool progress display: off → new → all → verbose.'
+  '013': /reasoning high increases the model's thinking depth. /reasoning show displays the reasoning.
+  '014': /fast toggles priority processing for faster API responses (provider-dependent).
+  '015': /yolo skips all dangerous command approval prompts for the rest of the session.
+  '016': /model lets you switch models mid-session — try /model sonnet or /model gpt-5.
+  '017': /model --global changes your default model permanently.
+  018: /personality pirate sets a fun personality — 14 built-in options from kawaii to shakespeare.
+  019: /skin changes the CLI theme — try ares, mono, slate, poseidon, or charizard.
+  '020': /statusbar toggles a persistent bar showing model, tokens, context fill %, cost, and duration.
+  '021': /tools disable browser temporarily removes browser tools for the current session.
+  '022': /browser connect attaches browser tools to your running Chrome instance via CDP.
+  '023': /plugins lists installed plugins and their status.
+  '024': /cron manages scheduled tasks — set up recurring prompts with delivery to any platform.
+  '025': /reload-mcp hot-reloads MCP server configuration without restarting.
+  '026': /usage shows token usage, cost breakdown, and session duration.
+  '027': /insights shows usage analytics for the last 30 days.
+  028: /paste checks your clipboard for an image and attaches it to your next message.
+  029: /profile shows which profile is active and its home directory.
+  '030': /config shows your current configuration at a glance.
+  '031': /stop kills all running background processes spawned by the agent.
+  '032': '@file:path/to/file.py injects file contents directly into your message.'
+  '033': '@file:main.py:10-50 injects only lines 10-50 of a file.'
+  '034': '@folder:src/ injects a directory tree listing.'
+  '035': '@diff injects your unstaged git changes into the message.'
+  '036': '@staged injects your staged git changes (git diff --staged).'
+  '037': '@git:5 injects the last 5 commits with full patches.'
+  038: '@url:https://example.com fetches and injects a web page''s content.'
+  039: Typing @ triggers filesystem path completion — navigate to any file interactively.
+  '040': 'Combine multiple references: \"Review @file:main.py and @file:test.py for consistency.\"'
+  '041': Alt+Enter inserts a newline for multi-line input. (Windows Terminal intercepts Alt+Enter — use Ctrl+Enter instead.)
+  '042': Ctrl+C interrupts the agent. Double-press within 2 seconds to force exit.
+  '043': Ctrl+Z suspends Hermes to the background — run fg in your shell to resume.
+  '044': Tab accepts auto-suggestion ghost text or autocompletes slash commands.
+  '045': Type a new message while the agent is working to interrupt and redirect it.
+  '046': Alt+V pastes an image from your clipboard into the conversation.
+  '047': Pasting 5+ lines auto-saves to a file and inserts a compact reference instead.
+  048: hermes -c resumes your most recent CLI session. hermes -c \"project name\" resumes by title.
+  049: hermes -w creates an isolated git worktree — perfect for parallel agent workflows.
+  '050': 'hermes -w -q \"Fix issue #42\" combines worktree isolation with a one-shot query.'
+  '051': hermes chat -t web,terminal enables only specific toolsets for a focused session.
+  '052': hermes chat -s github-pr-workflow preloads a skill at launch.
+  '053': hermes chat -q \"query\" runs a single non-interactive query and exits.
+  '054': hermes chat --max-turns 200 overrides the default 90-iteration limit per turn.
+  '055': hermes chat --checkpoints enables filesystem snapshots before every destructive file change.
+  '056': hermes --yolo bypasses all dangerous command approval prompts for the entire session.
+  '057': hermes chat --source telegram tags the session for filtering in hermes sessions list.
+  058: hermes -p work chat runs under a specific profile without changing your default.
+  059: hermes doctor --fix diagnoses and auto-repairs config and dependency issues.
+  '060': hermes dump outputs a compact setup summary — great for bug reports.
+  '061': hermes config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.
+  '062': hermes config edit opens config.yaml in your default editor.
+  '063': hermes config check scans for missing or stale configuration options.
+  '064': hermes sessions browse opens an interactive session picker with search.
+  '065': hermes sessions stats shows session counts by platform and database size.
+  '066': hermes sessions prune --older-than 30 cleans up old sessions.
+  '067': hermes skills search react --source skills-sh searches the skills.sh public directory.
+  068: hermes skills check scans installed hub skills for upstream updates.
+  069: hermes skills tap add myorg/skills-repo adds a custom GitHub skill source.
+  '070': hermes skills snapshot export setup.json exports your skill configuration for backup or sharing.
+  '071': hermes mcp add github --command npx adds MCP servers from the command line.
+  '072': hermes mcp serve runs Hermes itself as an MCP server for other agents.
+  '073': hermes auth add lets you add multiple API keys for credential pool rotation.
+  '074': hermes completion bash >> ~/.bashrc enables tab completion for all commands and profiles.
+  '075': hermes logs -f follows agent.log in real time. --level WARNING --since 1h filters output.
+  '076': hermes backup creates a zip backup of your entire Hermes home directory.
+  '077': hermes profile create coder creates an isolated profile that becomes its own command.
+  078: hermes profile create work --clone copies your current config and keys to a new profile.
+  079: hermes update syncs new bundled skills to ALL profiles automatically.
+  080: hermes gateway install sets up Hermes as a system service (systemd/launchd).
+  081: hermes memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).
+  082: hermes webhook subscribe creates event-driven webhook routes with HMAC validation.
+  083: 'Save money: hermes tools disables unused tools, hermes skills config trims skills down.'
+  084: /reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.
+  085: hermes models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without
+    downgrading your main chat model.
+  086: 'Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.'
+  087: 'Set display.streaming: true to see tokens appear in real time as the model generates.'
+  088: 'Set display.show_reasoning: true to watch the model''s chain-of-thought reasoning.'
+  089: 'Set display.compact: true to reduce whitespace in output for denser information.'
+  090: 'Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run
+    via /steer.'
+  091: 'Set display.resume_display: minimal to skip the full conversation recap on session resume.'
+  092: 'Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).'
+  093: 'Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.'
+  094: 'Set file_read_max_chars: 200000 to increase the max content per read_file call.'
+  095: 'Set approvals.mode: smart to let an LLM auto-approve safe commands and auto-deny dangerous ones.'
+  096: Set fallback_model in config.yaml to automatically fail over to a backup provider.
+  097: 'Set privacy.redact_pii: true to hash user IDs and phone numbers before sending to the LLM.'
+  098: 'Set browser.record_sessions: true to auto-record browser sessions as WebM videos.'
+  099: 'Set worktree: true in config.yaml to always create a git worktree (same as hermes -w).'
+  '100': 'Set security.website_blocklist.enabled: true to block specific domains from web tools.'
+  '101': 'Set cron.wrap_response: false to deliver raw agent output without the cron header/footer.'
+  '102': HERMES_TIMEZONE overrides the server timezone with any IANA timezone string.
+  '103': 'Environment variable substitution works in config.yaml: use ${VAR_NAME} syntax.'
+  '104': Quick commands in config.yaml run shell commands instantly with zero token usage.
+  '105': Custom personalities can be defined in config.yaml under agent.personalities.
+  '106': provider_routing controls OpenRouter provider sorting, whitelisting, and blacklisting.
+  '107': execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.
+  '108': delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated
+    contexts for parallel work.
+  '109': web_extract works on PDF URLs — pass any PDF link and it converts to markdown.
+  '110': search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.
+  '111': patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.
+  '112': patch supports V4A format for bulk multi-file edits in a single call.
+  '113': read_file suggests similar filenames when a file isn't found.
+  '114': read_file auto-deduplicates — re-reading an unchanged file returns a lightweight stub.
+  '115': browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.
+  '116': browser_console can evaluate JavaScript expressions in the page context.
+  '117': image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.
+  '118': text_to_speech converts text to audio — plays as voice bubbles on Telegram.
+  '119': send_message can reach any connected messaging platform from within a session.
+  '120': The todo tool helps the agent track complex multi-step tasks during a session.
+  '121': session_search performs full-text search across ALL past conversations.
+  '122': The agent automatically saves preferences, corrections, and environment facts to memory.
+  '123': mixture_of_agents routes hard problems through 4 frontier LLMs collaboratively.
+  '124': Terminal commands support background mode with notify_on_complete for long-running tasks.
+  '125': Terminal background processes support watch_patterns to alert on specific output lines.
+  '126': 'The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.'
+  '127': Each profile gets its own config, API keys, memory, sessions, skills, and cron jobs.
+  '128': Profile names become shell commands — 'hermes profile create coder' creates the 'coder' command.
+  '129': hermes profile export coder -o backup.tar.gz creates a portable profile archive.
+  '130': If two profiles accidentally share a bot token, the second gateway is blocked with a clear error.
+  '131': Sessions auto-generate descriptive titles after the first exchange — no manual naming needed.
+  '132': 'Session titles support lineage: \"my project\" → \"my project #2\" → \"my project #3\".'
+  '133': When exiting, Hermes prints a resume command with session ID and stats.
+  '134': hermes sessions export backup.jsonl exports all sessions for backup or analysis.
+  '135': hermes -r SESSION_ID resumes any specific past session by its ID.
+  '136': Memory is a frozen snapshot — changes appear in the system prompt only at next session start.
+  '137': Memory entries are automatically scanned for prompt injection and exfiltration patterns.
+  '138': 'The agent has two memory stores: personal notes (~2200 chars) and user profile (~1375 chars).'
+  '139': Corrections you give the agent (\"no, do it this way\") are often auto-saved to memory.
+  '140': Over 80 bundled skills covering github, creative, mlops, productivity, research, and more.
+  '141': Every installed skill automatically becomes a slash command — type / to see them all.
+  '142': hermes skills install official/security/1password installs optional skills from the repo.
+  '143': Skills can restrict to specific OS platforms — some only load on macOS or Linux.
+  '144': skills.external_dirs in config.yaml lets you load skills from custom directories.
+  '145': The agent can create its own skills as procedural memory using skill_manage.
+  '146': The plan skill saves markdown plans under .hermes/plans/ in the active workspace.
+  '147': 'Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".'
+  '148': Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.
+  '149': If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.
+  '150': Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.
+  '151': Cron jobs run in completely fresh agent sessions — prompts must be self-contained.
+  '152': Voice mode works with zero API keys if faster-whisper is installed (free local speech-to-text).
+  '153': 'Five TTS providers available: Edge TTS (free), ElevenLabs, OpenAI, NeuTTS (free local), MiniMax.'
+  '154': /voice on enables voice mode in the CLI. Ctrl+B toggles push-to-talk recording.
+  '155': Streaming TTS plays sentences as they generate — you don't wait for the full response.
+  '156': Voice messages on Telegram, Discord, WhatsApp, and Slack are auto-transcribed.
+  '157': 'Hermes runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams,
+    email, and more.'
+  '158': hermes gateway install sets it up as a system service that starts on boot.
+  '159': DingTalk uses Stream Mode — no webhooks or public URL needed.
+  '160': BlueBubbles brings iMessage to Hermes via a local macOS server.
+  '161': Webhook routes support HMAC validation, rate limiting, and event filtering.
+  '162': The API server exposes an OpenAI-compatible endpoint compatible with Open WebUI and LibreChat.
+  '163': 'Discord voice channel mode: the bot joins VC, transcribes speech, and talks back.'
+  '164': 'group_sessions_per_user: true gives each person their own session in group chats.'
+  '165': /sethome marks a chat as the home channel for cron job deliveries.
+  '166': The gateway supports inactivity-based timeouts — active agents can run indefinitely.
+  '167': 'Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.'
+  '168': Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones.
+  '169': SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.
+  '170': Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.
+  '171': MCP subprocesses receive a filtered environment — only safe system vars pass through.
+  '172': Context files (.hermes.md, AGENTS.md) are security-scanned for prompt injection before loading.
+  '173': command_allowlist in config.yaml permanently approves specific shell command patterns.
+  '174': Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.
+  '175': The status bar turns yellow, then orange, then red as context fills up.
+  '176': SOUL.md at ~/.hermes/SOUL.md is the agent's primary identity — customize it to shape behavior.
+  '177': Hermes loads project context from .hermes.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match).
+  '178': Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders.
+  '179': Context files are capped at 20,000 characters with smart head/tail truncation.
+  '180': 'Five browser providers: local Chromium, Browserbase, Browser Use, Camofox, and Firecrawl.'
+  '181': Camofox is an anti-detection browser — Firefox fork with C++ fingerprint spoofing.
+  '182': browser_navigate returns a page snapshot automatically — no need to call browser_snapshot after.
+  '183': browser_vision with annotate=true overlays numbered labels on interactive elements.
+  '184': MCP servers are configured in config.yaml — both stdio and HTTP transports supported.
+  '185': 'Per-server tool filtering: tools.include whitelists and tools.exclude blacklists specific tools.'
+  '186': MCP servers auto-generate toolsets at runtime — hermes tools can toggle them per platform.
+  '187': 'MCP OAuth support: auth: oauth enables browser-based authorization with PKCE.'
+  '188': Checkpoints have zero overhead when no files are modified — enabled by default.
+  '189': A pre-rollback snapshot is saved automatically so you can undo the undo.
+  '190': /rollback also undoes the conversation turn, so the agent doesn't remember rolled-back changes.
+  '191': Checkpoints use shadow repos in ~/.hermes/checkpoints/ — your project's .git is never touched.
+  '192': batch_runner.py processes hundreds of prompts in parallel for training data generation.
+  '193': hermes chat -Q enables quiet mode for programmatic use — suppresses banner and spinner.
+  '194': Trajectory saving (--save-trajectories) captures full tool-use traces for model training.
+  '195': 'Three plugin types: general (tools/hooks), memory providers, and context engines.'
+  '196': hermes plugins install owner/repo installs plugins directly from GitHub.
+  '197': '8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.'
+  '198': Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.
+  '199': Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.
+  '200': The agent auto-generates session titles in a background thread — zero latency impact.
+  '201': Smart model routing can auto-route simple queries to a cheaper model.
+  '202': 'Slash commands support prefix matching: /h resolves to /help, /mod to /model.'
+  '203': Dragging a file path into the terminal auto-attaches images or sends as context.
+  '204': .worktreeinclude in your repo root lists gitignored files to copy into worktrees.
+  '205': hermes acp runs Hermes as an ACP server for VS Code, Zed, and JetBrains integration.
+  '206': 'Custom providers: save named endpoints in config.yaml under custom_providers.'
+  '207': HERMES_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.
+  '208': credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.
+  '209': hermes login supports OAuth-based auth for Nous and OpenAI Codex providers.
+  '210': The API server supports both Chat Completions and Responses API with server-side state.
+  '211': 'tool_preview_length: 0 in config shows full file paths in the spinner''s activity feed.'
+  '212': hermes status --deep runs deeper diagnostic checks across all components.
+  '213': Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context.
+  '214': Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines.
+  '215': prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.
+  '216': SOUL.md completely replaces the agent's default identity — rewrite it to make Hermes your own.
+  '217': SOUL.md is auto-seeded with a default personality on first run. Edit ~/.hermes/SOUL.md to customize.
+  '218': /compress <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.
+  '219': On second+ compression, the compressor updates the previous summary instead of starting from scratch.
+  '220': Before a gateway session reset, Hermes auto-flushes important facts to memory in the background.
+  '221': 'network.force_ipv4: true in config.yaml fixes hangs on servers with broken IPv6 — monkey-patches socket.'
+  '222': 'The terminal tool annotates common exit codes: grep returning 1 = ''No matches found (not an error)''.'
+  '223': Failed foreground terminal commands auto-retry up to 3 times with exponential backoff (2s, 4s, 8s).
+  '224': Bare sudo commands are auto-rewritten to pipe SUDO_PASSWORD from .env — no interactive prompt needed.
+  '225': 'execute_code has built-in helpers: json_parse() for tolerant parsing, shell_quote(), and retry() with backoff.'
+  '226': execute_code's 7 sandbox tools (web_search, terminal, read/write/search/patch) use RPC — never enter context.
+  '227': Reading the same file region 3+ times triggers a warning. At 4+, it's hard-blocked to prevent loops.
+  '228': write_file and patch detect if a file was externally modified since the last read and warn about staleness.
+  '229': V4A patch format supports Add File, Delete File, and Move File directives — not just Update.
+  '230': MCP servers can request LLM completions back via sampling — the agent becomes a tool for the server.
+  '231': MCP servers send notifications/tools/list_changed to trigger automatic tool re-registration without restart.
+  '232': 'delegate_task with acp_command: ''claude'' spawns Claude Code as a child agent from any platform.'
+  '233': Delegation has a heartbeat thread — child activity propagates to the parent, preventing gateway timeouts.
+  '234': When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.
+  '235': agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.
+  '236': agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.
+  '237': agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the
+    error — lower it for fast fallback.
+  '238': The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.
+  '239': Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.
+  '240': The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.
+  '241': 'Stale git worktrees are auto-cleaned: 24-72h old with no unpushed commits get pruned on startup.'
+  '242': Each profile gets its own subprocess HOME at HERMES_HOME/home/ — isolated git, ssh, npm, gh configs.
+  '243': HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal.
+  '244': 'Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container.'
+  '245': 'Ctrl+C has 5 priority tiers: cancel recording → cancel prompts → cancel picker → interrupt agent → exit.'
+  '246': Every interrupt during an agent run is logged to ~/.hermes/interrupt_debug.log with timestamps.
+  '247': BROWSER_CDP_URL connects browser tools to any running Chrome — accepts WebSocket, HTTP, or host:port.
+  '248': BROWSERBASE_ADVANCED_STEALTH=true enables advanced anti-detection with custom Chromium (Scale Plan).
+  '249': The CLI auto-switches to compact mode in terminals narrower than 80 columns.
+  '250': 'Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).'
+  '251': 'Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.'
+  '252': delegation.reasoning_effort independently controls thinking depth for subagents.
+  '253': 'display.platforms in config.yaml allows per-platform display overrides: {telegram: {tool_progress: all}}.'
+  '254': human_delay.mode in config simulates human typing speed — configurable min_ms/max_ms range.
+  '255': Config version migrations run automatically on load — new config keys appear without manual intervention.
+  '256': GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.
+  '257': Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.
+  '258': context.engine in config.yaml can be set to a plugin name for alternative context management strategies.
+  '259': Browser pages over 8000 tokens are auto-summarized by the auxiliary LLM before returning to the agent.
+  '260': 'The compressor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM
+    runs.'
+  '261': When compression fails, further attempts are paused for 10 minutes to avoid API hammering.
+  '262': Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.
+  '263': Audio level visualization shows ▁▂▃▄▅▆▇ bars during voice recording based on microphone RMS levels.
+  '264': Profile names cannot collide with existing PATH binaries — 'hermes profile create ls' would be rejected.
+  '265': hermes profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).
+  '266': The voice record key is configurable via voice.record_key in config.yaml — not just Ctrl+B.
+  '267': .cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.
+  '268': Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.
+  '269': GPT-5 and Codex use 'developer' role instead of 'system' in the message format.
+  '270': 'Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.'
+  '271': The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.
+  '272': hermes claw migrate --dry-run previews OpenClaw migration without writing anything.
+  '273': File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed.
+  '274': Slash commands never trigger the large-paste collapse — /command with big arguments works correctly.
+  '275': In interrupt mode, slash commands typed during agent execution bypass interrupt logic and run immediately.
+  '276': HERMES_DEV=1 bypasses container mode detection for local development.
+  '277': Each MCP server gets its own toolset (mcp-servername) that can be toggled independently via hermes tools.
+  '278': MCP ${ENV_VAR} placeholders in config are resolved at server spawn — including vars from ~/.hermes/.env.
+  '279': Skills from trusted repos (NousResearch) get a 'trusted' security level; community skills get extra scanning.
+  '280': The skills quarantine at ~/.hermes/skills/.hub/quarantine/ holds skills pending security review.
+  '281': /steer <prompt> injects a note after the next tool call — nudge direction mid-task without interrupting.
+  '282': /goal <text> sets a standing Ralph-loop objective — Hermes auto-continues turn after turn until a judge says done.
+  '283': /snapshot create [label] saves a full state snapshot of Hermes config; /snapshot restore <id> reverts later.
+  '284': /copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.
+  '285': /redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.
+  '286': /agents (alias /tasks) shows active agents and running background tasks across the current session.
+  '287': /footer toggles the gateway footer on final replies showing model, tool counts, and turn timing.
+  '288': /busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.
+  '289': /topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.
+  '290': /approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.
+  '291': /restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.
+  '292': /kanban boards switch <slug> changes the active multi-project Kanban board from inside chat.
+  '293': /reload reloads ~/.hermes/.env into the running session — pick up new API keys without restarting.
+  '294': cronjob with no_agent=True runs a script on schedule and sends its stdout directly — zero tokens, zero LLM.
+  '295': An empty cron script stdout means silent tick — nothing is delivered, perfect for threshold watchdogs.
+  '296': HERMES_CRON_MAX_PARALLEL (default 4) caps how many cron jobs run per tick so bursts don't saturate your keys.
+  '297': Gateway hooks live under ~/.hermes/hooks/<name>/ with HOOK.yaml + handler.py — handler must be named `handle`.
+  '298': Hook events include gateway:startup, session:start, agent:step, and command:* wildcard subscriptions.
+  '299': Drop a ~/.hermes/BOOT.md checklist and a gateway:startup hook runs it as a one-shot agent every boot.
+  '300': hermes curator run --dry-run previews what the curator would archive or consolidate without mutating anything.
+  '301': hermes curator pin <skill> hard-fences a skill against both auto-archival and the agent's skill_manage tool.
+  '302': hermes curator rollback restores skills from a pre-run snapshot — backups live under skills/.curator_backups/.
+  '303': hermes auth reset <provider> clears all cooldowns and exhaustion flags on a credential pool.
+  '304': 'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.'
+  '305': 'use_gateway: true per-tool routes web, image, tts, or browser through your Nous subscription — no extra keys.'
+  '306': 'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.'
+  '307': 'provider_routing.require_parameters: true only routes to providers that support every param in your request.'
+  '308': HERMES_TUI_RESUME=1 auto-re-attaches to the most recent TUI session on launch — handy after SSH drops.
+  '309': HERMES_TUI_THEME=light|dark|<hex> forces the TUI theme on terminals that don't set COLORFGBG.
+  '310': Ctrl+G or Ctrl+X Ctrl+E in the TUI opens the input buffer in $EDITOR for long multi-line prompts.
+  '311': The TUI renders LaTeX inline — $E=mc^2$ becomes Unicode math instead of raw TeX.
+  '312': hermes dashboard launches a local web UI at 127.0.0.1:9119 — zero data leaves localhost.
+  '313': hermes dashboard --tui embeds the full Hermes TUI in your browser via xterm.js and a WebSocket PTY.
+  '314': Drop a YAML in ~/.hermes/dashboard-themes/ with two palette colors to reskin the entire dashboard.
+  '315': 'Dashboard plugins are drop-in: manifest.json + JS bundle in ~/.hermes/dashboard-plugins/ — no npm build required.'
+  '316': 'layoutVariant: cockpit in a dashboard theme adds a 260px left rail that plugins can populate via the sidebar slot.'
+  '317': 'display.tool_progress_command: true exposes /verbose on messaging platforms; it''s CLI-only by default.'
+  '318': HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).
+  '319': HERMES_WRITE_SAFE_ROOT restricts write_file and patch to a directory prefix; writes outside require approval.
+  '320': HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.
+  '321': HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.
+  '322': auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.
+  '323': Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.
+  '324': 'tts.provider: piper runs 44-language local TTS on CPU — voices auto-download to ~/.hermes/cache/piper-voices/.'
+  '325': 'tts.providers.<name>.type: command wires any CLI TTS engine with {input_path} and {output_path} placeholders.'
+  '326': API_SERVER_ENABLED=true runs an OpenAI-compatible endpoint alongside the gateway for Open WebUI and LibreChat.
+  '327': 'GATEWAY_PROXY_URL runs a split setup: platform I/O locally, agent work delegated to a remote API server.'
+  '328': MATRIX_DEVICE_ID pins a stable device ID for E2EE — without it, keys rotate every start and historic decrypt breaks.
+  '329': TELEGRAM_WEBHOOK_SECRET is required whenever TELEGRAM_WEBHOOK_URL is set — generate with openssl rand -hex 32.
+  '330': batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.
+  '331': /new starts a fresh session in place (alias /reset) — fresh session ID, clean history, CLI stays open.
+  '332': /clear wipes the terminal screen AND starts a new session — one shortcut for a visual reset.
+  '333': /history prints the current conversation in-line without leaving the CLI — useful for a quick re-read.
+  '334': /save writes the current conversation to disk without ending the session.
+  '335': '/status shows session info at a glance: ID, title, model, token usage, and elapsed time.'
+  '336': /image <path> attaches a local image file for your next prompt without pasting or drag-and-drop.
+  '337': /platforms shows gateway and messaging-platform connection status right from inside chat.
+  '338': /commands paginates the full slash-command + installed-skill list — useful on platforms without tab completion.
+  '339': /toolsets lists every available toolset so you know what -t/--toolsets accepts.
+  '340': /gquota shows Google Gemini Code Assist quota usage with progress bars when that provider is active.
+  '341': /voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts.
+  '342': /reload-skills re-scans ~/.hermes/skills/ so drop-in skills appear without restarting the session.
+  '343': /indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs.
+  '344': /debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too.
+  '345': 'hermes -z "<prompt>" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts.'
+  '346': hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it.
+  '347': hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step.
+  '348': hermes chat --ignore-user-config skips ~/.hermes/config.yaml — reproducible bug reports and CI runs.
+  '349': hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.
+  '350': hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.
+  '351': hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.
+  '352': hermes import restores a session export or profile archive produced by sessions export or profile export.
+  '353': hermes fallback manages the fallback_model chain interactively — no hand-editing config.yaml.
+  '354': hermes pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.
+  '355': hermes setup walks first-time users through provider, keys, and platform wiring in one interactive flow.
+  '356': hermes status --deep runs the full health sweep across every component; plain hermes status is the quick view.
+  '357': HERMES_AGENT_TIMEOUT=0 disables the gateway inactivity kill for a running agent — use for long research runs.
+  '358': HERMES_ENABLE_PROJECT_PLUGINS=1 auto-loads repo-local plugins from ./.hermes/plugins/ — trust-gated by design.
+  '359': HERMES_DISABLE_FILE_STATE_GUARD=1 turns off the 'file changed since you read it' guard on patch and write_file.
+  '360': HERMES_ALLOW_PRIVATE_URLS=true lets web tools hit localhost and private networks — off by default in gateway mode.
+  '361': HERMES_OPTIONAL_SKILLS=name1,name2 auto-installs extra optional-catalog skills on first run per profile.
+  '362': HERMES_BUNDLED_SKILLS points at a custom bundled-skill tree — used by Homebrew and Nix packaging.
+  '363': HERMES_DUMP_REQUEST_STDOUT=1 dumps every API request payload to stdout instead of log files.
+  '364': HERMES_OAUTH_TRACE=1 logs redacted OAuth token exchange and refresh attempts for debugging provider auth.
+  '365': HERMES_STREAM_RETRIES (default 3) controls mid-stream reconnect attempts on transient network errors.
+  '366': HERMES_GATEWAY_BUSY_ACK_ENABLED=false silences the ⚡/⏳/⏩ ack messages when a user messages a busy agent.
+  '367': HERMES_AGENT_NOTIFY_INTERVAL (default 180s) sets how often the gateway pings with progress on long turns.
+  '368': HERMES_RESTART_DRAIN_TIMEOUT (default 900s) caps how long /restart waits for in-flight runs before forcing.
+  '369': HERMES_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.
+  '370': 'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.'
+  '371': image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.
+  '372': AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.
+  '373': 'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.'
+  '374': TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.
+  '375': --source tool chats are excluded from hermes sessions list by default — set --source explicitly to see them.
+  '376': Session IDs are timestamp-prefixed (20250305_091523_abcd) so sorting works naturally in ls and jq.
+  '377': API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups.
+  '378': Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.hermes/dashboard-plugins/.
+cmd:
+  new: Start a new session (fresh session ID + history)
+  topic: Enable or inspect Telegram DM topic sessions
+  clear: Clear screen and start a new session
+  redraw: Force a full UI repaint (recovers from terminal drift)
+  history: Show conversation history
+  save: Save the current conversation
+  retry: Retry the last message (resend to agent)
+  undo: Remove the last user/assistant exchange
+  title: Set a title for the current session
+  handoff: Hand off this session to a messaging platform (Telegram, Discord, etc.)
+  branch: Branch the current session (explore a different path)
+  compress: Manually compress conversation context
+  rollback: List or restore filesystem checkpoints
+  snapshot: Create or restore state snapshots of Hermes config/state
+  stop: Kill all running background processes
+  approve: Approve a pending dangerous command
+  deny: Deny a pending dangerous command
+  background: Run a prompt in the background
+  agents: Show active agents and running tasks
+  queue: Queue a prompt for the next turn (doesn't interrupt)
+  steer: Inject a message after the next tool call without interrupting
+  goal: Set a standing goal Hermes works on across turns until achieved
+  subgoal: Add or manage extra criteria on the active goal
+  status: Show session info
+  whoami: Show your slash command access (admin / user)
+  profile: Show active profile name and home directory
+  sethome: Set this chat as the home channel
+  resume: Resume a previously-named session
+  sessions: Browse and resume previous sessions
+  config: Show current configuration
+  model: Switch model for this session
+  codex-runtime: Toggle codex app-server runtime for OpenAI/Codex models
+  gquota: Show Google Gemini Code Assist quota usage
+  personality: Set a predefined personality
+  statusbar: Toggle the context/model status bar
+  verbose: 'Cycle tool progress display: off -> new -> all -> verbose'
+  footer: Toggle gateway runtime-metadata footer on final replies
+  yolo: Toggle YOLO mode (skip all dangerous command approvals)
+  reasoning: Manage reasoning effort and display
+  fast: Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)
+  skin: Show or change the display skin/theme
+  indicator: Pick the TUI busy-indicator style
+  voice: Toggle voice mode
+  busy: Control what Enter does while Hermes is working
+  tools: 'Manage tools: /tools [list|disable|enable] [name...]'
+  toolsets: List available toolsets
+  skills: Search, install, inspect, or manage skills
+  cron: Manage scheduled tasks
+  curator: Background skill maintenance (status, run, pin, archive, list-archived)
+  kanban: Multi-profile collaboration board (tasks, links, comments)
+  reload: Reload .env variables into the running session
+  reload-mcp: Reload MCP servers from config
+  reload-skills: Re-scan ~/.hermes/skills/ for newly installed or removed skills
+  browser: Connect browser tools to your live Chrome via CDP
+  plugins: List installed plugins and their status
+  commands: Browse all commands and skills (paginated)
+  help: Show available commands
+  restart: Gracefully restart the gateway after draining active runs
+  usage: Show token usage and rate limits for the current session
+  insights: Show usage insights and analytics
+  platforms: Show gateway/messaging platform status
+  platform: Pause, resume, or list a failing gateway platform
+  copy: Copy the last assistant response to clipboard
+  paste: Attach clipboard image from your clipboard
+  image: Attach a local image file for your next prompt
+  update: Update Hermes Agent to the latest version
+  debug: Upload debug report (system info + logs) and get shareable links
+  quit: Exit the CLI (use --delete to also remove session history)
+banner:
+  session: 'Session: {session_id}'
+  available_tools: Available Tools
+  mcp_servers: MCP Servers
+  available_skills: Available Skills
+  no_skills: No skills installed
+  tools_count: '{tools_count} tools'
+  skills_count: '{total_skills} skills'
+  mcp_count: '{mcp_connected} MCP servers'
+  runtime: 'Runtime:'
+  profile: 'Profile:'
+  behind: ⚠ {behind} {commits_word} behind
+  commits: commits
+  commit: commit
+  codex_note: (terminal/file ops/MCP run inside codex)
+  toolsets_note: (and {remaining_toolsets} more toolsets...)
+  failed: — failed
+cli:
+  '4166': '{_DIM}External editor is only available inside the interactive CLI.{_RST}'
+  '4169': '{_DIM}Wait for the current command to finish before opening the editor.{_RST}'
+  '4172': '{_DIM}Finish the active prompt before opening the editor.{_RST}'
+  '4176': '{_DIM}No active input buffer is available for the external editor.{_RST}'
+  '4234': '⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}'
+  '4410': '\033[1;31mSession not found: {session_id}{_RST}'
+  '4537': 'Session title applied: {pending_title}'
+  '4541': 'Could not apply pending title: {e}'
+  '5147': 'Running processes: {running_count}'
+  '5154': 'Recently finished: {finished_count}'
+  '5178': '📎 Image #{n} attached from clipboard'
+  '5180': '{_DIM}(>_<) Clipboard has an image but extraction failed{_RST}'
+  '5182': '{_DIM}(._.) No image found in clipboard{_RST}'
+  '5266': 'Copied assistant response #{idx + 1} to clipboard'
+  '5268': 'Clipboard copy failed: {e}'
+  '5288': '📎 Attached image: {image_name}'
+  '5335': '{_DIM}✓ image analyzed{_RST}'
+  '5343': '{_DIM}⚠ vision analysis failed — path included for retry{_RST}'
+  '5351': '{_DIM}⚠ vision analysis error — path included for retry{_RST}'
+  '5538': '\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}'
+  '5539': '{_DIM}Multi-line: Alt+Enter for a new line{_RST}'
+  '5540': '{_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}'
+  '5665': '{_DIM}Session reset. New tool configuration is active.{_RST}'
+  '5947': 'Title rejected: {e}'
+  '5956': '{e} — session started untitled.'
+  '6020': 'Could not load gateway config: {exc}'
+  '6026': Unknown platform
+  '6032': 'Could not load gateway config: {exc}'
+  '6037': Platform
+  '6042': No home channel configured for {platform_name}.
+  '6043': Set one with /sethome on the destination chat first.
+  '6077': 'Could not ensure session row in state.db: {exc}'
+  '6097': Queued handoff of
+  '6098': Waiting for the gateway to pick it up...
+  '6116': ↻ Handoff complete. The session is now active on {platform_name}.
+  '6117': 'Resume it on this CLI later with: /resume {session_title}'
+  '6124': 'Handoff failed: {err}'
+  '6162': 'Session not found: {target}'
+  '4194': '{_DIM}Failed to open external editor: {exc}{_RST}'
+  '4413': '{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}'
+  '5251': Invalid response number. Use 1-{assistant_count}.
+  '5277': '{_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}'
+  '5283': '{_DIM}(>_<) File not found: {path_token}{_RST}'
+  '5286': '{_DIM}(._.) Not a supported image file: {image_name}{_RST}'
+  '5292': '{_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}'
+  '5527': \n  {_BOLD}── {category} ──{_RST}
+  '5534': '\n  ⚡ {_BOLD}Skill Commands{_RST} ({skill_count} installed):'
+  '5546': '{_DIM}Paste image: Alt+V (or /paste){_RST}\n'
+  '6039': Platform
+  '6062': '{db_status}'
+  '6154': '{db_status}'
+  '6276': '{db_status}'
+  '6298': '{db_status}'
+  '6343': 'Failed to create branch session: {e}'
+  '6416': 'Original session: {parent_session_id}'
+  '6417': 'Branch session:   {new_session_id}'
+  '6883': 'Context: {ctx_formatted} tokens'
+  '6888': 'Max output: {max_output_formatted} tokens'
+  '6890': 'Cost: {cost}'
+  '6891': 'Capabilities: {capabilities}'
+  '7117': 'Context: {ctx_formatted} tokens'
+  '7120': 'Max output: {max_output_formatted} tokens'
+  '7122': 'Cost: {cost}'
+  '7123': 'Capabilities: {capabilities}'
+  '7843': '{db_status}'
+  '7858': '{db_status}'
+  '6251': ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.
+  '6827': ✗ {error}
+  '6856': ⚠ Agent swap failed ({exc}); change applied to next session.
+  '6865': '✓ Model switched: {new_model}'
+  '6866': 'Provider: {provider_label}'
+  '6900': ⚠ {warning}
+  '7054': ✗ {error}
+  '7087': ⚠ Agent swap failed ({exc}); change applied to next session.
+  '7100': '✓ Model switched: {new_model}'
+  '7101': 'Provider: {provider_label}'
+  '7135': ⚠ {warning}
+  '3645': '{_DIM}[thinking] {preview_text}{_RST}'
+  '3654': '{_DIM}[thinking] {preview}{_RST}'
+  '7169': '❌ could not load config: {exc}'
+  '7181': '{prefix} {line}'
+  '5323': '{_DIM}👁️  analyzing {image_name} ({size_kb}KB)...{_RST}'
+  '7733': '{_DIM}✓ UI redrawn{_RST}'
+  '7827': 'Session title set: {new_title}'
+  '7840': 'Session title queued: {new_title} (will be saved on first message)'
+  '7848': 'Session ID: {session_id}'
+  '8015': 'Steer failed: {exc}'
+  '8090': '\033[1;31mPlugin command error: {e}{_RST}'
+  '8132': '\033[1;31mUnknown command: {cmd_lower}{_RST}'
+  '8133': '{_DIM}{_ACCENT}Type /help for available commands{_RST}'
+  '8139': '{_ACCENT}Ambiguous command: {cmd_lower}{_RST}'
+  '8142': '\033[1;31mUnknown command: {cmd_lower}{_RST}'
+  '8143': '{_DIM}{_ACCENT}Type /help for available commands{_RST}'
+  '8241': '✅ Background task #{task_num} complete'
+  '8281': '❌ Background task #{task_num} failed: {e}'
+  '8569': '{_DIM}Goals unavailable (no active session).{_RST}'
+  '8582': '{_DIM}No goal set.{_RST}'
+  '8584': '⏸ Goal paused: {goal}'
+  '8590': '{_DIM}No goal to resume.{_RST}'
+  '8592': '▶ Goal resumed: {goal}'
+  '8605': '{_DIM}No active goal.{_RST}'
+  '8612': 'Invalid goal: {exc}'
+  '8615': '⊙ Goal set ({max_turns}-turn budget): {goal}'
+  '8648': '{_DIM}Goals unavailable (no active session).{_RST}'
+  '8652': '{_DIM}No active goal. Set one with /goal <text>.{_RST}'
+  '8677': '/subgoal remove: {exc}'
+  '8679': '✓ Removed subgoal {idx}: {removed}'
+  '8686': '/subgoal clear: {exc}'
+  '8691': '{_DIM}No subgoals to clear.{_RST}'
+  '8698': '/subgoal: {exc}'
+  '8701': '✓ Added subgoal {idx}: {text}'
+  '8909': 'Runtime footer: {state}'
+  '8981': '{_ACCENT}Reasoning effort:  {level}{_RST}'
+  '8982': '{_ACCENT}Reasoning display: {display_state}{_RST}'
+  '8994': '{_ACCENT}✓ Reasoning display: ON (saved){_RST}'
+  '8995': '{_DIM}  Model thinking will be shown during and after each response.{_RST}'
+  '9002': '{_ACCENT}✓ Reasoning display: OFF (saved){_RST}'
+  '9008': '{_DIM}(._.) Unknown argument: {arg}{_RST}'
+  '9009': '{_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}'
+  '9010': '{_DIM}Display:      show, hide{_RST}'
+  '9033': '{_ACCENT}Busy input mode: {busy_mode}{_RST}'
+  '9040': '{_DIM}Enter while busy: {_behavior}{_RST}'
+  '9041': '{_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}'
+  '9046': '{_DIM}(._.) Unknown argument: {arg}{_RST}'
+  '9047': '{_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}'
+  '9081': '{_ACCENT}{feature_name}: {status}{_RST}'
+  '9082': '{_DIM}Usage: /fast [normal|fast|status]{_RST}'
+  '9096': '{_DIM}(._.) Unknown argument: {arg}{_RST}'
+  '9097': '{_DIM}Usage: /fast [normal|fast|status]{_RST}'
+  '9102': '{_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}'
+  '9104': '{_ACCENT}✓ {feature_name} set to {label} (session only){_RST}'
+  '9744': ┊ {emoji} preparing {tool_name}…
+  '9942': \n{_DIM}Silence detected, auto-stopping...{_RST}
+  '10010': '{_DIM}No speech detected.{_RST}'
+  '10016': '{_DIM}Transcribing...{_RST}'
+  '10038': '{_DIM}No speech detected.{_RST}'
+  '10041': '\n{_DIM}Transcription failed: {error}{_RST}'
+  '10044': '\n{_DIM}Voice processing error: {e}{_RST}'
+  '10063': '{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}'
+  '10079': '{_DIM}Voice auto-restart failed: {e}{_RST}'
+  '10141': '{_DIM}TTS playback failed: {e}{_RST}'
+  '10165': 'Unknown voice subcommand: {subcommand}'
+  '10182': '{_DIM}Voice mode is already enabled.{_RST}'
+  '10190': \n{_ACCENT}Voice mode unavailable in this environment:{_RST}
+  '10197': \n{_ACCENT}Voice mode requirements not met:{_RST}
+  '10202': '\n  {_BOLD}Option 1: pkg install termux-api{_RST}'
+  '10203': '{_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}'
+  '10234': \n{_ACCENT}Voice mode enabled{tts_status}{_RST}
+  '10235': '{_DIM}{_ptt_display} to start/stop recording{_RST}'
+  '10236': '{_DIM}/voice tts  to toggle speech output{_RST}'
+  '10237': '{_DIM}/voice off  to disable voice mode{_RST}'
+  '10269': \n{_DIM}Voice mode disabled.{_RST}
+  '10274': '{_DIM}Enable voice mode first: /voice on{_RST}'
+  '10286': '{_ACCENT}Voice TTS {status}.{_RST}'
+  '10294': \n{_BOLD}Voice Mode Status{_RST}
+  '10302': 'Record key: {record_key}'
+  '10303': \n  {_BOLD}Requirements:{_RST}
+  '10368': \n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}
+  '10403': \n{_DIM}  ✓ Password received (cached for session){_RST}
+  '10405': \n{_DIM}  ⏭ Skipped{_RST}
+  '10417': \n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}
+  '10472': \n{_DIM}  ⏱ Timeout — denying command{_RST}
+  '10780': '{_DIM}Initializing agent...{_RST}'
+  '10861': '{_DIM}⚠ {w}{_RST}'
+  '11191': \n{_DIM}Continuous voice mode stopped due to error.{_RST}
+  '11816': '{_DIM}⚠ tirith security scanner enabled but not available'
+  '11878': '✗ Model selection failed: {_exc}'
+  '11957': '{_DIM}Steer failed ({exc}) — queued for next turn.{_RST}'
+  '11961': '{_ACCENT}⏩ Steered:'
+  '12254': \n{_DIM}Recording cancelled.{_RST}
+  '12354': \n{_DIM}Recording cancelled.{_RST}
+  '12462': \n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}
+  '12569': '\n{_DIM}Voice recording failed: {e}{_RST}'
+  '13589': '📎 Auto-attached image: {drop_name}'
+  '13591': '📄 Detected file: {drop_name}'
+  '13598': \n⚙️  {user_input}
+  '13658': '{_DIM}Voice auto-restart failed: {e}{_RST}'
+  '13902': '{_DIM}✓ Session {sid} deleted{_RST}'
+  '13904': '{_DIM}✗ Session {sid} not found for deletion{_RST}'

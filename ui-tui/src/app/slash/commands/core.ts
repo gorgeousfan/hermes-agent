@@ -3,6 +3,7 @@ import { forceRedraw } from '@hermes/ink'
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
+import { getTuiT } from '../../../i18n/index.js'
 import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
@@ -136,7 +137,7 @@ export const coreCommands: SlashCommand[] = [
 
       const commit = () => {
         patchUiState({ status: 'forging session…' })
-        ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
+        ctx.session.newSession(isNew ? getTuiT('sessionCmd.newStarted') : undefined, requestedTitle || undefined)
       }
 
       if (NO_CONFIRM_DESTRUCTIVE) {
@@ -145,12 +146,12 @@ export const coreCommands: SlashCommand[] = [
 
       patchOverlayState({
         confirm: {
-          cancelLabel: 'No, keep going',
-          confirmLabel: isNew ? 'Yes, start a new session' : 'Yes, clear the session',
+          cancelLabel: getTuiT('confirm.cancelLabel'),
+          confirmLabel: isNew ? getTuiT('confirm.newSessionConfirm') : getTuiT('confirm.clearSessionConfirm'),
           danger: true,
-          detail: 'This ends the current conversation and clears the transcript.',
+          detail: getTuiT('confirm.sessionDetail'),
           onConfirm: commit,
-          title: isNew ? 'Start a new session?' : 'Clear the current session?'
+          title: isNew ? getTuiT('confirm.newSessionTitle') : getTuiT('confirm.clearSessionTitle')
         }
       })
     }
@@ -225,8 +226,8 @@ export const coreCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
-            const suffix = r?.pending ? ' (queued while session initializes)' : ''
-            ctx.transcript.sys(`session title set: ${next}${suffix}`)
+            const suffix = r?.pending ? getTuiT('sessionCmd.titleSetQueued') : ''
+            ctx.transcript.sys(getTuiT('sessionCmd.titleSet', { next }) + suffix)
           })
         )
         .catch(ctx.guardedErr)
@@ -345,7 +346,7 @@ export const coreCommands: SlashCommand[] = [
           return sys(`copied ${text.length} characters`)
         } else {
           return sys(
-            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
+            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
           )
         }
       }

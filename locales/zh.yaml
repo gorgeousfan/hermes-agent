@@ -1,89 +1,99 @@
-# Hermes 静态消息目录 -- 中文（简体）
-# See locales/en.yaml for the source of truth; keep keys in sync.
-
 approval:
-  dangerous_header: "⚠️  危险命令： {description}"
-  choose_long:     "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"
-  choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
-  prompt_long:     "      选择 [o/s/a/D]: "
-  prompt_short:    "      选择 [o/s/D]: "
-  timeout:         "      ⏱ 超时 — 已拒绝命令"
-  allowed_once:    "      ✓ 本次允许"
-  allowed_session: "      ✓ 本次会话内允许"
-  allowed_always:  "      ✓ 已加入永久允许列表"
-  denied:          "      ✗ 已拒绝"
-  cancelled:       "      ✗ 已取消"
-  blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
-
+  dangerous_header: ⚠️  危险命令： {description}
+  choose_long: '      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝'
+  choose_short: '      [o]仅此一次  |  [s]本次会话  |  [d]拒绝'
+  prompt_long: '      选择 [o/s/a/D]: '
+  prompt_short: '      选择 [o/s/D]: '
+  timeout: '      ⏱ 超时 — 已拒绝命令'
+  allowed_once: '      ✓ 本次允许'
+  allowed_session: '      ✓ 本次会话内允许'
+  allowed_always: '      ✓ 已加入永久允许列表'
+  denied: '      ✗ 已拒绝'
+  cancelled: '      ✗ 已取消'
+  blocklist_message: 此命令位于无条件拦截列表中，无法被批准。
 gateway:
-  approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
-  draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
-  goal_cleared:     "✓ 目标已清除。"
-  no_active_goal:   "当前没有活跃的目标。"
-  config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
-  config_save_failed: "⚠️ 无法保存配置：{error}"
-
+  approval_expired: ⚠️ 批准已过期（代理不再等待）。请让代理重试。
+  draining: ⏳ 正在等待 {count} 个活跃代理结束后重启...
+  goal_cleared: ✓ 目标已清除。
+  no_active_goal: 当前没有活跃的目标。
+  config_read_failed: ⚠️ 无法读取 config.yaml：{error}
+  config_save_failed: ⚠️ 无法保存配置：{error}
   model:
-    error_prefix:           "错误：{error}"
-    switched:               "已切换模型为 `{model}`"
-    provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大输出：{tokens} tokens"
-    cost_label:             "费用：{cost}"
-    capabilities_label:     "能力：{capabilities}"
-    prompt_caching_enabled: "提示词缓存：已启用"
-    warning_prefix:         "警告：{warning}"
-    saved_global:           "已保存到 config.yaml（`--global`）"
-    session_only_hint:      "_（仅本次会话有效 — 添加 `--global` 可永久保存）_"
-    current_label:          "当前：`{model}`（{provider}）"
-    current_tag:            "（当前）"
-    more_models_suffix:     "（还有 {count} 个）"
-    usage_switch_model:     "`/model <name>` — 切换模型"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
-    usage_persist:          "`/model <name> --global` — 永久保存"
-
+    error_prefix: 错误：{error}
+    switched: 已切换模型为 `{model}`
+    provider_label: 提供方：{provider}
+    context_label: 上下文：{tokens} tokens
+    max_output_label: 最大输出：{tokens} tokens
+    cost_label: 费用：{cost}
+    capabilities_label: 能力：{capabilities}
+    prompt_caching_enabled: 提示词缓存：已启用
+    warning_prefix: 警告：{warning}
+    saved_global: 已保存到 config.yaml（`--global`）
+    session_only_hint: _（仅本次会话有效 — 添加 `--global` 可永久保存）_
+    current_label: 当前：`{model}`（{provider}）
+    current_tag: （当前）
+    more_models_suffix: （还有 {count} 个）
+    usage_switch_model: '`/model <name>` — 切换模型'
+    usage_switch_provider: '`/model <name> --provider <slug>` — 切换提供方'
+    usage_persist: '`/model <name> --global` — 永久保存'
   agents:
-    header:                "🤖 **活跃代理与任务**"
-    active_agents:         "**活跃代理：** {count}"
-    this_chat:             " · 当前聊天"
-    more:                  "... 还有 {count} 个"
-    running_processes:     "**运行中的后台进程：** {count}"
-    async_jobs:            "**网关异步任务：** {count}"
-    none:                  "没有活跃的代理或运行中的任务。"
-    state_starting:        "启动中"
-    state_running:         "运行中"
-
+    header: 🤖 **活跃代理与任务**
+    active_agents: '**活跃代理：** {count}'
+    this_chat: ' · 当前聊天'
+    more: '... 还有 {count} 个'
+    running_processes: '**运行中的后台进程：** {count}'
+    async_jobs: '**网关异步任务：** {count}'
+    none: 没有活跃的代理或运行中的任务。
+    state_starting: 启动中
+    state_running: 运行中
   approve:
-    no_pending:            "没有待批准的命令。"
-    once_singular:         "✅ 命令已批准。代理正在恢复…"
-    once_plural:           "✅ 命令已批准（{count} 条命令）。代理正在恢复…"
-    session_singular:      "✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…"
-    session_plural:        "✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…"
-    always_singular:       "✅ 命令已批准（永久允许该模式）。代理正在恢复…"
-    always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
-
+    no_pending: 没有待批准的命令。
+    once_singular: ✅ 命令已批准。代理正在恢复…
+    once_plural: ✅ 命令已批准（{count} 条命令）。代理正在恢复…
+    session_singular: ✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…
+    session_plural: ✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…
+    always_singular: ✅ 命令已批准（永久允许该模式）。代理正在恢复…
+    always_plural: ✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…
   background:
-    usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
-    started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
+    usage: '用法：/background <提示>
 
+      示例：/background 总结今天 HN 上热门的故事
+
+
+      在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。'
+    started: '🔄 后台任务已启动：「{preview}」
+
+      任务 ID：{task_id}
+
+      你可以继续聊天 — 完成后结果将在此显示。'
   branch:
-    db_unavailable:        "会话数据库不可用。"
-    no_conversation:       "没有可分支的对话 — 请先发送一条消息。"
-    create_failed:         "创建分支失败：{error}"
-    switch_failed:         "分支已创建，但无法切换到它。"
-    branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
-    branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
+    db_unavailable: 会话数据库不可用。
+    no_conversation: 没有可分支的对话 — 请先发送一条消息。
+    create_failed: 创建分支失败：{error}
+    switch_failed: 分支已创建，但无法切换到它。
+    branched_one: '⑂ 已分支到 **{title}**（已复制 {count} 条消息）
 
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切换回原始会话。'
+    branched_many: '⑂ 已分支到 **{title}**（已复制 {count} 条消息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切换回原始会话。'
   commands:
-    usage:                 "用法：`/commands [page]`"
-    skill_header:          "⚡ **技能命令**："
-    default_desc:          "技能命令"
-    none:                  "没有可用的命令。"
-    header:                "📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）"
-    nav_prev:              "`/commands {page}` ← 上一页"
-    nav_next:              "下一页 → `/commands {page}`"
-    out_of_range:          "_（请求的第 {requested} 页超出范围，显示第 {page} 页。）_"
-
+    usage: 用法：`/commands [page]`
+    skill_header: ⚡ **技能命令**：
+    default_desc: 技能命令
+    none: 没有可用的命令。
+    header: 📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）
+    nav_prev: '`/commands {page}` ← 上一页'
+    nav_next: 下一页 → `/commands {page}`
+    out_of_range: _（请求的第 {requested} 页超出范围，显示第 {page} 页。）_
   compress:
     not_enough:            "对话内容不足，无法压缩（至少需要 4 条消息）。"
     no_provider:           "未配置提供方 — 无法压缩。"
@@ -95,257 +105,1027 @@ gateway:
     failed:                "压缩失败：{error}"
 
   debug:
-    upload_failed:         "✗ 无法上传调试报告：{error}"
-    header:                "**调试报告已上传：**"
-    auto_delete:           "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint:        "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "请将这些链接分享给 Hermes 团队以获得支持。"
-
+    upload_failed: ✗ 无法上传调试报告：{error}
+    header: '**调试报告已上传：**'
+    auto_delete: ⏱ 粘贴内容将在 6 小时后自动删除。
+    full_logs_hint: 如需上传完整日志，请在 CLI 中使用 `hermes debug share`。
+    share_hint: 请将这些链接分享给 Hermes 团队以获得支持。
   deny:
-    stale:                 "❌ 命令已拒绝（批准已过期）。"
-    no_pending:            "没有待拒绝的命令。"
-    denied_singular:       "❌ 命令已拒绝。"
-    denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
-
+    stale: ❌ 命令已拒绝（批准已过期）。
+    no_pending: 没有待拒绝的命令。
+    denied_singular: ❌ 命令已拒绝。
+    denied_plural: ❌ 命令已拒绝（{count} 条命令）。
   fast:
-    not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
-    status:                "⚡ 优先处理\n\n当前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 未知参数：`{arg}`\n\n**有效选项：** normal、fast、status"
-    saved:                 "⚡ ✓ 优先处理：**{label}**（已保存到配置）\n_（下一条消息生效）_"
-    session_only:          "⚡ ✓ 优先处理：**{label}**（仅本次会话）"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
+    not_supported: ⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。
+    status: '⚡ 优先处理
 
+
+      当前模式：`{mode}`
+
+
+      _用法：_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ 未知参数：`{arg}`
+
+
+      **有效选项：** normal、fast、status'
+    saved: '⚡ ✓ 优先处理：**{label}**（已保存到配置）
+
+      _（下一条消息生效）_'
+    session_only: ⚡ ✓ 优先处理：**{label}**（仅本次会话）
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: fast
+    status_normal: normal
   footer:
-    status:                "📎 运行时页脚：**{state}**\n字段：`{fields}`\n平台：`{platform}`"
-    usage:                 "用法：`/footer [on|off|status]`"
-    saved:                 "📎 运行时页脚：**{state}**{example}\n_（已全局保存 — 下一条消息生效）_"
-    example_line:          "\n示例：`{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
+    status: '📎 运行时页脚：**{state}**
 
+      字段：`{fields}`
+
+      平台：`{platform}`'
+    usage: 用法：`/footer [on|off|status]`
+    saved: '📎 运行时页脚：**{state}**{example}
+
+      _（已全局保存 — 下一条消息生效）_'
+    example_line: '
+
+      示例：`{preview}`'
+    state_on: 'ON'
+    state_off: 'OFF'
   goal:
-    unavailable:           "此会话不支持目标功能。"
-    no_goal_set:           "未设置目标。"
-    paused:                "⏸ 目标已暂停：{goal}"
-    no_resume:             "没有可恢复的目标。"
-    resumed:               "▶ 目标已恢复：{goal}\n发送任意消息继续，或等待 — 我会在下一轮继续推进。"
-    invalid:               "无效目标：{error}"
-    set:                   "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
+    unavailable: 此会话不支持目标功能。
+    no_goal_set: 未设置目标。
+    paused: ⏸ 目标已暂停：{goal}
+    no_resume: 没有可恢复的目标。
+    resumed: '▶ 目标已恢复：{goal}
 
+      发送任意消息继续，或等待 — 我会在下一轮继续推进。'
+    invalid: 无效目标：{error}
+    set: '⊙ 目标已设置（{budget} 轮预算）：{goal}
+
+      我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。
+
+      控制命令：/goal status · /goal pause · /goal resume · /goal clear'
   help:
-    header:                "📖 **Hermes 命令**\n"
-    skill_header:          "\n⚡ **技能命令**（{count} 个活跃）："
-    more_use_commands:     "\n... 还有 {count} 个。使用 `/commands` 查看完整分页列表。"
+    header: '📖 **Hermes 命令**
 
+      '
+    skill_header: '
+
+      ⚡ **技能命令**（{count} 个活跃）：'
+    more_use_commands: '
+
+      ... 还有 {count} 个。使用 `/commands` 查看完整分页列表。'
   insights:
-    invalid_days:          "无效的 --days 值：{value}"
-    error:                 "生成洞察时出错：{error}"
-
+    invalid_days: 无效的 --days 值：{value}
+    error: 生成洞察时出错：{error}
   kanban:
-    error_prefix:          "⚠ kanban 错误：{error}"
-    subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
-    truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
-    no_output:             "（无输出）"
-
+    error_prefix: ⚠ kanban 错误：{error}
+    subscribed_suffix: （已订阅 — 当 {task_id} 完成或被阻塞时将通知您）
+    truncated_suffix: …（已截断；如需完整输出请在终端运行 `hermes kanban …`）
+    no_output: （无输出）
   personality:
-    none_configured:       "`{path}/config.yaml` 中未配置人格设定"
-    header:                "🎭 **可用人格**\n"
-    none_option:           "• `none` — （不应用人格覆盖）"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n用法：`/personality <name>`"
-    save_failed:           "⚠️ 保存人格变更失败：{error}"
-    cleared:               "🎭 已清除人格 — 使用基础代理行为。\n_（在下一条消息时生效）_"
-    set_to:                "🎭 人格已设置为 **{name}**\n_（在下一条消息时生效）_"
-    unknown:               "未知人格：`{name}`\n\n可用：{available}"
+    none_configured: '`{path}/config.yaml` 中未配置人格设定'
+    header: '🎭 **可用人格**
 
+      '
+    none_option: • `none` — （不应用人格覆盖）
+    item: • `{name}` — {preview}
+    usage: '
+
+      用法：`/personality <name>`'
+    save_failed: ⚠️ 保存人格变更失败：{error}
+    cleared: '🎭 已清除人格 — 使用基础代理行为。
+
+      _（在下一条消息时生效）_'
+    set_to: '🎭 人格已设置为 **{name}**
+
+      _（在下一条消息时生效）_'
+    unknown: '未知人格：`{name}`
+
+
+      可用：{available}'
   profile:
-    header:                "👤 **配置文件：** `{profile}`"
-    home:                  "📂 **主目录：** `{home}`"
-
+    header: 👤 **配置文件：** `{profile}`
+    home: 📂 **主目录：** `{home}`
   reasoning:
-    level_default:             "medium（默认）"
-    level_disabled:            "none（已禁用）"
-    scope_session:             "会话覆盖"
-    scope_global:              "全局配置"
-    status:                    "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
-    display_on:                "开 ✓"
-    display_off:               "关"
-    display_set_on:            "🧠 ✓ 推理显示：**开启**\n在 **{platform}** 上每次响应前将显示模型的思考过程。"
-    display_set_off:           "🧠 ✓ **{platform}** 上的推理显示：**关闭**"
-    reset_global_unsupported:  "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
-    reset_done:                "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
-    unknown_arg:               "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
-    set_global:                "🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）\n_（下一条消息生效）_"
-    set_global_save_failed:    "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）\n_（下一条消息生效）_"
-    set_session:               "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）\n_（下一条消息生效）_"
+    level_default: medium（默认）
+    level_disabled: none（已禁用）
+    scope_session: 会话覆盖
+    scope_global: 全局配置
+    status: '🧠 **推理设置**
 
+
+      **强度：** `{level}`
+
+      **作用域：** {scope}
+
+      **显示：** {display}
+
+
+      _用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: 开 ✓
+    display_off: 关
+    display_set_on: '🧠 ✓ 推理显示：**开启**
+
+      在 **{platform}** 上每次响应前将显示模型的思考过程。'
+    display_set_off: 🧠 ✓ **{platform}** 上的推理显示：**关闭**
+    reset_global_unsupported: ⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。
+    reset_done: 🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。
+    unknown_arg: '⚠️ 未知参数：`{arg}`
+
+
+      **有效级别：** none, minimal, low, medium, high, xhigh
+
+      **显示：** show, hide
+
+      **持久化：** 添加 `--global` 以跨会话保存'
+    set_global: '🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）
+
+      _（下一条消息生效）_'
+    set_global_save_failed: '🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）
+
+      _（下一条消息生效）_'
+    set_session: '🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）
+
+      _（下一条消息生效）_'
   reload_mcp:
-    cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未更改。"
-    always_followup:       "ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。"
-    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
-    header:                "🔄 **MCP 服务器已重新加载**\n"
-    reconnected:           "♻️ 已重新连接：{names}"
-    added:                 "➕ 已添加：{names}"
-    removed:               "➖ 已移除：{names}"
-    none_connected:        "没有连接的 MCP 服务器。"
-    tools_available:       "\n🔧 来自 {servers} 个服务器的 {tools} 个工具可用"
-    failed:                "❌ MCP 重新加载失败：{error}"
+    cancelled: 🟡 已取消 /reload-mcp。MCP 工具未更改。
+    always_followup: 'ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。'
+    confirm_prompt: '⚠️ **确认 /reload-mcp**
 
+
+      重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。
+
+
+      请选择：
+
+      • **批准一次** — 立即重新加载
+
+      • **始终批准** — 立即重新加载并永久静默此提示
+
+      • **取消** — 保持 MCP 工具不变
+
+
+      _文本备用：回复 `/approve`、`/always` 或 `/cancel`。_'
+    header: '🔄 **MCP 服务器已重新加载**
+
+      '
+    reconnected: ♻️ 已重新连接：{names}
+    added: ➕ 已添加：{names}
+    removed: ➖ 已移除：{names}
+    none_connected: 没有连接的 MCP 服务器。
+    tools_available: '
+
+      🔧 来自 {servers} 个服务器的 {tools} 个工具可用'
+    failed: ❌ MCP 重新加载失败：{error}
   reload_skills:
-    header:                "🔄 **技能已重新加载**\n"
-    no_new:                "未检测到新技能。"
-    total:                 "\n📚 {count} 个技能可用"
-    added_header:          "➕ **新增技能：**"
-    removed_header:        "➖ **移除技能：**"
-    item_with_desc:        "    - {name}：{desc}"
-    item_no_desc:          "    - {name}"
-    failed:                "❌ 技能重新加载失败：{error}"
+    header: '🔄 **技能已重新加载**
 
+      '
+    no_new: 未检测到新技能。
+    total: '
+
+      📚 {count} 个技能可用'
+    added_header: ➕ **新增技能：**
+    removed_header: ➖ **移除技能：**
+    item_with_desc: '    - {name}：{desc}'
+    item_no_desc: '    - {name}'
+    failed: ❌ 技能重新加载失败：{error}
   reset:
-    header_default:        "✨ 会话已重置！重新开始。"
-    header_new:            "✨ 新会话已启动！"
-    header_titled:         "✨ 新会话已启动：{title}"
-    title_rejected:        "\n⚠️ 标题被拒绝：{error}"
-    title_error_untitled:  "\n⚠️ {error} — 会话以未命名方式启动。"
-    title_empty_untitled:  "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
-    tip:                   "\n✦ 提示：{tip}"
+    header_default: ✨ 会话已重置！重新开始。
+    header_new: ✨ 新会话已启动！
+    header_titled: ✨ 新会话已启动：{title}
+    title_rejected: '
 
+      ⚠️ 标题被拒绝：{error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — 会话以未命名方式启动。'
+    title_empty_untitled: '
+
+      ⚠️ 清理后标题为空 — 会话以未命名方式启动。'
+    tip: '
+
+      ✦ 提示：{tip}'
   restart:
-    in_progress:           "⏳ 网关重启已在进行中……"
-    restarting:            "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
-
+    in_progress: ⏳ 网关重启已在进行中……
+    restarting: ♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。
   resume:
-    db_unavailable:        "会话数据库不可用。"
-    no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
-    list_header:           "📋 **已命名会话**\n"
-    list_item:             "• **{title}**{preview_part}"
-    list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\n用法：`/resume <会话名称>`"
-    list_failed:           "无法列出会话：{error}"
-    not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
-    already_on:            "📌 已在会话 **{name}** 上。"
-    switch_failed:         "切换会话失败。"
-    resumed_one:           "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
-    resumed_many:          "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
-    resumed_no_count:      "↻ 已恢复会话 **{title}**。对话已还原。"
+    db_unavailable: 会话数据库不可用。
+    no_named_sessions: '未找到已命名的会话。
 
+      使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。'
+    list_header: '📋 **已命名会话**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' — _{preview}_'
+    list_footer: '
+
+      用法：`/resume <会话名称>`'
+    list_failed: 无法列出会话：{error}
+    not_found: '未找到匹配 ''**{name}**'' 的会话。
+
+      使用不带参数的 `/resume` 查看可用会话。'
+    already_on: 📌 已在会话 **{name}** 上。
+    switch_failed: 切换会话失败。
+    resumed_one: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
+    resumed_many: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
+    resumed_no_count: ↻ 已恢复会话 **{title}**。对话已还原。
   retry:
-    no_previous:           "没有可重试的上一条消息。"
-
+    no_previous: 没有可重试的上一条消息。
   rollback:
-    not_enabled:           "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n```"
-    none_found:            "未找到 {cwd} 的检查点"
-    invalid_number:        "无效的检查点编号。请使用 1-{max}。"
-    restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
-    restore_failed:        "❌ {error}"
+    not_enabled: "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: 未找到 {cwd} 的检查点
+    invalid_number: 无效的检查点编号。请使用 1-{max}。
+    restored: '✅ 已恢复到检查点 {hash}：{reason}
 
+      已自动保存回滚前的快照。'
+    restore_failed: ❌ {error}
   set_home:
-    save_failed:           "无法保存主频道：{error}"
-    success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
+    save_failed: 无法保存主频道：{error}
+    success: '✅ 主频道已设置为 **{name}**（ID：{chat_id}）。
 
+      定时任务和跨平台消息将发送到此处。'
   status:
-    header:                "📊 **Hermes 网关状态**"
-    session_id:            "**会话 ID：** `{session_id}`"
-    title:                 "**标题：** {title}"
-    created:               "**创建时间：** {timestamp}"
-    last_activity:         "**最近活动：** {timestamp}"
-    tokens:                "**Token 数：** {tokens}"
-    agent_running:         "**代理运行中：** {state}"
-    state_yes:             "是 ⚡"
-    state_no:              "否"
-    queued:                "**排队的后续：** {count}"
-    platforms:             "**已连接平台：** {platforms}"
-
+    header: 📊 **Hermes 网关状态**
+    session_id: '**会话 ID：** `{session_id}`'
+    title: '**标题：** {title}'
+    created: '**创建时间：** {timestamp}'
+    last_activity: '**最近活动：** {timestamp}'
+    tokens: '**Token 数：** {tokens}'
+    agent_running: '**代理运行中：** {state}'
+    state_yes: 是 ⚡
+    state_no: 否
+    queued: '**排队的后续：** {count}'
+    platforms: '**已连接平台：** {platforms}'
   stop:
-    stopped_pending:       "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
-    stopped:               "⚡ 已停止。你可以继续此会话。"
-    no_active:             "没有可停止的活跃任务。"
-
+    stopped_pending: ⚡ 已停止。代理尚未启动 — 你可以继续此会话。
+    stopped: ⚡ 已停止。你可以继续此会话。
+    no_active: 没有可停止的活跃任务。
   title:
-    db_unavailable:        "会话数据库不可用。"
-    warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ 清理后标题为空。请使用可打印字符。"
-    set_to:                "✏️ 已设置会话标题：**{title}**"
-    not_found:             "未在数据库中找到该会话。"
-    current_with_title:    "📌 会话：`{session_id}`\n标题：**{title}**"
-    current_no_title:      "📌 会话：`{session_id}`\n尚未设置标题。用法：`/title 我的会话名称`"
+    db_unavailable: 会话数据库不可用。
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ 清理后标题为空。请使用可打印字符。
+    set_to: ✏️ 已设置会话标题：**{title}**
+    not_found: 未在数据库中找到该会话。
+    current_with_title: '📌 会话：`{session_id}`
 
+      标题：**{title}**'
+    current_no_title: '📌 会话：`{session_id}`
+
+      尚未设置标题。用法：`/title 我的会话名称`'
   topic:
-    not_telegram_dm:         "/topic 命令仅在 Telegram 私聊中可用。"
-    no_session_db:           "会话数据库不可用。"
-    unauthorized:            "您无权在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。"
-    topics_disabled:         "此 bot 尚未启用 Telegram topics。\n\n启用方法：\n1. 打开 @BotFather。\n2. 选择您的 bot。\n3. 打开 Bot Settings → Threads Settings。\n4. 开启 Threaded Mode，并确保允许用户创建新线程。\n\n然后再次发送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已启用，但不允许用户创建 topics。\n\n打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 'Disallow users to create new threads'。\n\n然后再次发送 /topic。"
-    enable_failed:           "启用 Telegram topic 模式失败：{error}"
-    bound_status:            "此 topic 已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此 topic 替换为新会话。\n如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    untitled_session:        "未命名会话"
+    not_telegram_dm: /topic 命令仅在 Telegram 私聊中可用。
+    no_session_db: 会话数据库不可用。
+    unauthorized: 您无权在此 bot 上使用 /topic。
+    restore_needs_topic: 若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。
+    topics_disabled: '此 bot 尚未启用 Telegram topics。
 
+
+      启用方法：
+
+      1. 打开 @BotFather。
+
+      2. 选择您的 bot。
+
+      3. 打开 Bot Settings → Threads Settings。
+
+      4. 开启 Threaded Mode，并确保允许用户创建新线程。
+
+
+      然后再次发送 /topic。'
+    topics_user_disallowed: 'Telegram topics 已启用，但不允许用户创建 topics。
+
+
+      打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 ''Disallow users to create new threads''。
+
+
+      然后再次发送 /topic。'
+    enable_failed: 启用 Telegram topic 模式失败：{error}
+    bound_status: '此 topic 已关联到：
+
+      会话：{label}
+
+      ID：{session_id}
+
+
+      使用 /new 将此 topic 替换为新会话。
+
+      如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。'
+    thread_ready: 'Telegram 多会话 topics 已启用。
+
+
+      此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。'
+    untitled_session: 未命名会话
   undo:
-    nothing:               "没有可撤销的内容。"
-    removed:               "↩️ 已撤销 {count} 条消息。\n已移除：「{preview}」"
+    nothing: 没有可撤销的内容。
+    removed: '↩️ 已撤销 {count} 条消息。
 
+      已移除：「{preview}」'
   update:
-    platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
-    not_git_repo:            "✗ 不是 git 仓库 — 无法更新。"
-    hermes_cmd_not_found:    "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
-    start_failed:            "✗ 启动更新失败：{error}"
-    starting:                "⚕ 正在启动 Hermes 更新…… 进度将在此处显示。"
-
+    platform_not_messaging: ✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。
+    not_git_repo: ✗ 不是 git 仓库 — 无法更新。
+    hermes_cmd_not_found: ✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。
+    start_failed: ✗ 启动更新失败：{error}
+    starting: ⚕ 正在启动 Hermes 更新…… 进度将在此处显示。
   usage:
-    rate_limits:              "⏱️ **速率限制：** {state}"
-    header_session:           "📊 **会话令牌使用情况**"
-    label_model:              "模型：`{model}`"
-    label_input_tokens:       "输入令牌：{count}"
-    label_cache_read:         "缓存读取令牌：{count}"
-    label_cache_write:        "缓存写入令牌：{count}"
-    label_output_tokens:      "输出令牌：{count}"
-    label_total:              "总计：{count}"
-    label_api_calls:          "API 调用次数：{count}"
-    label_cost:               "费用：{prefix}${amount}"
-    label_cost_included:      "费用：已包含"
-    label_context:            "上下文：{used} / {total}（{pct}%）"
-    label_compressions:       "压缩次数：{count}"
-    header_session_info:      "📊 **会话信息**"
-    label_messages:           "消息数：{count}"
-    label_estimated_context:  "估计上下文：~{count} 个令牌"
-    detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
-    no_data:                  "此会话暂无使用数据。"
-
+    rate_limits: ⏱️ **速率限制：** {state}
+    header_session: 📊 **会话令牌使用情况**
+    label_model: 模型：`{model}`
+    label_input_tokens: 输入令牌：{count}
+    label_cache_read: 缓存读取令牌：{count}
+    label_cache_write: 缓存写入令牌：{count}
+    label_output_tokens: 输出令牌：{count}
+    label_total: 总计：{count}
+    label_api_calls: API 调用次数：{count}
+    label_cost: 费用：{prefix}${amount}
+    label_cost_included: 费用：已包含
+    label_context: 上下文：{used} / {total}（{pct}%）
+    label_compressions: 压缩次数：{count}
+    header_session_info: 📊 **会话信息**
+    label_messages: 消息数：{count}
+    label_estimated_context: 估计上下文：~{count} 个令牌
+    detailed_after_first: _（首次代理响应后可查看详细使用情况）_
+    no_data: 此会话暂无使用数据。
   verbose:
-    not_enabled:           "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
-    mode_off:              "⚙️ 工具进度：**OFF** — 不显示任何工具活动。"
-    mode_new:              "⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。"
-    mode_all:              "⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。"
-    mode_verbose:          "⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。"
-    saved_suffix:          "_（已为 **{platform}** 保存 — 下一条消息生效）_"
-    save_failed:           "_（无法保存到配置：{error}）_"
-
+    not_enabled: "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off: ⚙️ 工具进度：**OFF** — 不显示任何工具活动。
+    mode_new: ⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。
+    mode_all: ⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。
+    mode_verbose: ⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。
+    saved_suffix: _（已为 **{platform}** 保存 — 下一条消息生效）_
+    save_failed: _（无法保存到配置：{error}）_
   voice:
-    enabled_voice_only:    "语音模式已启用。\n当你发送语音消息时，我会用语音回复。\n使用 /voice tts 让所有消息都收到语音回复。"
-    disabled_text:         "语音模式已禁用。仅文本回复。"
-    tts_enabled:           "自动 TTS 已启用。\n所有回复都将包含一条语音消息。"
-    status_mode:           "语音模式：{label}"
-    status_channel:        "语音频道：#{channel}"
-    status_participants:   "参与人数：{count}"
-    status_member:         "  - {name}{status}"
-    speaking:              "（正在说话）"
-    enabled_short:         "语音模式已启用。"
-    disabled_short:        "语音模式已禁用。"
-    label_off:             "关闭（仅文本）"
-    label_voice_only:      "开启（仅对语音消息进行语音回复）"
-    label_all:             "TTS（对所有消息进行语音回复）"
+    enabled_voice_only: '语音模式已启用。
 
+      当你发送语音消息时，我会用语音回复。
+
+      使用 /voice tts 让所有消息都收到语音回复。'
+    disabled_text: 语音模式已禁用。仅文本回复。
+    tts_enabled: '自动 TTS 已启用。
+
+      所有回复都将包含一条语音消息。'
+    status_mode: 语音模式：{label}
+    status_channel: 语音频道：#{channel}
+    status_participants: 参与人数：{count}
+    status_member: '  - {name}{status}'
+    speaking: （正在说话）
+    enabled_short: 语音模式已启用。
+    disabled_short: 语音模式已禁用。
+    label_off: 关闭（仅文本）
+    label_voice_only: 开启（仅对语音消息进行语音回复）
+    label_all: TTS（对所有消息进行语音回复）
   yolo:
-    disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
-    enabled:                    "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
-
+    disabled: ⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。
+    enabled: ⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。
   shared:
-    session_db_unavailable:      "会话数据库不可用。"
-    session_db_unavailable_prefix: "会话数据库不可用"
-    session_not_found:           "数据库中未找到该会话。"
-    warn_passthrough:            "⚠️ {error}"
+    session_db_unavailable: 会话数据库不可用。
+    session_db_unavailable_prefix: 会话数据库不可用
+    session_not_found: 数据库中未找到该会话。
+    warn_passthrough: ⚠️ {error}
+tip:
+  '001': /background <prompt>（别名 /bg 或 /btw）在独立会话中运行任务，同时让您的当前会话保持空闲。
+  '002': /branch 分叉当前会话，让您在不丢失进度的情况下探索不同方向。
+  '003': /compress 手动压缩对话上下文，适用于内容较长的情况。
+  '004': /rollback 列出文件系统检查点——将代理修改的文件恢复到任意先前状态。
+  '005': /rollback diff 2 预览自检查点 2 以来发生了哪些更改，无需恢复任何内容。
+  '006': /rollback 2 src/file.py 从特定检查点恢复单个文件。
+  '007': /title \"我的项目\" 命名会话——稍后用 /resume 或 hermes -c 恢复。
+  008: /resume 从之前命名的会话中继续之前的位置。
+  009: /queue <prompt> 将消息排队到下一轮，不会中断当前会话。
+  '010': /undo 从对话中移除最后一次用户/助手交互。
+  '011': /retry 重发您的最后一条消息——当代理的回复不够准确时很有用。
+  '012': /verbose 循环工具进度显示：关闭 → 新 → 全部 → 详细。
+  '013': /reasoning high 增加模型的思考深度。/reasoning show 显示推理过程。
+  '014': /fast 切换优先级处理以获取更快的 API 响应（取决于提供商）。
+  '015': /yolo 跳过会话中剩余部分的危险命令批准提示。
+  '016': /model 让您在会话中切换模型——尝试 /model sonnet 或 /model gpt-5。
+  '017': /model --global 永久更改默认模型。
+  018: /personality pirate 设置有趣的个性——14 个内置选项，从可爱到莎士比亚。
+  019: /skin 更改 CLI 主题——尝试 ares、mono、slate、poseidon 或 charizard。
+  '020': /statusbar 切换持久状态栏，显示模型、令牌、上下文填充百分比、费用和时长。
+  '021': /tools disable 浏览器临时禁用当前会话的浏览器工具。
+  '022': /browser connect 通过 CDP 将浏览器工具附加到正在运行的 Chrome 实例。
+  '023': /plugins 列出已安装的插件及其状态。
+  '024': /cron 管理定时任务——设置可重复提示并发送到任何平台。
+  '025': /reload-mcp 无需重启即可热重载 MCP 服务器配置。
+  '026': /usage 显示令牌使用量、成本明细和会话时长。
+  '027': /insights 显示过去 30 天的使用分析。
+  028: /paste 检查剪贴板中的图像并附加到下一条消息。
+  029: /profile 显示当前激活的配置文件及其主目录。
+  '030': /config 概览显示当前配置。
+  '031': /stop 终止代理启动的所有后台进程。
+  '032': '@file:path/to/file.py 直接将文件内容注入到消息中。'
+  '033': '@file:main.py:10-50 仅注入文件的第 10-50 行。'
+  '034': '@folder:src/ 注入目录树列表。'
+  '035': '@diff 将未暂存的 git 更改注入到消息中。'
+  '036': '@staged 注入已暂存的 git 更改（git diff --staged）。'
+  '037': '@git:5 注入最近的 5 个提交及其完整补丁。'
+  038: '@url:https://example.com 获取并注入网页内容。'
+  039: 输入 @ 触发文件系统路径补全——交互式导航到任何文件。
+  '040': 组合多个引用："Review @file:main.py and @file:test.py for consistency."
+  '041': Alt+Enter 用于多行输入时插入换行符。（Windows Terminal 会拦截 Alt+Enter — 改用 Ctrl+Enter）
+  '042': Ctrl+C 中断代理。在 2 秒内双击强制退出。
+  '043': Ctrl+Z 将 Hermes 挂起到后台 — 在 shell 中运行 fg 恢复。
+  '044': Tab 接受自动建议的幽灵文本或自动补全斜杠命令。
+  '045': 代理工作时输入新消息可中断并重定向它。
+  '046': Alt+V 从剪贴板粘贴图像到对话中。
+  '047': 粘贴 5 行以上自动保存到文件并插入紧凑引用。
+  048: hermes -c 恢复最近的 CLI 会话。hermes -c "project name" 按标题恢复。
+  049: hermes -w 创建隔离的 git 工作树 — 非常适合并行代理工作流。
+  '050': 'hermes -w -q "Fix issue #42" 结合工作树隔离与一次性查询。'
+  '051': hermes chat -t web,terminal 为专注会话启用特定工具集。
+  '052': hermes chat -s github-pr-workflow 启动时预加载技能。
+  '053': hermes chat -q "query" 运行单次非交互式查询并退出。
+  '054': hermes chat --max-turns 200 覆盖每轮默认的 90 次迭代限制。
+  '055': hermes chat --checkpoints 在每个破坏性文件更改前启用文件系统快照。
+  '056': hermes --yolo 绕过整个会话的所有危险命令批准提示。
+  '057': hermes chat --source telegram 标记会话以便在 hermes 会话列表中筛选。
+  058: hermes -p work chat 在特定配置文件下运行而不更改默认设置。
+  059: hermes doctor --fix 诊断并自动修复配置和依赖问题。
+  '060': hermes dump 输出紧凑的设置摘要 — 非常适合故障报告。
+  '061': hermes config set KEY VALUE 自动将密钥路由到.env，其他所有内容路由到 config.yaml。
+  '062': hermes config edit 用默认编辑器打开 config.yaml。
+  '063': hermes config check 扫描缺失或过期的配置选项。
+  '064': hermes sessions browse 打开带搜索功能的交互式会话选择器。
+  '065': hermes sessions stats 按平台和数据库大小显示会话计数。
+  '066': hermes sessions prune --older-than 30 清理旧会话。
+  '067': hermes skills search react --source skills-sh 搜索 skills.sh 公开目录。
+  068: hermes skills check 扫描已安装的 hub 技能以查找上游更新。
+  069: hermes skills tap add myorg/skills-repo 添加自定义 GitHub 技能源。
+  '070': hermes skills snapshot export setup.json 导出技能配置用于备份或共享。
+  '071': hermes mcp add github --command npx 从命令行添加 MCP 服务器。
+  '072': hermes mcp serve 将 Hermes 本身作为 MCP 服务器运行，供其他代理使用。
+  '073': hermes auth add 允许添加多个 API 密钥用于凭据池轮换。
+  '074': hermes completion bash >> ~/.bashrc 为所有命令和配置文件启用标签补全。
+  '075': hermes logs -f 实时跟踪 agent.log。--level WARNING --since 1h 过滤输出。
+  '076': hermes backup 创建 Hermes 主目录的 zip 备份。
+  '077': hermes profile create coder 创建隔离的配置文件，使其成为独立命令。
+  078: hermes profile create work --clone 复制当前配置和密钥到新配置文件。
+  079: hermes update 自动将新捆绑技能同步到所有配置文件。
+  080: hermes gateway install 将 Hermes 配置为系统服务（systemd/launchd）。
+  081: hermes 记忆设置允许您配置外部记忆提供者（Honcho、Mem0 等）。
+  082: hermes webhook 订阅创建带有 HMAC 验证的事件驱动 webhook 路由。
+  083: 节省开支：hermes 工具禁用未使用的工具，hermes 技能配置精简技能。
+  084: /reasoning low 或 /reasoning minimal 将思维深度降低至默认值（medium）以下——响应更快、更便宜。
+  085: hermes 模型将视觉、压缩和辅助任务路由到更便宜的模型——在不降级主聊天模型的情况下降低背景 token 成本 85%+。
+  086: '在 config.yaml 中设置 display.bell_on_complete: true 以便在长时间任务完成时听到铃声。'
+  087: '设置 display.streaming: true 以便实时看到 token 在模型生成时出现。'
+  088: '设置 display.show_reasoning: true 以便观察模型的思维链推理。'
+  089: '设置 display.compact: true 以减少输出中的空白，以便更紧凑的信息。'
+  090: '设置 display.busy_input_mode: queue 以便将消息排队而不是中断代理，或者通过 /steer 在运行中途注入它们。'
+  091: '设置 display.resume_display: minimal 以便在会话恢复时跳过完整的对话摘要。'
+  092: '设置 compression.threshold: 0.50 以控制自动压缩何时触发（默认：上下文 50%）。'
+  093: '设置 agent.max_turns: 200 以便让代理每次轮次执行更多工具调用步骤。'
+  094: '设置 file_read_max_chars: 200000 以增加每次 read_file 调用的最大内容。'
+  095: '设置 approvals.mode: smart 以便让 LLM 自动批准安全命令并自动拒绝危险命令。'
+  096: 在 config.yaml 中设置 fallback_model 以自动切换到备用提供者。
+  097: '设置 privacy.redact_pii: true 以便在向 LLM 发送之前对用户 ID 和电话号码进行哈希处理。'
+  098: '设置 browser.record_sessions: true 以便自动将浏览器会话记录为 WebM 视频。'
+  099: '在 config.yaml 中设置 worktree: true 以始终创建 git worktree（与 hermes -w 相同）。'
+  '100': '设置 security.website_blocklist.enabled: true 以阻止特定域名从 Web 工具中访问。'
+  '101': '设置 cron.wrap_response: false 以在不包含 cron 标题/页脚的情况下交付原始代理输出。'
+  '102': HERMES_TIMEZONE 使用任何 IANA 时区字符串覆盖服务器时区。
+  '103': 环境变量替换在 config.yaml 中有效：使用 ${VAR_NAME} 语法。
+  '104': config.yaml 中的快速命令可立即运行 shell 命令，且无 token 消耗。
+  '105': 自定义个性可在 config.yaml 的 agent.personalities 下定义。
+  '106': provider_routing 控制 OpenRouter 提供商的排序、白名单和黑名单。
+  '107': execute_code 运行调用 Hermes 工具的 Python 脚本——结果保持独立，不进入上下文。
+  '108': delegate_task 默认最多启动 3 个并发子代理（delegation.max_concurrent_children），通过隔离上下文支持并行工作。
+  '109': web_extract 支持 PDF 链接——传入任意 PDF 链接即可转换为 Markdown。
+  '110': search_files 基于 ripgrep，比终端 grep 更快——用其替代 grep。
+  '111': patch 采用 9 种模糊匹配策略，确保微小空白差异不会破坏编辑。
+  '112': patch 支持 V4A 格式，可在单次调用中批量编辑多文件。
+  '113': read_file 在文件未找到时推荐相似文件名。
+  '114': read_file 自动去重——重新读取未修改的文件会返回轻量级占位符。
+  '115': browser_vision 截取屏幕截图并用 AI 分析——适用于验证码和视觉内容。
+  '116': browser_console 可在页面上下文中评估 JavaScript 表达式。
+  '117': image_generate 使用 FLUX 2 Pro 创建图像，并自动 2 倍放大。
+  '118': text_to_speech 将文本转换为音频——在 Telegram 中作为语音气泡播放。
+  '119': send_message 可从会话内访问任何已连接的即时通讯平台。
+  '120': todo 工具帮助代理在会话期间跟踪复杂的多步骤任务。
+  '121': session_search 在所有过往对话中进行全文搜索。
+  '122': 智能体会自动将偏好设置、修正和环境事实保存到内存中。
+  '123': mixture_of_agents 通过 4 个前沿大语言模型协作路由难题。
+  '124': 终端命令支持带有 notify_on_complete 的后台模式，适用于长时间运行的任务。
+  '125': 终端后台进程支持 watch_patterns，用于在特定输出行时发出提醒。
+  '126': 终端工具支持 6 个后端：local、Docker、SSH、Modal、Daytona 和 Singularity。
+  '127': 每个配置文件都有独立的配置、API 密钥、内存、会话、技能和定时任务。
+  '128': 配置文件名变为 shell 命令——'hermes profile create coder' 创建 'coder' 命令。
+  '129': hermes profile export coder -o backup.tar.gz 创建可移植的配置文件归档。
+  '130': 如果两个配置文件意外共享机器人令牌，第二个网关会被阻止并显示清晰的错误信息。
+  '131': 会话在首次交互后自动生成描述性标题——无需手动命名。
+  '132': '会话标题支持继承关系："my project" → "my project #2" → "my project #3"。'
+  '133': 退出时，Hermes 会打印带有会话 ID 和统计信息的恢复命令。
+  '134': hermes sessions export backup.jsonl 导出所有会话，用于备份或分析。
+  '135': hermes -r SESSION_ID 通过其 ID 恢复任何特定过往会话。
+  '136': 内存是冻结快照——更改仅在下次会话开始时出现在系统提示词中。
+  '137': 内存条目会自动扫描提示词注入和窃取模式。
+  '138': 智能体有两个内存存储：个人笔记（约 2200 字符）和用户档案（约 1375 字符）。
+  '139': 您给智能体的修正（"不，这样操作"）通常会自动保存到内存中。
+  '140': 超过 80 个内置技能，涵盖 github、creative、mlops、生产力、研究等。
+  '141': 每个已安装的技能会自动成为斜杠命令——输入 / 即可查看全部。
+  '142': hermes skills install official/security/1password 从仓库安装可选技能。
+  '143': 技能可以限制在特定操作系统平台——有些仅在 macOS 或 Linux 上加载。
+  '144': config.yaml 中的 skills.external_dirs 允许您从自定义目录加载技能。
+  '145': 代理可以使用 skill_manage 将其技能作为过程记忆创建。
+  '146': plan 技能在活跃工作区下 .hermes/plans/ 保存 markdown 计划。
+  '147': 定时任务可以附加技能：hermes cron add --skill blogwatcher "检查新帖子"。
+  '148': 定时任务投递目标包括 telegram、discord、slack、email、sms 以及 12 个以上平台。
+  '149': 如果定时任务响应以 [SILENT] 开头，则投递会被抑制——适用于仅监控任务。
+  '150': 定时任务支持相对延迟（30 分钟）、间隔（每 2 小时）、cron 表达式和 ISO 时间戳。
+  '151': 定时任务在完全全新的代理会话中运行——提示词必须自包含。
+  '152': 语音模式如果安装了 faster-whisper 即可使用零 API 密钥（免费本地语音转文本）。
+  '153': 提供五个 TTS 提供商：Edge TTS（免费）、ElevenLabs、OpenAI、NeuTTS（免费本地）、MiniMax。
+  '154': /voice on 在 CLI 中启用语音模式。Ctrl+B 切换推
+  '155': 流式 TTS 边生成边播放句子——您无需等待完整响应。
+  '156': Telegram、Discord、WhatsApp 和 Slack 上的语音消息会自动转录。
+  '157': Hermes 运行在 21 个消息平台：Telegram、Discord、Slack、WhatsApp、Signal、Matrix、IRC、Microsoft Teams、email 等。
+  '158': hermes gateway install 将其设置为系统服务，开机自启。
+  '159': DingTalk 使用流模式——无需 webhook 或公开 URL。
+  '160': BlueBubbles 通过本地 macOS 服务器将 iMessage 引入 Hermes。
+  '161': Webhook 路由支持 HMAC 验证、速率限制和事件过滤。
+  '162': API 服务器暴露一个与 Open WebUI 和 LibreChat 兼容的 OpenAI 兼容端点。
+  '163': Discord 语音频道模式：机器人加入 VC，转录语音并回应。
+  '164': 'group_sessions_per_user: true 让每个人在群聊中获得自己的会话。'
+  '165': /sethome 将聊天标记为 cron 任务交付的默认频道。
+  '166': 网关支持基于非活动的超时——活跃代理可以无限期运行。
+  '167': 危险命令批准有 4 个级别：一次、会话、始终（永久白名单）、拒绝。
+  '168': 智能批准模式使用 LLM 自动批准安全命令并标记危险命令。
+  '169': SSRF 防护阻止私有网络、回环、链路本地和云元数据地址。
+  '170': Tirith 预执行扫描检测同形 URL 欺骗和管道到解释器模式。
+  '171': MCP 子进程接收过滤后的环境——仅安全的系统变量通过。
+  '172': 上下文文件 (.hermes.md, AGENTS.md) 在加载前进行安全扫描以检测提示注入。
+  '173': config.yaml 中的 command_allowlist 永久批准特定的 shell 命令模式。
+  '174': 上下文达到阈值时自动压缩——记忆被清除，历史被总结。
+  '175': 随着上下文填充，状态栏变为黄色，然后橙色，最后红色。
+  '176': ~/.hermes/SOUL.md 中的 SOUL.md 是代理的主要身份——自定义它以塑造行为。
+  '177': Hermes 从 .hermes.md、AGENTS.md、CLAUDE.md 或 .cursorrules（第一个匹配项）加载项目上下文。
+  '178': 子目录中的 AGENTS.md 文件随着代理进入文件夹而被逐步发现。
+  '179': 上下文文件限制为 20,000 个字符，并采用智能首尾截断。
+  '180': 五个浏览器提供商：本地 Chromium、Browserbase、Browser Use、Camofox 和 Firecrawl。
+  '181': Camofox 是一个反检测浏览器——带有 C++ 指纹伪造功能的 Firefox 分支。
+  '182': browser_navigate 会自动返回页面快照——无需之后调用 browser_snapshot。
+  '183': browser_vision 配合 annotate=true 会在交互元素上叠加编号标签。
+  '184': MCP 服务器在 config.yaml 中配置——支持 stdio 和 HTTP 传输。
+  '185': 每服务器工具过滤：tools.include 白名单和 tools.exclude 黑名单指定特定工具。
+  '186': MCP 服务器在运行时自动生成工具集——hermes 工具可按平台切换。
+  '187': 'MCP OAuth 支持：auth: oauth 启用带 PKCE 的浏览器授权。'
+  '188': 当未修改文件时，检查点开销为零——默认启用。
+  '189': 回滚前快照自动保存，因此可以撤销撤销。
+  '190': /rollback 也会撤销对话回合，因此代理不会记住已回滚的更改。
+  '191': 检查点使用 ~/.hermes/checkpoints/ 中的影子仓库——您的项目的.git 永远不会被修改。
+  '192': batch_runner.py 并行处理数百个提示词以生成训练数据。
+  '193': hermes chat -Q 启用程序化使用的安静模式——抑制横幅和旋转器。
+  '194': 轨迹保存（--save-trajectories）捕获完整工具使用痕迹用于模型训练。
+  '195': 三种插件类型：通用（工具/钩子）、内存提供器和上下文引擎。
+  '196': hermes 插件安装 owner/repo 直接从 GitHub 安装插件。
+  '197': 可用 8 个外部内存提供者：Honcho、OpenViking、Mem0、Hindsight 等。
+  '198': 插件钩子包括 pre/post_tool_call、pre/post_llm_call 和 transform_terminal_output 用于输出规范化。
+  '199': 提示词缓存（Anthropic）通过重用缓存的系统提示词前缀来降低成本。
+  '200': 代理在后台线程中自动生成会话标题——零延迟影响。
+  '201': 智能模型路由可以自动将简单查询路由到更便宜的模型。
+  '202': 斜杠命令支持前缀匹配：/h 解析为 /help，/mod 解析为 /model。
+  '203': 将文件路径拖入终端会自动附加图像或作为上下文发送。
+  '204': 在仓库根目录中的 .worktreeinclude 列出要复制到工作树的被 git 忽略的文件。
+  '205': hermes acp 作为 VS Code、Zed 和 JetBrains 集成的 ACP 服务器运行 Hermes。
+  '206': 自定义提供者：在 config.yaml 下的 custom_providers 中保存命名端点。
+  '207': HERMES_EPHEMERAL_SYSTEM_PROMPT 注入一个永远不会保存到历史记录中的系统提示词。
+  '208': credential_pool_strategies 支持 fill_first、round_robin、least_used 和 random 轮换。
+  '209': hermes login 支持 Nous 和 OpenAI Codex 提供者的基于 OAuth 的身份验证。
+  '210': API 服务器支持带有服务器端状态的 Chat Completions 和 Responses API。
+  '211': 'tool_preview_length: 0 在 config 中显示 spinner 活动 feed 中的完整文件路径。'
+  '212': hermes status --deep 在所有组件上运行更深入的诊断检查。
+  '213': 定时任务可以附加一个 Python 脚本（--script），其 stdout 注入到提示词中作为上下文。
+  '214': 定时任务脚本位于 ~/.hermes/scripts/ 中，在代理之前运行——非常适合数据收集管道。
+  '215': config.yaml 中的 prefill_messages_file 将少样本示例注入到每个 API 调用中，永不保存到历史记录。
+  '216': SOUL.md 完全替换代理的默认身份——重写它以让 Hermes 成为你自己的。
+  '217': SOUL.md 首次运行时自动用默认人格填充。编辑 ~/.hermes/SOUL.md 以自定义。
+  '218': /compress <focus topic> 将 60-70% 的摘要预算分配给您的主题，并激进地修剪其余部分。
+  '219': 在第二次及以后的压缩中，压缩器会更新之前的摘要而不是从头开始。
+  '220': 在网关会话重置之前，Hermes 会自动在后台将重要事实刷新到内存中。
+  '221': 'config.yaml 中的 network.force_ipv4: true 可修复 IPv6 损坏的服务器上的挂起问题——monkey-patches socket。'
+  '222': 终端工具会标注常见退出码：grep 返回 1 表示 "未找到匹配项（非错误）"。
+  '223': 失败的终端命令会自动重试，最多 3 次，使用指数退避（2 秒、4 秒、8 秒）。
+  '224': 裸 sudo 命令会自动重写为从 .env 管道传递 SUDO_PASSWORD——无需交互式提示。
+  '225': execute_code 内置辅助函数：json_parse() 用于容错解析、shell_quote() 和带退避的重试 retry()。
+  '226': execute_code 的 7 个沙箱工具（web_search、terminal、read/write/search/patch）使用 RPC——无需进入上下文。
+  '227': 读取同一文件区域 3 次以上会触发警告。4 次及以上会被硬阻断以防止死循环。
+  '228': write_file 和 patch 会检测文件是否自上次读取后被外部修改，并警告数据陈旧。
+  '229': V4A 补丁格式支持添加文件、删除文件和移动文件指令——不仅仅是更新。
+  '230': MCP 服务器可以通过采样请求 LLM 补全——代理成为服务器的工具。
+  '231': MCP 服务器发送通知/tools/list_changed 以触发自动工具重新注册，无需重启。
+  '232': '使用 acp_command: ''claude'' 的 delegate_task 可在任何平台上作为子代理启动 Claude Code。'
+  '233': 委托有心跳线程——子代理的活动会传播到父代理，防止网关超时。
+  '234': 当提供者返回 HTTP 402（需要支付）时，辅助客户端会自动回退到下一个。
+  '235': agent.tool_use_enforcement 引导描述动作而非调用工具的模型——GPT/Codex 为自动。
+  '236': agent.restart_drain_timeout（默认 60 秒）让运行的代理在网关重启生效前完成。
+  '237': agent.api_max_retries（默认 3）控制代理在显示错误前重试失败 API 调用的次数——降低它以实现快速回退。
+  '238': 网关按会话缓存 AIAgent 实例——销毁此缓存会破坏 Anthropic 提示缓存。
+  '239': 任何网站都可以通过 /.well-known/skills/index.json 暴露技能——技能中心会自动发现它们。
+  '240': 位于 ~/.hermes/skills/.hub/audit.log 的技能审计日志跟踪每次安装和移除操作。
+  '241': 过期的 git 工作区会自动清理：24-72 小时旧且没有未推送的提交会在启动时被修剪。
+  '242': 每个配置文件都有自己的子进程 HOME，位于 HERMES_HOME/home/ — 隔离的 git、ssh、npm、gh 配置。
+  '243': HERMES_HOME_MODE 环境变量（八进制，例如 0701）为 Web 服务器遍历设置自定义目录权限。
+  '244': 容器模式：将 .container-mode 文件放置在 HERMES_HOME 中，主机 CLI 会自动执行到容器中。
+  '245': Ctrl+C 有 5 个优先级层级：取消录制 → 取消提示 → 取消选择器 → 中断代理 → 退出。
+  '246': 代理运行期间的每次中断都会记录到 ~/.hermes/interrupt_debug.log，包含时间戳。
+  '247': BROWSER_CDP_URL 将浏览器工具连接到任何运行的 Chrome — 支持 WebSocket、HTTP 或 host:port。
+  '248': BROWSERBASE_ADVANCED_STEALTH=true 启用高级反检测功能，使用自定义 Chromium（Scale 计划）。
+  '249': 当终端宽度小于 80 列时，CLI 会自动切换到紧凑模式。
+  '250': 快速命令支持两种类型：exec（直接运行 shell 命令）和 alias（重定向到另一个命令）。
+  '251': 按任务委托模型：config 中的 delegation.model 和 delegation.provider 将子代理路由到更便宜的模型。
+  '252': delegation.reasoning_effort 独立控制子代理的思考深度。
+  '253': 'config.yaml 中的 display.platforms 允许按平台覆盖显示：{telegram: {tool_progress: all}}。'
+  '254': config 中的 human_delay.mode 模拟人类打字速度 — 可配置的 min_ms/max_ms 范围。
+  '255': 配置版本迁移在加载时自动运行 — 新配置键无需手动干预即可出现。
+  '256': GPT 和 Codex 模型获得特殊系统提示，指导工具纪律和强制工具使用。
+  '257': Gemini 模型获得定制指令，用于绝对路径、并行工具调用和非交互式命令。
+  '258': config.yaml 中的 context.engine 可以设置为插件名称，以使用替代上下文管理策略。
+  '259': 超过 8000 个 token 的浏览器页面会被辅助 LLM 自动总结，然后返回给代理。
+  '260': 压缩器执行廉价预处理：LLM 运行前，超过 200 个字符的工具输出会被替换为占位符。
+  '261': 当压缩失败时，后续尝试会暂停 10 分钟以避免 API 过载攻击。
+  '262': 长危险命令（>70 字符）在批准提示中会获得'查看'选项，以便先查看完整文本。
+  '263': 音频电平可视化在语音录制期间显示 ▁▂▃▄▅▆▇ 条，基于麦克风 RMS 电平。
+  '264': 配置文件名不能与现有 PATH 二进制文件冲突——'hermes profile create ls'会被拒绝。
+  '265': hermes profile create backup --clone-all 复制所有内容（配置、密钥、SOUL.md、记忆、技能、会话）。
+  '266': 语音录制键可通过 config.yaml 中的 voice.record_key 配置——不仅仅是 Ctrl+B。
+  '267': .cursorrules 和 .cursor/rules/*.mdc 文件会自动检测并加载为项目上下文。
+  '268': 上下文文件支持 10 多种提示注入模式——不可见 Unicode、'忽略指令'、外泄尝试。
+  '269': GPT-5 和 Codex 在消息格式中使用'developer'角色而非'system'。
+  '270': 任务级辅助覆盖：config.yaml 中的 auxiliary.vision.provider、auxiliary.compression.model 等。
+  '271': 辅助客户端将'main'视为提供商别名——解析为您实际的主提供商 + 模型。
+  '272': hermes claw migrate --dry-run 预览 OpenClaw 迁移而不写入任何内容。
+  '273': 带引号或转义空格的文件路径会自动处理——无需手动清理。
+  '274': 斜杠命令永远不会触发大文本折叠——带大参数的/command 正常工作。
+  '275': 在中断模式下，代理执行期间输入的斜杠命令会绕过中断逻辑并立即运行。
+  '276': HERMES_DEV=1 绕过容器模式检测以用于本地开发。
+  '277': 每个 MCP 服务器都有自己的工具集（mcp-servername），可通过 hermes tools 独立切换。
+  '278': 配置中的 MCP ${ENV_VAR} 占位符在服务器启动时解析——包括来自 ~/.hermes/.env 的变量。
+  '279': 来自可信仓库（NousResearch）的技能获得'trusted'安全级别；社区技能会进行额外扫描。
+  '280': ~/.hermes/skills/.hub/quarantine/中的技能隔离区存放待安全审查的技能。
+  '281': /steer <prompt> 在下一个工具调用后注入注释——在不中断的情况下微调任务中的方向。
+  '282': /goal <text> 设置持续的 Ralph 环目标——Hermes 自动逐轮继续，直到裁判说完成。
+  '283': /snapshot create [label] 保存 Hermes 配置的全状态快照；/snapshot restore <id> 稍后恢复。
+  '284': /copy [N] 复制最后一个助手回复到剪贴板，或带编号复制倒数第 N 个。
+  '285': /redraw 强制完整 UI 重绘，修复 tmux 调整大小或鼠标选择后的终端漂移。
+  '286': /agents（别名 /tasks）显示当前会话中活跃的代理和后台任务。
+  '287': /footer 切换网关最终回复中的页脚，显示模型、工具数量和轮次时间。
+  '288': /busy queue|steer|interrupt 控制 Hermes 工作时按 Enter 的行为。
+  '289': /topic 在 Telegram 私聊中启用用户管理的多会话主题模式——/topic <id> 内联恢复历史会话。
+  '290': /approve session|always 用选定的信任范围运行待处理的危险命令；/deny 拒绝它。
+  '291': /restart 优雅重启网关——先清空活跃运行，恢复后通知请求者。
+  '292': /kanban boards switch <slug> 从聊天中切换活跃的多项目看板。
+  '293': /reload 重新加载 ~/.hermes/.env 到运行中的会话——无需重启即可获取新 API 密钥。
+  '294': no_agent=True 的 cronjob 按计划运行脚本并直接发送 stdout——零 token，零 LLM。
+  '295': 空的 cron 脚本 stdout 表示静默心跳——不发送任何内容，适合阈值监控器。
+  '296': HERMES_CRON_MAX_PARALLEL（默认 4）限制每次 tick 运行的 cron 任务数，防止突发流量耗尽密钥。
+  '297': 网关钩子位于 ~/.hermes/hooks/<name>/，包含 HOOK.yaml 和 handler.py——handler 必须命名为 `handle`。
+  '298': 钩子事件包括 gateway:startup、session:start、agent:step 和 command:* 通配符订阅。
+  '299': 放置 ~/.hermes/BOOT.md 清单，gateway:startup 钩子每次启动时作为一次性代理运行。
+  '300': hermes curator run --dry-run 预览 curator 会归档或合并的内容，不修改任何数据。
+  '301': hermes curator pin <skill> 将技能硬隔离，使其免受自动归档和代理技能管理工具的影响。
+  '302': hermes curator rollback 从运行前的快照恢复技能——备份存储在 skills/.curator_backups/ 下。
+  '303': hermes auth reset <provider> 清除凭据池中的所有冷却和耗尽标志。
+  '304': 'credential_pool_strategies.<provider>: round_robin 均匀轮换密钥，而非默认的 fill_first。'
+  '305': 'use_gateway: true 为每个工具路由 Web、图像、TTS 或浏览器流量通过您的 Nous 订阅——无需额外密钥。'
+  '306': 'provider_routing.data_collection: deny 排除 OpenRouter 上的数据存储提供商。'
+  '307': 'provider_routing.require_parameters: true 仅路由到支持请求中所有参数的提供商。'
+  '308': HERMES_TUI_RESUME=1 启动时自动重新附加到最近的 TUI 会话——SSH 断开后非常有用。
+  '309': HERMES_TUI_THEME=light|dark|<hex> 强制在未设置 COLORFGBG 的终端上使用 TUI 主题。
+  '310': TUI 中的 Ctrl+G 或 Ctrl+X Ctrl+E 在 $EDITOR 中打开输入缓冲区，用于长多行提示。
+  '311': TUI 渲染 LaTeX 内联——$E=mc^2$ 变为 Unicode 数学而非原始 TeX。
+  '312': hermes dashboard 在 127.0.0.1:9119 启动本地 Web UI——零数据离开 localhost。
+  '313': hermes dashboard --tui 通过 xterm.js 和 WebSocket PTY 在浏览器中嵌入完整的 Hermes TUI。
+  '314': 在 ~/.hermes/dashboard-themes/ 中放置包含两种调色板颜色的 YAML 文件，即可重新设计整个仪表板。
+  '315': 仪表板插件即插即用：manifest.json + JS 捆绑包位于 ~/.hermes/dashboard-plugins/——无需 npm 构建。
+  '316': 'layoutVariant: cockpit 在仪表板主题中添加 260px 左侧轨道，插件可通过侧边栏槽位填充。'
+  '317': 'display.tool_progress_command: true 在消息平台上暴露 /verbose；默认情况下仅支持命令行。'
+  '318': HERMES_BACKGROUND_NOTIFICATIONS=result 仅在后台任务完成时发送 ping（而非 all/error/off）。
+  '319': HERMES_WRITE_SAFE_ROOT 限制 write_file 和 patch 到目录前缀；外部写入需要批准。
+  '320': HERMES_IGNORE_RULES 跳过 AGENTS.md、SOUL.md、.cursorrules、memory 和预加载技能的自动注入。
+  '321': HERMES_ACCEPT_HOOKS 自动批准 config.yaml 中声明但未见的 shell hooks，无需 TTY 提示。
+  '322': auxiliary.goal_judge.model 将 /goal judge 路由到廉价快速的模型，以保持循环成本接近零。
+  '323': Checkpoints 跳过包含超过 50,000 个文件的目录，以避免在大型单仓库中进行缓慢的 git 操作。
+  '324': 'tts.provider: piper 在 CPU'
+  '325': 'tts.providers.<name>.type: command 使用 {input_path} 和 {output_path} 占位符连接任意 CLI TTS 引擎。'
+  '326': API_SERVER_ENABLED=true runs an OpenAI-compatible endpoint alongside the gateway for Open WebUI and LibreChat.
+  '327': 'GATEWAY_PROXY_URL runs a split setup: platform I/O locally, agent work delegated to a remote API server.'
+  '328': MATRIX_DEVICE_ID pins a stable device ID for E2EE — without it, keys rotate every start and historic decrypt breaks.
+  '329': TELEGRAM_WEBHOOK_SECRET is required whenever TELEGRAM_WEBHOOK_URL is set — generate with openssl rand -hex 32.
+  '330': batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.
+  '331': /new starts a fresh session in place (alias /reset) — fresh session ID, clean history, CLI stays open.
+  '332': /clear wipes the terminal screen AND starts a new session — one shortcut for a visual reset.
+  '333': /history prints the current conversation in-line without leaving the CLI — useful for a quick re-read.
+  '334': /save writes the current conversation to disk without ending the session.
+  '335': '/status shows session info at a glance: ID, title, model, token usage, and elapsed time.'
+  '336': /image <path> attaches a local image file for your next prompt without pasting or drag-and-drop.
+  '337': /platforms shows gateway and messaging-platform connection status right from inside chat.
+  '338': /commands paginates the full slash-command + installed-skill list — useful on platforms without tab completion.
+  '339': /toolsets lists every available toolset so you know what -t/--toolsets accepts.
+  '340': /gquota shows Google Gemini Code Assist quota usage with progress bars when that provider is active.
+  '341': /voice tts 切换 TTS 专用模式 — 代理会朗读回复，但您仍可输入提示词
+  '342': /reload-skills 重新扫描 ~/.hermes/skills/，使即插即用技能无需重启会话即可出现
+  '343': /indicator kaomoji|emoji|unicode|ascii 选择代理运行期间显示的 TUI 忙碌指示器样式
+  '344': /debug 上传支持捆绑包（系统信息 + 日志）并返回可分享链接 — 在聊天中也可用
+  '345': hermes -z \"<prompt>\" 最纯粹的单次响应：最终答案输出到 stdout，无其他内容 — 适合在脚本中管道传递
+  '346': hermes chat --pass-session-id 将会话 ID 注入系统提示词，使代理能够自我引用
+  '347': hermes chat --image path/to/pic.png 将本地图片附加到单个 -q 查询，无需单独的上传步骤
+  '348': hermes chat --ignore-user-config 跳过 ~/.hermes/config.yaml — 便于复现的 bug 报告和 CI 运行
+  '349': hermes chat --source tool 通过工具标签标记程序化聊天，避免混入 hermes 会话列表
+  '350': hermes dump --show-keys 包含脱敏后的 API 密钥指纹，便于深入支持调试
+  '351': hermes sessions rename <ID> \"new title\" 重命名历史会话；hermes sessions delete <ID> 删除指定会话
+  '352': hermes import 恢复会话导出或档案
+  '353': hermes fallback 交互式管理回退模型链 — 无需手动编辑 config.yaml
+  '354': hermes pairing 轮换直接消息配对令牌 — 轮换后第一个消息者可获得机器人访问权限
+  '355': hermes setup 引导首次用户完成提供商、密钥和平台配置的交互式流程
+  '356': hermes status --deep 全面检查所有组件的健康状态；普通 hermes status 为快速查看
+  '357': HERMES_AGENT_TIMEOUT=0 禁用网关对运行中代理的无活动超时 — 适用于长时间研究任务
+  '358': HERMES_ENABLE_PROJECT_PLUGINS=1 自动加载本地插件 — 设计时已内置信任验证
+  '359': HERMES_DISABLE_FILE_STATE_GUARD=1 关闭文件状态保护 — 防止读取后文件被修改
+  '360': HERMES_ALLOW_PRIVATE_URLS=true 允许网络工具访问 localhost 和私有网络 — 网关模式下默认关闭
+  '361': HERMES_OPTIONAL_SKILLS=name1,name2 每个配置文件首次运行时自动安装额外的可选目录技能。
+  '362': HERMES_BUNDLED_SKILLS 指向自定义的技能树——由 Homebrew 和 Nix 打包使用。
+  '363': HERMES_DUMP_REQUEST_STDOUT=1 将每个 API 请求载荷输出到标准输出，而不是日志文件。
+  '364': HERMES_OAUTH_TRACE=1 记录经过脱敏的 OAuth 令牌交换和刷新尝试，用于调试提供商认证。
+  '365': HERMES_STREAM_RETRIES (默认 3) 控制临时网络错误时的流中断重连尝试次数。
+  '366': HERMES_GATEWAY_BUSY_ACK_ENABLED=false 当用户向忙碌的代理发送消息时，静默 ⚡/⏳/⏩ 确认消息。
+  '367': HERMES_AGENT_NOTIFY_INTERVAL (默认 180 秒) 设置网关在长时间对话中多久发送一次进度 ping。
+  '368': HERMES_RESTART_DRAIN_TIMEOUT (默认 900 秒) 限制 /restart 在强制重启前等待运行中的任务时长。
+  '369': HERMES_CHECKPOINT_TIMEOUT (默认 30 秒) 限制文件系统检查点创建时间——大型单仓库项目请调高此值。
+  '370': config.yaml 中的 image_gen.model 选择 FAL 模型：flux-2/klein、gpt-image-2、nano-banana-pro 等。
+  '371': image_gen.provider 通过插件（OpenAI Images、Codex、FAL）而非默认方式路由图像生成。
+  '372': AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY 将视觉分析指向任何兼容 OpenAI 的端点。
+  '373': 'security.tirith_fail_open: false 使 Hermes 在 tirith 扫描器自身出错时阻止命令。'
+  '374': TIRITH_FAIL_OPEN 环境变量覆盖 tirith_fail_open 配置——无需编辑 config.yaml 即可快速切换。
+  '375': 默认情况下，--source 工具聊天不会被排除在 hermes 会话列表之外——显式设置 --source 即可查看它们。
+  '376': 会话 ID 带有时间戳前缀（20250305_091523_abcd），因此 ls 和 jq 可以自然排序。
+  '377': API_SERVER_MODEL_NAME 自定义 /v1/models 上的模型名称——多配置文件 Open WebUI 设置所必需。
+  '378': 仪表板插件从 /dashboard-plugins/<name>/ 提供——将文件放入 ~/.hermes/dashboard-plugins/。
+cmd:
+  new: 开始新会话（新的会话 ID 和历史记录）
+  topic: 启用或检查 Telegram DM 主题会话
+  clear: 清除屏幕并开始新会话
+  redraw: 强制刷新整个 UI（从终端漂移恢复）
+  history: 显示对话历史
+  save: 保存当前对话
+  retry: 重试最后一条消息（重新发送给代理）
+  undo: 移除最后的用户/助手交互
+  title: 为当前会话设置标题
+  handoff: 将会话移交到消息平台（Telegram、Discord 等）
+  branch: 分支当前会话（探索不同方向）
+  compress: 手动压缩对话上下文
+  rollback: 列出或恢复文件系统检查点
+  snapshot: 创建或恢复 Hermes 配置/状态快照
+  stop: 终止所有运行中的后台进程
+  approve: 批准待处理的危险命令
+  deny: 拒绝待处理的危险命令
+  background: 在后台运行提示
+  agents: 显示活跃代理和运行中的任务
+  queue: 将提示排队到下一轮（不中断）
+  steer: 在下次工具调用后注入消息而不中断
+  goal: 设置 Hermes 跨轮次工作的目标直到实现
+  subgoal: 在活跃目标上添加或管理额外条件
+  status: 显示会话信息
+  whoami: 显示你的斜杠命令访问权限（管理员/用户）
+  profile: 显示活跃配置名称和主目录
+  sethome: 将此聊天设为主频道
+  resume: 恢复之前命名的会话
+  sessions: 浏览和恢复之前的会话
+  config: 显示当前配置
+  model: 切换此会话的模型
+  codex-runtime: 切换 OpenAI/Codex 模型的 codex 应用服务器运行时
+  gquota: 显示 Google Gemini Code Assist 配额使用情况
+  personality: 设置预定义人格
+  statusbar: 切换上下文/模型状态栏
+  verbose: 循环工具进度显示：关闭 -> 新建 -> 全部 -> 详细
+  footer: 切换网关最终回复的运行时元数据页脚
+  yolo: 切换 YOLO 模式（跳过所有危险命令批准）
+  reasoning: 管理推理努力和显示
+  fast: 切换快速模式 — OpenAI 优先处理/Anthropic 快速模式（普通/快速）
+  skin: 显示或更改显示皮肤/主题
+  indicator: 选择 TUI 忙指示器样式
+  voice: 切换语音模式
+  busy: 控制 Hermes 工作时 Enter 键的行为
+  tools: 管理工具：/tools [list|disable|enable] [name...]
+  toolsets: 列出可用的工具集
+  skills: 搜索、安装、检查或管理技能
+  cron: 管理定时任务
+  curator: 后台技能维护（状态、运行、固定、归档、列出已归档）
+  kanban: 多配置协作看板（任务、链接、评论）
+  reload: 重新加载 .env 变量到运行中的会话
+  reload-mcp: 从配置重新加载 MCP 服务器
+  reload-skills: 重新扫描 ~/.hermes/skills/ 查找新安装或移除的技能
+  browser: 通过 CDP 连接浏览器工具到你的实时 Chrome
+  plugins: 列出已安装的插件及其状态
+  commands: 浏览所有命令和技能（分页）
+  help: 显示可用命令
+  restart: 在排空活跃运行后优雅重启网关
+  usage: 显示当前会话的 token 使用情况和速率限制
+  insights: 显示使用洞察和分析
+  platforms: 显示网关/消息平台状态
+  platform: 暂停、恢复或列出失败的网关平台
+  copy: 复制最后助手回复到剪贴板
+  paste: 从剪贴板附加图片
+  image: 附加本地图片文件到你的下次提示
+  update: 更新 Hermes Agent 到最新版本
+  debug: 上传调试报告（系统信息+日志）并获取可分享链接
+  quit: 退出 CLI（使用 --delete 也移除会话历史）
+banner:
+  session: 会话：{session_id}
+  available_tools: 可用工具
+  mcp_servers: MCP 服务器
+  available_skills: 可用技能
+  no_skills: 未安装技能
+  tools_count: '{tools_count} 个工具'
+  skills_count: '{total_skills} 个技能'
+  mcp_count: '{mcp_connected} 个 MCP 服务器'
+  runtime: 运行时：
+  profile: 配置：
+  behind: ⚠ 落后 {behind} {commits_word} 个提交
+  commits: 个提交
+  commit: 个提交
+  codex_note: （终端/文件操作/MCP 在 codex 内运行）
+  toolsets_note: （还有 {remaining_toolsets} 个工具集...）
+  failed: — 失败
+cli:
+  '4166': '{_DIM}外部编辑器仅在交互式 CLI 内可用。{_RST}'
+  '4169': '{_DIM}等待当前命令完成后再打开编辑器。{_RST}'
+  '4172': '{_DIM}完成活动提示后再打开编辑器。{_RST}'
+  '4176': '{_DIM}没有活动的输入缓冲区可用于外部编辑器。{_RST}'
+  '4234': ⚠️  主认证失败 — 切换到后备：{_fb_provider} / {_fb_model}
+  '4410': \033[1;31m未找到会话：{session_id}{_RST}
+  '4537': 已应用会话标题：{pending_title}
+  '4541': 无法应用待处理标题：{e}
+  '5147': 运行中的进程：{running_count}
+  '5154': 最近完成：{finished_count}
+  '5178': '📎 已从剪贴板附加图片 #{n}'
+  '5180': '{_DIM}(>_<) 剪贴板有图片但提取失败{_RST}'
+  '5182': '{_DIM}(._.) 剪贴板中未找到图片{_RST}'
+  '5266': '已复制助手响应 #{idx + 1} 到剪贴板'
+  '5268': 剪贴板复制失败：{e}
+  '5288': 📎 已附加图片：{image_name}
+  '5335': '{_DIM}✓ 图片已分析{_RST}'
+  '5343': '{_DIM}⚠ 视觉分析失败 — 路径已包含用于重试{_RST}'
+  '5351': '{_DIM}⚠ 视觉分析错误 — 路径已包含用于重试{_RST}'
+  '5538': \n  {_DIM}提示：直接输入你的消息与 Hermes 聊天！{_RST}
+  '5539': '{_DIM}多行：Alt+Enter 换行{_RST}'
+  '5540': '{_DIM}草稿编辑器：Ctrl+G（VSCode/Cursor 中为 Alt+G）{_RST}'
+  '5665': '{_DIM}会话已重置。新工具配置已生效。{_RST}'
+  '5947': 标题被拒绝：{e}
+  '5956': '{e} — 会话以无标题启动。'
+  '6020': 无法加载网关配置：{exc}
+  '6026': 未知平台
+  '6032': 无法加载网关配置：{exc}
+  '6037': 平台
+  '6042': 未为 {platform_name} 配置主频道。
+  '6043': 先在目标聊天中使用 /sethome 设置。
+  '6077': 无法确保 state.db 中的会话行：{exc}
+  '6097': 排队移交
+  '6098': 等待网关接收...
+  '6116': ↻ 移交完成。会话现在在 {platform_name} 上活跃。
+  '6117': 稍后在此 CLI 上使用 /resume {session_title} 恢复。
+  '6124': 移交失败：{err}
+  '6162': 未找到会话：{target}
+  '4194': '{_DIM}打开外部编辑器失败：{exc}{_RST}'
+  '4413': '{_DIM}使用之前 CLI 运行的会话 ID（hermes sessions list）。{_RST}'
+  '5251': 无效的响应编号。使用 1-{assistant_count}。
+  '5277': '{_DIM}用法：/image <路径>  例如 /image {hint}{_RST}'
+  '5283': '{_DIM}(>_<) 文件未找到：{path_token}{_RST}'
+  '5286': '{_DIM}(._.) 不支持的图片文件：{image_name}{_RST}'
+  '5292': '{_DIM}现在输入你的提示（或在单查询模式中使用 --image）：{_remainder}{_RST}'
+  '5527': \n  {_BOLD}── {category} ──{_RST}
+  '5534': \n  ⚡ {_BOLD}技能命令{_RST}（已安装 {skill_count} 个）：
+  '5546': '{_DIM}粘贴图片：Alt+V（或 /paste）{_RST}\n'
+  '6039': 平台
+  '6062': '{db_status}'
+  '6154': '{db_status}'
+  '6276': '{db_status}'
+  '6298': '{db_status}'
+  '6343': 创建分支会话失败：{e}
+  '6416': 原始会话：{parent_session_id}
+  '6417': 分支会话：{new_session_id}
+  '6883': 上下文：{ctx_formatted} tokens
+  '6888': 最大输出：{max_output_formatted} tokens
+  '6890': 成本：{cost}
+  '6891': 能力：{capabilities}
+  '7117': 上下文：{ctx_formatted} tokens
+  '7120': 最大输出：{max_output_formatted} tokens
+  '7122': 成本：{cost}
+  '7123': 能力：{capabilities}
+  '7843': '{db_status}'
+  '7858': '{db_status}'
+  '6251': ↻ 已恢复会话 {target_id}{title_part} — 无消息，重新开始。
+  '6827': ✗ {error}
+  '6856': ⚠ 代理切换失败（{exc}）；更改将在下一会话生效。
+  '6865': ✓ 模型已切换：{new_model}
+  '6866': 提供商：{provider_label}
+  '6900': ⚠ {warning}
+  '7054': ✗ {error}
+  '7087': ⚠ 代理切换失败（{exc}）；更改将在下一会话生效。
+  '7100': ✓ 模型已切换：{new_model}
+  '7101': 提供商：{provider_label}
+  '7135': ⚠ {warning}
+  '3645': '{_DIM}[思考中] {preview_text}{_RST}'
+  '3654': '{_DIM}[思考中] {preview}{_RST}'
+  '7169': ❌ 无法加载配置：{exc}
+  '7181': '{prefix} {line}'
+  '5323': '{_DIM}👁️  正在分析 {image_name}（{size_kb}KB）...{_RST}'
+  '7733': '{_DIM}✓ UI 已重绘{_RST}'
+  '7827': 已设置会话标题：{new_title}
+  '7840': 会话标题已排队：{new_title}（将在第一条消息时保存）
+  '7848': 会话 ID：{session_id}
+  '8015': 引导失败：{exc}
+  '8090': \033[1;31m插件命令错误：{e}{_RST}
+  '8132': \033[1;31m未知命令：{cmd_lower}{_RST}
+  '8133': '{_DIM}{_ACCENT}输入 /help 查看可用命令{_RST}'
+  '8139': '{_ACCENT}歧义命令：{cmd_lower}{_RST}'
+  '8142': \033[1;31m未知命令：{cmd_lower}{_RST}
+  '8143': '{_DIM}{_ACCENT}输入 /help 查看可用命令{_RST}'
+  '8241': '✅ 后台任务 #{task_num} 完成'
+  '8281': '❌ 后台任务 #{task_num} 失败：{e}'
+  '8569': '{_DIM}目标不可用（无活跃会话）。{_RST}'
+  '8582': '{_DIM}未设置目标。{_RST}'
+  '8584': ⏸ 目标已暂停：{goal}
+  '8590': '{_DIM}无可恢复的目标。{_RST}'
+  '8592': ▶ 目标已恢复：{goal}
+  '8605': '{_DIM}无活跃目标。{_RST}'
+  '8612': 无效目标：{exc}
+  '8615': ⊙ 目标已设置（{max_turns} 轮预算）：{goal}
+  '8648': '{_DIM}目标不可用（无活跃会话）。{_RST}'
+  '8652': '{_DIM}无活跃目标。使用 /goal <文本> 设置。{_RST}'
+  '8677': /subgoal 移除：{exc}
+  '8679': ✓ 已移除子目标 {idx}：{removed}
+  '8686': /subgoal 清除：{exc}
+  '8691': '{_DIM}无子目标可清除。{_RST}'
+  '8698': /subgoal：{exc}
+  '8701': ✓ 已添加子目标 {idx}：{text}
+  '8909': 运行时页脚：{state}
+  '8981': '{_ACCENT}推理努力：{level}{_RST}'
+  '8982': '{_ACCENT}推理显示：{display_state}{_RST}'
+  '8994': '{_ACCENT}✓ 推理显示：已开启（已保存）{_RST}'
+  '8995': '{_DIM}  每次响应期间和之后将显示模型思考过程。{_RST}'
+  '9002': '{_ACCENT}✓ 推理显示：已关闭（已保存）{_RST}'
+  '9008': '{_DIM}(._.) 未知参数：{arg}{_RST}'
+  '9009': '{_DIM}有效级别：none, minimal, low, medium, high, xhigh{_RST}'
+  '9010': '{_DIM}显示选项：show, hide{_RST}'
+  '9033': '{_ACCENT}忙碌输入模式：{busy_mode}{_RST}'
+  '9040': '{_DIM}忙碌时按 Enter：{_behavior}{_RST}'
+  '9041': '{_DIM}用法：/busy [queue|steer|interrupt|status]{_RST}'
+  '9046': '{_DIM}(._.) 未知参数：{arg}{_RST}'
+  '9047': '{_DIM}用法：/busy [queue|steer|interrupt|status]{_RST}'
+  '9081': '{_ACCENT}{feature_name}：{status}{_RST}'
+  '9082': '{_DIM}用法：/fast [normal|fast|status]{_RST}'
+  '9096': '{_DIM}(._.) 未知参数：{arg}{_RST}'
+  '9097': '{_DIM}用法：/fast [normal|fast|status]{_RST}'
+  '9102': '{_ACCENT}✓ {feature_name} 设置为 {label}（已保存到配置）{_RST}'
+  '9104': '{_ACCENT}✓ {feature_name} 设置为 {label}（仅本次会话）{_RST}'
+  '9744': ┊ {emoji} 准备 {tool_name}…
+  '9942': \n{_DIM}检测到静音，自动停止...{_RST}
+  '10010': '{_DIM}未检测到语音。{_RST}'
+  '10016': '{_DIM}正在转录...{_RST}'
+  '10038': '{_DIM}未检测到语音。{_RST}'
+  '10041': \n{_DIM}转录失败：{error}{_RST}
+  '10044': \n{_DIM}语音处理错误：{e}{_RST}
+  '10063': '{_DIM}连续 3 次未检测到语音，连续模式已停止。{_RST}'
+  '10079': '{_DIM}语音自动重启失败：{e}{_RST}'
+  '10141': '{_DIM}TTS 播放失败：{e}{_RST}'
+  '10165': 未知语音子命令：{subcommand}
+  '10182': '{_DIM}语音模式已启用。{_RST}'
+  '10190': \n{_ACCENT}此环境中语音模式不可用：{_RST}
+  '10197': \n{_ACCENT}语音模式要求未满足：{_RST}
+  '10202': \n  {_BOLD}选项 1：pkg install termux-api{_RST}
+  '10203': '{_DIM}然后安装/更新 Termux:API Android 应用以捕获麦克风{_RST}'
+  '10234': \n{_ACCENT}语音模式已启用{tts_status}{_RST}
+  '10235': '{_DIM}{_ptt_display} 开始/停止录音{_RST}'
+  '10236': '{_DIM}/voice tts  切换语音输出{_RST}'
+  '10237': '{_DIM}/voice off  禁用语音模式{_RST}'
+  '10269': \n{_DIM}语音模式已禁用。{_RST}
+  '10274': '{_DIM}先启用语音模式：/voice on{_RST}'
+  '10286': '{_ACCENT}语音 TTS {status}。{_RST}'
+  '10294': \n{_BOLD}语音模式状态{_RST}
+  '10302': 录音键：{record_key}
+  '10303': \n  {_BOLD}要求：{_RST}
+  '10368': \n{_DIM}（澄清在 {timeout} 秒后超时 — 代理将决定）{_RST}
+  '10403': \n{_DIM}  ✓ 已接收密码（会话缓存）{_RST}
+  '10405': \n{_DIM}  ⏭ 已跳过{_RST}
+  '10417': \n{_DIM}  ⏱ 超时 — 继续不使用 sudo{_RST}
+  '10472': \n{_DIM}  ⏱ 超时 — 拒绝命令{_RST}
+  '10780': '{_DIM}正在初始化代理...{_RST}'
+  '10861': '{_DIM}⚠ {w}{_RST}'
+  '11191': \n{_DIM}连续语音模式因错误停止。{_RST}
+  '11816': '{_DIM}⚠ tirith 安全扫描器已启用但不可用'
+  '11878': ✗ 模型选择失败：{_exc}
+  '11957': '{_DIM}引导失败（{exc}）— 已排队到下一轮。{_RST}'
+  '11961': '{_ACCENT}⏩ 已引导：'
+  '12254': \n{_DIM}录音已取消。{_RST}
+  '12354': \n{_DIM}录音已取消。{_RST}
+  '12462': \n{_DIM}挂起（Ctrl+Z）在 Windows 上不受支持。{_RST}
+  '12569': \n{_DIM}语音录音失败：{e}{_RST}
+  '13589': 📎 自动附加图片：{drop_name}
+  '13591': 📄 检测到文件：{drop_name}
+  '13598': \n⚙️  {user_input}
+  '13658': '{_DIM}语音自动重启失败：{e}{_RST}'
+  '13902': '{_DIM}✓ 会话 {sid} 已删除{_RST}'
+  '13904': '{_DIM}✗ 会话 {sid} 未找到，无法删除{_RST}'

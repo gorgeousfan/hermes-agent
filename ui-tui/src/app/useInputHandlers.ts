@@ -10,6 +10,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+import { getTuiT } from '../i18n/index.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -223,7 +224,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
     if (!voice.enabled) {
-      return actions.sys('voice: mode is off — enable with /voice on')
+      return actions.sys(getTuiT('voice.modeOff'))
     }
 
     const starting = !voice.recording

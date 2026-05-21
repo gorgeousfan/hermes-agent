@@ -10,6 +10,7 @@ import type {
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { getTuiT } from '../../../i18n/index.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
@@ -297,8 +298,8 @@ export const sessionCommands: SlashCommand[] = [
             const tts = r.tts ? ' (TTS enabled)' : ''
             ctx.transcript.sys(`Voice mode enabled${tts}`)
             ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
-            ctx.transcript.sys('  /voice tts  to toggle speech output')
-            ctx.transcript.sys('  /voice off  to disable voice mode')
+            ctx.transcript.sys(getTuiT('voice.helpTts'))
+            ctx.transcript.sys(getTuiT('voice.helpOff'))
           } else {
             ctx.transcript.sys('Voice mode disabled.')
           }

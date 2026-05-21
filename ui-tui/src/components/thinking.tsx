@@ -3,6 +3,7 @@ import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
+import { useI18n } from '../i18n/index.js'
 import { sectionMode } from '../domain/details.js'
 import {
   buildSubagentTree,
@@ -299,6 +300,7 @@ function SubagentAccordion({
   const [openTools, setOpenTools] = useState(expanded)
   const [openNotes, setOpenNotes] = useState(expanded)
   const [openKids, setOpenKids] = useState(expanded)
+  const { t: _t } = useI18n()
 
   useEffect(() => {
     if (!expanded) {
@@ -327,11 +329,7 @@ function SubagentAccordion({
   const aggregate = node.aggregate
 
   const statusTone: 'dim' | 'error' | 'warn' =
-    item.status === 'error' || item.status === 'failed'
-      ? 'error'
-      : item.status === 'interrupted' || item.status === 'timeout'
-        ? 'warn'
-        : 'dim'
+    item.status === 'failed' ? 'error' : item.status === 'interrupted' ? 'warn' : 'dim'
 
   const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
@@ -340,7 +338,7 @@ function SubagentAccordion({
 
   // Suffix packs branch rollup: status · elapsed · per-branch tool/agent/token/cost.
   // Emphasises the numbers the user can't easily eyeball from a flat list.
-  const statusLabel = item.status === 'queued' ? 'queued' : item.status === 'running' ? 'running' : String(item.status)
+  const statusLabel = item.status === 'queued' ? _t('subagent.queued') : item.status === 'running' ? _t('subagent.running') : _t(`subagent.${String(item.status)}`)
 
   const rollupBits: string[] = [statusLabel]
 
@@ -421,7 +419,7 @@ function SubagentAccordion({
           }}
           open={openThinking}
           t={t}
-          title="Thinking"
+          title={_t('thinking.thinking')}
         />
       ),
       key: 'thinking',
@@ -454,7 +452,7 @@ function SubagentAccordion({
           }}
           open={openTools}
           t={t}
-          title="Tool calls"
+          title={_t('thinking.tool_calls')}
         />
       ),
       key: 'tools',
@@ -495,7 +493,7 @@ function SubagentAccordion({
           }}
           open={openNotes}
           t={t}
-          title="Progress"
+          title={_t('thinking.progress')}
           tone={statusTone}
         />
       ),
@@ -536,7 +534,7 @@ function SubagentAccordion({
           open={openKids}
           suffix={`d${item.depth + 1} · ${aggregate.descendantCount} total`}
           t={t}
-          title="Spawned"
+          title={_t('thinking.spawned')}
         />
       ),
       key: 'subagents',
@@ -719,6 +717,7 @@ export const ToolTrail = memo(function ToolTrail({
   trail?: string[]
   activity?: ActivityItem[]
 }) {
+  const { t: _t } = useI18n()
   const visible = useMemo(
     () => ({
       thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
@@ -1006,11 +1005,11 @@ export const ToolTrail = memo(function ToolTrail({
             <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.text}>
-                Thinking
+                {_t('thinking.thinking')}
               </Text>
             ) : (
               <Text color={t.color.muted} dim>
-                Thinking
+                {_t('thinking.thinking')}
               </Text>
             )}
             {thinkingTokensLabel ? (
@@ -1053,7 +1052,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openTools}
           suffix={toolTokensLabel}
           t={t}
-          title="Tool calls"
+          title={_t('thinking.tool_calls')}
         />
       ),
       key: 'tools',
@@ -1105,11 +1104,10 @@ export const ToolTrail = memo(function ToolTrail({
     panels.push({
       header: (
         <Chevron
-          count={spawnTotals.descendantCount}
+          count={spawnTree.length}
           onClick={shift => {
             if (shift) {
               expandAll()
-              setDeepSubagents(true)
             } else {
               setOpenSubagents(v => !v)
               setDeepSubagents(false)
@@ -1118,7 +1116,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openSubagents}
           suffix={suffix}
           t={t}
-          title="Spawn tree"
+          title={_t('thinking.spawn_tree')}
         />
       ),
       key: 'subagents',
@@ -1141,7 +1139,7 @@ export const ToolTrail = memo(function ToolTrail({
           }}
           open={openMeta}
           t={t}
-          title="Activity"
+          title={_t('thinking.activity')}
           tone={metaTone}
         />
       ),

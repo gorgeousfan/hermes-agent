@@ -8,6 +8,7 @@ import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/set
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
+import { getTuiT } from '../i18n/index.js'
 import type {
   SessionCloseResponse,
   SessionCreateResponse,
@@ -182,8 +183,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const nextTitle = (result.title ?? requestedTitle).trim()
-            const suffix = result.pending ? ' (queued while session initializes)' : ''
-            sys(`session title set: ${nextTitle}${suffix}`)
+            const suffix = result.pending ? getTuiT('sessionCmd.titleSetQueued') : ''
+            sys(getTuiT('sessionCmd.titleSet', { next: nextTitle }) + suffix)
           })
           .catch((err: unknown) => {
             if (getUiState().sid !== r.session_id) {
@@ -191,7 +192,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const message = err instanceof Error ? err.message : String(err)
-            sys(`warning: failed to set session title: ${message}`)
+            sys(getTuiT('sessionCmd.titleSetFailed', { message }))
           })
       }
     },

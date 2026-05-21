@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from agent.i18n import t
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional
 
@@ -518,10 +519,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
     left_lines.append(f"[dim {dim}]{cwd}[/]")
     if session_id:
-        left_lines.append(f"[dim {session_color}]Session: {session_id}[/]")
+        left_lines.append(f"[dim {session_color}]{t('banner.session', session_id=session_id)}[/]")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]Available Tools[/]"]
+    right_lines = [f"[bold {accent}]{t('banner.available_tools')}[/]"]
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:
@@ -578,7 +579,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
-        right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
+        right_lines.append(f"[dim {dim}]{t('banner.toolsets_note', remaining_toolsets=remaining_toolsets)}[/]")
 
     # MCP Servers section (only if configured)
     try:
@@ -589,7 +590,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     if mcp_status:
         right_lines.append("")
-        right_lines.append(f"[bold {accent}]MCP Servers[/]")
+        right_lines.append(f"[bold {accent}]{t('banner.mcp_servers')}[/]")
         for srv in mcp_status:
             if srv["connected"]:
                 right_lines.append(
@@ -599,11 +600,11 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
             else:
                 right_lines.append(
                     f"[red]{srv['name']}[/] [dim]({srv['transport']})[/] "
-                    f"[red]— failed[/]"
+                    f"[red]{t('banner.failed')}[/]"
                 )
 
     right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
+    right_lines.append(f"[bold {accent}]{t('banner.available_skills')}[/]")
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
 
@@ -619,13 +620,13 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 skills_str = skills_str[:47] + "..."
             right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
     else:
-        right_lines.append(f"[dim {dim}]No skills installed[/]")
+        right_lines.append(f"[dim {dim}]{t('banner.no_skills')}[/]")
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
-    summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
+    summary_parts = [f"{t('banner.tools_count', tools=len(tools))}", f"{t('banner.skills_count', total_skills=total_skills)}"]
     if mcp_connected:
-        summary_parts.append(f"{mcp_connected} MCP servers")
+        summary_parts.append(f"{t('banner.mcp_count', mcp_connected=mcp_connected)}")
     summary_parts.append("/help for commands")
     # Indicate when the codex_app_server runtime is active so users
     # understand why tool counts may not match what's actually reachable
@@ -635,7 +636,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         from hermes_cli.config import load_config as _load_cfg
         if get_current_runtime(_load_cfg()) == "codex_app_server":
             right_lines.append(
-                f"[bold {accent}]Runtime:[/] [{text}]codex app-server[/] "
+                f"[bold {accent}]{t('banner.runtime')}[/] [{text}]codex app-server[/] "
                 f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
             )
     except Exception:
@@ -645,7 +646,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         from hermes_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
-            right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
+            right_lines.append(f"[bold {accent}]{t('banner.profile')}[/] [{text}]{_profile_name}[/]")
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
@@ -659,7 +660,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
             if behind > 0:
                 commits_word = "commit" if behind == 1 else "commits"
                 right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                    f"[bold yellow]⚠ {t('banner.behind', behind=behind, commits_word=commits_word)}[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
             else:
