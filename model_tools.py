@@ -27,7 +27,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
@@ -252,6 +252,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_VISIBLE_TOOLS_ENV_NAMES = ("HERMES_TUI_VISIBLE_TOOLS", "HERMES_VISIBLE_TOOLS")
 
 
 def _clear_tool_defs_cache() -> None:
@@ -259,6 +260,24 @@ def _clear_tool_defs_cache() -> None:
     schema dependencies change (e.g. discord capability cache reset,
     execute_code sandbox reconfigured)."""
     _tool_defs_cache.clear()
+
+
+def _visible_tools_env_fingerprint() -> Tuple[Tuple[str, str], ...]:
+    return tuple((name, os.environ.get(name, "")) for name in _VISIBLE_TOOLS_ENV_NAMES)
+
+
+def _get_visible_tool_filter() -> Tuple[Optional[Set[str]], Optional[str]]:
+    for env_name in _VISIBLE_TOOLS_ENV_NAMES:
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        names = {
+            part.strip()
+            for part in re.split(r"[\s,]+", raw)
+            if part.strip()
+        }
+        return names, env_name
+    return None, None
 
 
 def get_tool_definitions(
@@ -301,6 +320,7 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            _visible_tools_env_fingerprint(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -387,6 +407,17 @@ def _compute_tool_definitions(
     # all check the tool registry for plugin-provided toolsets.  No bypass
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
+
+    visible_tools, visible_source = _get_visible_tool_filter()
+    if visible_tools is not None:
+        before_count = len(tools_to_include)
+        tools_to_include.intersection_update(visible_tools)
+        if not quiet_mode:
+            hidden_count = before_count - len(tools_to_include)
+            print(
+                f"🔎 Visible tool filter '{visible_source}': "
+                f"showing {len(tools_to_include)} tools, hiding {hidden_count}"
+            )
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)

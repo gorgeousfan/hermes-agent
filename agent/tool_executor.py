@@ -605,6 +605,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+        elif function_name == "load_tool_pack":
+            function_result = agent._invoke_tool(
+                function_name,
+                function_args,
+                effective_task_id,
+                tool_call_id=getattr(tool_call, "id", None),
+                messages=messages,
+                pre_tool_block_checked=True,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('load_tool_pack', function_args, tool_duration, result=function_result)}")
         elif function_name == "session_search":
             session_db = agent._get_session_db_for_recall()
             if not session_db:

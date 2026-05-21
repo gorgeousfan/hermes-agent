@@ -211,6 +211,12 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
+
+    "tool_loader": {
+        "description": "Load optional tool packs during a running session",
+        "tools": ["load_tool_pack"],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",

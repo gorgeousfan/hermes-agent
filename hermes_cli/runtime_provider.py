@@ -481,6 +481,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    profile = (
+                        entry.get("provider_profile")
+                        or entry.get("runtime_provider")
+                        or entry.get("provider")
+                    )
+                    if isinstance(profile, str) and profile.strip():
+                        result["provider_profile"] = profile.strip()
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -499,6 +506,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        profile = (
+                            entry.get("provider_profile")
+                            or entry.get("runtime_provider")
+                            or entry.get("provider")
+                        )
+                        if isinstance(profile, str) and profile.strip():
+                            result["provider_profile"] = profile.strip()
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -539,6 +553,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             result["key_env"] = key_env
         if provider_key:
             result["provider_key"] = provider_key
+        profile = (
+            entry.get("provider_profile")
+            or entry.get("runtime_provider")
+            or entry.get("provider")
+        )
+        if isinstance(profile, str) and profile.strip():
+            result["provider_profile"] = profile.strip()
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -612,7 +633,13 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    provider_profile = str(custom_provider.get("provider_profile") or "custom").strip() or "custom"
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        provider_profile,
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("name"),
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -631,7 +658,7 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     result = {
-        "provider": "custom",
+        "provider": provider_profile,
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",

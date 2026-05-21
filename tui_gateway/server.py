@@ -1903,6 +1903,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
+    ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    skip_context_files = ignore_rules or is_truthy_value(
+        os.environ.get("HERMES_TUI_SKIP_CONTEXT_FILES")
+    ) or is_truthy_value(os.environ.get("HERMES_SKIP_CONTEXT_FILES"))
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -1924,8 +1928,9 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        skip_context_files=skip_context_files,
+        load_soul_identity=skip_context_files and not ignore_rules,
+        skip_memory=ignore_rules,
         **_agent_cbs(sid),
     )
 

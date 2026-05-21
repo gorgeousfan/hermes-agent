@@ -137,7 +137,46 @@ def test_make_agent_honors_tui_launch_env_flags():
         assert kwargs["checkpoints_enabled"] is True
         assert kwargs["pass_session_id"] is True
         assert kwargs["skip_context_files"] is True
+        assert kwargs["load_soul_identity"] is False
         assert kwargs["skip_memory"] is True
+
+
+def test_make_agent_can_skip_context_files_without_skipping_soul_or_memory():
+    fake_runtime = {
+        "provider": "openrouter",
+        "base_url": "https://api.synthetic.new/v1",
+        "api_key": "sk-test",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": None,
+        "credential_pool": None,
+    }
+    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "glm-5"}}
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HERMES_TUI_SKIP_CONTEXT_FILES": "1",
+                "HERMES_IGNORE_RULES": "",
+            },
+        ),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
+        from tui_gateway.server import _make_agent
+
+        _make_agent("sid-skip-context-only", "key-skip-context-only")
+
+        kwargs = mock_agent.call_args.kwargs
+        assert kwargs["skip_context_files"] is True
+        assert kwargs["load_soul_identity"] is True
+        assert kwargs["skip_memory"] is False
 
 
 def test_probe_config_health_flags_null_sections():

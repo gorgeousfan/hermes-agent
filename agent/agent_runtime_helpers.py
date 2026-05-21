@@ -1513,6 +1513,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             merge=function_args.get("merge", False),
             store=agent._todo_store,
         )
+    elif function_name == "load_tool_pack":
+        from tools.lazy_tool_loader import load_tool_pack_for_agent
+        return load_tool_pack_for_agent(agent, function_args.get("pack", ""))
     elif function_name == "session_search":
         session_db = agent._get_session_db_for_recall()
         if not session_db:
