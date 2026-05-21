@@ -250,10 +250,8 @@ def build_top_level_parser():
     # own default (`None`) would silently clobber the top-level value because
     # the subparser shares the same namespace and `dest`. SUPPRESS keeps the
     # subparser action a no-op unless the user actually passes the flag after
-    # the subcommand. Matches the pattern already used for `-s/--skills` and
-    # the relaunch-inherited flags `-r/--resume`, `-c/--continue`,
-    # `-w/--worktree`, `--yolo`, etc. (see tests/hermes_cli/
-    # test_argparse_flag_propagation.py).
+    # the subcommand. Matches the pattern already used for `-s/--skills`
+    # (see tests/hermes_cli/test_argparse_flag_propagation.py).
     _inherited_flag(
         chat_parser,
         "-m", "--model",
