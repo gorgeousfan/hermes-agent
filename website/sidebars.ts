@@ -600,6 +600,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-social-media',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/social-media/social-media-instagram-publisher',
                     'user-guide/skills/optional/social-media/social-media-tiktok-publisher',
                   ],
                 },

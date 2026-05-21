@@ -193,6 +193,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**instagram-publisher**](/docs/user-guide/skills/optional/social-media/social-media-instagram-publisher) | Publish Instagram media through MyBrandMetrics. |
 | [**tiktok-publisher**](/docs/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
 
 ## software-development
