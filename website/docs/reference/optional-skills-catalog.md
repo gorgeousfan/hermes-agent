@@ -189,6 +189,12 @@ hermes skills uninstall <skill-name>
 | [**oss-forensics**](/user-guide/skills/optional/security/security-oss-forensics) | Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories. Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence collection, hypothesis formation/validation, and st... |
 | [**sherlock**](/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
 
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**tiktok-publisher**](/docs/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
+
 ## software-development
 
 | Skill | Description |
