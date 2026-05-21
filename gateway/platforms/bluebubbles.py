@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -130,6 +131,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._seen_message_guids: Dict[str, float] = {}  # guid -> timestamp
+        self._DEDUP_TTL = 30.0  # seconds
 
     # ------------------------------------------------------------------
     # API helpers
@@ -703,22 +706,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """When message processing finishes, swap the ❓ tapback for 👍."""
+        """When message processing finishes, swap the ❓ tapback for 👍.
+
+        Uses sequential await (not fire-and-forget create_task) so that
+        removing ❓ completes before adding 👍 — eliminating the race
+        condition where the 👍 request arrived before or during the
+        ❓ removal and one of them dropped silently.
+        """
         msg_guid = event.message_id
         chat_id = event.source.chat_id
         if not msg_guid or not chat_id:
             return
 
-        asyncio.create_task(self.send_reaction(
+        await self.send_reaction(
             chat_id=chat_id,
             message_id=msg_guid,
             reaction="-question",
-        ))
-        asyncio.create_task(self.send_reaction(
+        )
+        await self.send_reaction(
             chat_id=chat_id,
             message_id=msg_guid,
             reaction="like",
-        ))
+        )
 
     # ------------------------------------------------------------------
     # Message editing (via Private API)
@@ -945,12 +954,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         }:
             return web.Response(text="ok")
 
-        # --- Acknowledgment tapback: immediately react to indicate "seen" ---
-        _seen_msg_guid = self._value(
+        # --- Dedup: BB fires multiple webhooks per message ---
+        msg_guid = self._value(
             record.get("guid"),
             record.get("messageGuid"),
             record.get("id"),
         )
+        now = time.time()
+        self._seen_message_guids = {
+            k: v for k, v in self._seen_message_guids.items()
+            if now - v < self._DEDUP_TTL
+        }
+        if msg_guid and msg_guid in self._seen_message_guids:
+            return web.Response(text="ok")
+        if msg_guid:
+            self._seen_message_guids[msg_guid] = now
+
+        # --- Acknowledgment tapback: immediately react to indicate "seen" ---
         _seen_chat_guid = self._value(
             record.get("chatGuid"),
             payload.get("chatGuid"),
@@ -962,10 +982,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             _chats = record.get("chats") or []
             if _chats and isinstance(_chats[0], dict):
                 _seen_chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
-        if _seen_msg_guid and _seen_chat_guid:
+        if _seen_chat_guid:
             asyncio.create_task(self.send_reaction(
                 chat_id=_seen_chat_guid,
-                message_id=_seen_msg_guid,
+                message_id=msg_guid,
                 reaction="question",
             ))
 
