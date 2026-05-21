@@ -175,7 +175,7 @@ class TestSkillMatchesPlatformTermux:
             assert skill_matches_platform({"platforms": ["android"]}) is True
 
     def test_non_termux_android_does_not_widen(self):
-        # If we're somehow on a plain Android Python (not Termux), don't
+        # If we are somehow on a plain Android Python (not Termux), do not
         # silently load Linux skills — Termux is the supported environment.
         fm = {"platforms": ["linux"]}
         with patch("agent.skill_utils.sys.platform", "android"), patch(
@@ -197,3 +197,55 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+# ── agentskills.io spec compliance: platforms/tags under metadata ───────────
+
+
+def test_platforms_top_level_still_works():
+    """Top-level platforms field (legacy) is still read correctly."""
+    frontmatter = {"platforms": ["linux"]}
+    result = skill_matches_platform(frontmatter)
+    assert isinstance(result, bool)
+
+
+def test_platforms_under_metadata_fallback():
+    """agentskills.io format: platforms under metadata is also read."""
+    frontmatter = {"metadata": {"platforms": ["linux"]}}
+    result = skill_matches_platform(frontmatter)
+    assert isinstance(result, bool)
+
+
+def test_metadata_platforms_fallback_when_top_level_absent():
+    """When top-level platforms is absent, metadata.platforms is used."""
+    from unittest.mock import patch
+
+    frontmatter = {"metadata": {"platforms": ["nonexistent-platform-xyz"]}}
+    with patch("agent.skill_utils.sys.platform", "linux"):
+        assert skill_matches_platform(frontmatter) is False
+
+
+def test_metadata_tags_fallback_in_parse_frontmatter():
+    """Tags under metadata: block are found by parse_frontmatter."""
+    from agent.skill_utils import parse_frontmatter
+
+    content = "---\nname: test-skill\ndescription: test\nmetadata:\n  tags: [ai, ml]\n---\nBody text."
+    frontmatter, body = parse_frontmatter(content)
+    assert frontmatter.get("metadata", {}).get("tags") == ["ai", "ml"]
+
+
+def test_tags_top_level_still_read_by_skill_manage():
+    """Top-level tags in SKILL.md are still returned by skill_manage."""
+    from tools.skills_tool import _parse_tags
+
+    assert _parse_tags("ai, ml") == ["ai", "ml"]
+    assert _parse_tags("[ai, ml]") == ["ai", "ml"]
+    assert _parse_tags("") == []
+
+
+def test_tags_metadata_fallback():
+    """_parse_tags handles metadata.tags fallback correctly."""
+    from tools.skills_tool import _parse_tags
+
+    assert _parse_tags("fine-tuning, llm") == ["fine-tuning", "llm"]
+    assert _parse_tags("[fine-tuning, llm]") == ["fine-tuning", "llm"]
