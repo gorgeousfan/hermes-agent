@@ -1,5 +1,6 @@
-import importlib
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -87,7 +88,7 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
-def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
+def test_main_import_applies_user_env_over_shell_values(tmp_path):
     home = tmp_path / "hermes"
     home.mkdir()
     (home / ".env").write_text(
@@ -95,19 +96,36 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
-    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    env = os.environ.copy()
+    env.update(
+        {
+            "HERMES_HOME": str(home),
+            "OPENAI_BASE_URL": "https://old.example/v1",
+            "HERMES_INFERENCE_PROVIDER": "openrouter",
+        }
+    )
 
-    original_main = sys.modules.get("hermes_cli.main")
-    try:
-        sys.modules.pop("hermes_cli.main", None)
-        importlib.import_module("hermes_cli.main")
+    # Import hermes_cli.main in a subprocess: the import intentionally mutates
+    # process-global environment/module state, and doing that in the pytest
+    # worker leaks into unrelated CLI/setup tests that run later in the same
+    # worker.
+    code = """
+import json
+import os
+import hermes_cli.main  # noqa: F401
+print(json.dumps({
+    "OPENAI_BASE_URL": os.getenv("OPENAI_BASE_URL"),
+    "HERMES_INFERENCE_PROVIDER": os.getenv("HERMES_INFERENCE_PROVIDER"),
+}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    loaded = json.loads(result.stdout.strip().splitlines()[-1])
 
-        assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
-        assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
-    finally:
-        if original_main is not None:
-            sys.modules["hermes_cli.main"] = original_main
-        else:
-            sys.modules.pop("hermes_cli.main", None)
+    assert loaded["OPENAI_BASE_URL"] == "https://new.example/v1"
+    assert loaded["HERMES_INFERENCE_PROVIDER"] == "custom"
