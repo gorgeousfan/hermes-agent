@@ -204,6 +204,31 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+_GATEWAY_SYNTHETIC_FAILURE_PREFIXES = (
+    "⚠️ Provider authentication failed",
+    "⏱️ The model provider is rate-limiting",
+    "⚠️ The model provider failed after retries",
+    "⚠️ Session too large for the model's context window.",
+    "The request failed:",
+    "⚠️ Processing stopped:",
+    "⚠️ Processing completed but no response was generated.",
+    "Sorry, I encountered an error",
+)
+
+
+def _looks_like_gateway_synthetic_failure(text: str) -> bool:
+    """True when a final-looking reply is gateway error text, not model work."""
+    if not text:
+        return False
+    body = str(text).strip()
+    if not body:
+        return False
+    if _looks_like_gateway_provider_error(body):
+        return True
+    lowered = body.lower()
+    return any(lowered.startswith(prefix.lower()) for prefix in _GATEWAY_SYNTHETIC_FAILURE_PREFIXES)
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -470,6 +495,66 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         # Returning None lets the caller fall through to the legacy-fresh path.
         return None
     return None
+
+
+def _last_usable_transcript_row(
+    history: Optional[List[Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Return the last transcript row that would be replayed to the agent."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if not role or role in {"session_meta", "system"}:
+            continue
+        return msg
+    return None
+
+
+def _last_user_message_id(
+    history: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Return the platform message id for the last persisted user turn."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        message_id = msg.get("message_id")
+        if message_id is not None:
+            text = str(message_id).strip()
+            if text:
+                return text
+        return None
+    return None
+
+
+def _transcript_tail_is_completed_assistant(
+    history: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """True when the transcript already ends with a final assistant answer.
+
+    A lingering ``resume_pending`` marker plus a ``finish_reason=stop``
+    assistant tail is a stale recovery signal: synthesizing another empty
+    auto-resume turn would make the agent react to an already answered
+    message.  Assistant rows that still carry ``tool_calls`` — or lack an
+    explicit stop/end marker — are *not* complete; those are the normal
+    interrupted-tool-loop shape and must remain resumable.
+    """
+    msg = _last_usable_transcript_row(history)
+    if not msg or msg.get("role") != "assistant":
+        return False
+    if msg.get("tool_calls") or msg.get("function_call"):
+        return False
+    finish_reason = msg.get("finish_reason")
+    if finish_reason not in {"stop", "end_turn", "complete", "completed"}:
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    return bool(content)
 
 
 # ---------------------------------------------------------------------------
@@ -1364,7 +1449,33 @@ def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
         return False
     if agent_result.get("completed") is False:
         return False
+    final_response = str(agent_result.get("final_response") or "")
+    if _looks_like_gateway_synthetic_failure(final_response):
+        return False
     return True
+
+
+def _should_run_post_turn_goal_continuation(agent_result: Any) -> bool:
+    """Return True only after a real agent final answer, not gateway failures."""
+    if isinstance(agent_result, dict):
+        if (
+            agent_result.get("failed")
+            or agent_result.get("partial")
+            or agent_result.get("interrupted")
+            or agent_result.get("error")
+            or agent_result.get("compression_exhausted")
+            or agent_result.get("completed") is False
+        ):
+            return False
+        final_response = str(agent_result.get("final_response") or "")
+    elif isinstance(agent_result, str):
+        final_response = agent_result
+    else:
+        return False
+
+    if not final_response.strip():
+        return False
+    return not _looks_like_gateway_synthetic_failure(final_response)
 
 
 def _preserve_queued_followup_history_offset(
@@ -3095,9 +3206,13 @@ class GatewayRunner:
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
-            source = None
+            # For currently running sessions, the in-memory source is the
+            # freshest one and carries the triggering platform message id.
+            # Persisted SessionEntry.origin is intentionally long-lived and
+            # may point at an older message in the same Telegram topic.
+            source = self._get_cached_session_source(session_key)
             try:
-                if getattr(self, "session_store", None) is not None:
+                if source is None and getattr(self, "session_store", None) is not None:
                     self.session_store._ensure_loaded()
                     entry = self.session_store._entries.get(session_key)
                     source = getattr(entry, "origin", None) if entry else None
@@ -3107,9 +3222,6 @@ class GatewayRunner:
                     session_key,
                     e,
                 )
-
-            if source is None:
-                source = self._get_cached_session_source(session_key)
 
             if source is not None:
                 platform_str = source.platform.value
@@ -3146,9 +3258,14 @@ class GatewayRunner:
                     )
                     continue
 
-                # Include thread_id if present so the message lands in the
-                # correct forum topic / thread.
-                metadata = {"thread_id": thread_id} if thread_id else None
+                # Include platform-aware thread metadata so Telegram DM topic
+                # lanes keep both their topic id and reply anchor instead of
+                # falling back to the parent DM during restart/shutdown notices.
+                metadata = (
+                    self._thread_metadata_for_source(source)
+                    if source is not None
+                    else ({"thread_id": thread_id} if thread_id else None)
+                )
 
                 result = await adapter.send(chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
@@ -3534,11 +3651,61 @@ class GatewayRunner:
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
-            marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
+            history = None
+            try:
+                history = self.session_store.load_transcript(entry.session_id)
+                if not isinstance(history, list):
+                    history = None
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load transcript while checking auto-resume freshness for %s: %s",
+                    entry.session_key,
+                    exc,
+                )
+
+            if _transcript_tail_is_completed_assistant(history):
+                logger.info(
+                    "Skipping auto-resume for %s: transcript already ends with assistant response; clearing stale resume_pending",
+                    entry.session_key,
+                )
+                try:
+                    self.session_store.clear_resume_pending(entry.session_key)
+                except Exception as exc:
+                    logger.debug(
+                        "clear stale resume_pending failed for %s: %s",
+                        entry.session_key,
+                        exc,
+                    )
                 continue
 
+            # Prefer the transcript's own timestamp over the session-index
+            # marker: ``last_resume_marked_at`` can be refreshed by repeated
+            # gateway restarts, while the transcript tells us when the user/task
+            # last actually produced replayable context.  If no transcript rows
+            # are available, fall back to the marker so empty/corrupt sessions
+            # don't auto-resume forever.
+            transcript_ts = _last_transcript_timestamp(history)
+            if history:
+                if not _is_fresh_gateway_interruption(
+                    transcript_ts,
+                    now=now.timestamp(),
+                    window_secs=window,
+                ):
+                    continue
+            else:
+                marker = entry.last_resume_marked_at or entry.updated_at
+                if marker is not None and (now - marker).total_seconds() > window:
+                    continue
+
             source = entry.origin
+            resume_message_id = _last_user_message_id(history)
+            try:
+                source = dataclasses.replace(
+                    source,
+                    message_id=resume_message_id,
+                )
+            except Exception:
+                pass
             adapter = self.adapters.get(source.platform)
             if adapter is None:
                 logger.debug(
@@ -3555,6 +3722,7 @@ class GatewayRunner:
                 text="",
                 message_type=MessageType.TEXT,
                 source=source,
+                message_id=resume_message_id,
                 internal=True,
             )
             task = asyncio.create_task(adapter.handle_message(event))
@@ -7514,10 +7682,10 @@ class GatewayRunner:
                     _final_text = str(_agent_result.get("final_response") or "")
                 elif isinstance(_agent_result, str):
                     _final_text = _agent_result
-                # Skip for empty responses (interrupted / errored) — the
-                # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # Skip for empty responses and gateway/provider failures — the
+                # judge would almost always say "continue" and we'd loop on
+                # infrastructure errors. Let the user drive the next turn.
+                if _should_run_post_turn_goal_continuation(_agent_result):
                     try:
                         session_entry = self.session_store.get_or_create_session(source)
                     except Exception:
@@ -16137,6 +16305,9 @@ class GatewayRunner:
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
+                    "failed": True,
+                    "completed": False,
+                    "error": str(exc),
                 }
 
             pr = self._provider_routing
