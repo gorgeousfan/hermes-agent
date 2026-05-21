@@ -380,6 +380,33 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     return None
 
 
+def _has_authoritative_future_usage_limit(
+    entry: PooledCredential,
+    *,
+    now: Optional[float] = None,
+) -> bool:
+    """True when a fresh Codex 429 body supplied a future usage reset.
+
+    The Codex usage probe can lag or disagree with the Responses endpoint.  If
+    the endpoint that just rejected the request gave us ``usage_limit_reached``
+    plus a future ``resets_at``, keep that cooldown authoritative until it
+    elapses instead of clearing it from the softer usage probe.
+    """
+    if entry.last_status != STATUS_EXHAUSTED:
+        return False
+    reason = str(entry.last_error_reason or "").lower()
+    message = str(entry.last_error_message or "").lower()
+    if (
+        "usage_limit_reached" not in reason
+        and "usage limit has been reached" not in message
+    ):
+        return False
+    reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+    if reset_at is None:
+        return False
+    return (now if now is not None else time.time()) < reset_at
+
+
 def _normalize_custom_pool_name(name: str) -> str:
     """Normalize a custom provider name for use as a pool key suffix."""
     return name.strip().lower().replace(" ", "-")
@@ -1399,8 +1426,16 @@ class CredentialPool:
 
     def _reconcile_codex_usage_unlocked(self) -> int:
         changed = 0
+        now = time.time()
         for entry in list(self._entries):
             if entry.last_status != STATUS_EXHAUSTED:
+                continue
+            if _has_authoritative_future_usage_limit(entry, now=now):
+                logger.debug(
+                    "credential pool: keeping Codex usage-limit cooldown for %s until %.0f",
+                    entry.label or entry.id[:8],
+                    _parse_absolute_timestamp(entry.last_error_reset_at) or 0,
+                )
                 continue
             if self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)

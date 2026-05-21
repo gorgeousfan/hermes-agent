@@ -256,7 +256,6 @@ def test_openai_codex_selection_reconciles_stale_exhaustion(tmp_path, monkeypatc
                         "last_status_at": time.time(),
                         "last_error_code": 429,
                         "last_error_reason": "usage_limit_reached",
-                        "last_error_reset_at": time.time() + 3600,
                     },
                     {
                         "id": "cred-2",
@@ -270,7 +269,6 @@ def test_openai_codex_selection_reconciles_stale_exhaustion(tmp_path, monkeypatc
                         "last_status_at": time.time(),
                         "last_error_code": 429,
                         "last_error_reason": "usage_limit_reached",
-                        "last_error_reset_at": time.time() + 3600,
                     },
                 ]
             },
@@ -292,6 +290,57 @@ def test_openai_codex_selection_reconciles_stale_exhaustion(tmp_path, monkeypatc
     entries = {entry.id: entry for entry in pool.entries()}
     assert entries["cred-1"].last_status == "ok"
     assert entries["cred-2"].last_status == STATUS_EXHAUSTED
+
+
+def test_codex_usage_reconcile_keeps_fresh_usage_limit_reset(tmp_path, monkeypatch):
+    """A fresh Responses 429 with future resets_at must beat the usage probe.
+
+    Regression for a gateway hang where all Codex entries received
+    usage_limit_reached, then live usage reconciliation immediately cleared the
+    same entry and retried it in a tight rotate/retry loop until the provider
+    reset window elapsed.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    future_reset = time.time() + 3600
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "fresh-limit",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": _jwt_with_claims({"sub": "one"}),
+                        "refresh_token": "refresh-1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                        "last_error_reason": "usage_limit_reached",
+                        "last_error_message": "The usage limit has been reached",
+                        "last_error_reset_at": future_reset,
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, _CodexUsageStatus, load_pool
+
+    monkeypatch.setattr(
+        "agent.credential_pool._fetch_codex_entry_usage_status",
+        lambda _entry: _CodexUsageStatus(available=True),
+    )
+
+    pool = load_pool("openai-codex")
+
+    assert pool.select() is None
+    [entry] = pool.entries()
+    assert entry.last_status == STATUS_EXHAUSTED
+    assert entry.last_error_reset_at == future_reset
 
 
 
