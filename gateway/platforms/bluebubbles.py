@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
@@ -638,6 +639,131 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
+    async def send_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        reaction: str,
+        part_index: int = 0,
+    ) -> bool:
+        """Send a tapback reaction to a message.
+
+        Requires Private API helper to be connected.
+
+        Args:
+            chat_id: The chat address (email/phone) or GUID.
+            message_id: The GUID of the message to react to.
+            reaction: One of "love", "like", "dislike", "laugh",
+                      "emphasize", "question". Prefix with "-" to remove
+                      (e.g. "-like").
+            part_index: The part index of the message (default 0).
+
+        Returns:
+            True if the reaction was sent successfully, False otherwise.
+        """
+        if not self._private_api_enabled or not self._helper_connected or not self.client:
+            logger.warning(
+                "[bluebubbles] cannot send reaction — Private API not available"
+            )
+            return False
+        valid = {"love", "like", "dislike", "laugh", "emphasize", "question"}
+        clean = reaction.lstrip("-")
+        if clean not in valid:
+            logger.warning(
+                "[bluebubbles] invalid tapback reaction: %s (valid: %s)",
+                reaction, ", ".join(sorted(valid)),
+            )
+            return False
+        try:
+            guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                logger.warning(
+                    "[bluebubbles] cannot send reaction — chat not found: %s", chat_id
+                )
+                return False
+            payload = {
+                "chatGuid": guid,
+                "selectedMessageGuid": message_id,
+                "reaction": reaction,
+                "partIndex": part_index,
+            }
+            await self._api_post("/api/v1/message/react", payload)
+            logger.info(
+                "[bluebubbles] sent reaction %s to %s", reaction, message_id
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "[bluebubbles] failed to send reaction %s: %s", reaction, exc
+            )
+            return False
+
+    # ------------------------------------------------------------------
+    # Processing lifecycle hooks
+    # ------------------------------------------------------------------
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """When message processing finishes, swap the ❓ tapback for 👍."""
+        msg_guid = event.message_id
+        chat_id = event.source.chat_id
+        if not msg_guid or not chat_id:
+            return
+
+        asyncio.create_task(self.send_reaction(
+            chat_id=chat_id,
+            message_id=msg_guid,
+            reaction="-question",
+        ))
+        asyncio.create_task(self.send_reaction(
+            chat_id=chat_id,
+            message_id=msg_guid,
+            reaction="like",
+        ))
+
+    # ------------------------------------------------------------------
+    # Message editing (via Private API)
+    # ------------------------------------------------------------------
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent iMessage via the BlueBubbles Private API.
+
+        POST /api/v1/message/{messageGuid}/edit
+
+        Requires Private API helper to be connected.  Apple limits
+        edits to within 15 minutes of sending with up to ~5 revisions.
+        ``finalize`` is accepted for compatibility but has no special
+        meaning on iMessage — an edit is an edit.
+        """
+        if not self._private_api_enabled or not self._helper_connected or not self.client:
+            return SendResult(success=False, error="Private API not available")
+        if not message_id or not content:
+            return SendResult(success=False, error="message_id and content are required")
+        try:
+            encoded = quote(message_id, safe="")
+            payload = {
+                "editedMessage": content,
+                "backwardsCompatibilityMessage": content,
+                "partIndex": 0,
+            }
+            res = await self._api_post(f"/api/v1/message/{encoded}/edit", payload)
+            data = res.get("data") or {}
+            new_id = data.get("guid") or data.get("messageGuid") or message_id
+            logger.info("[bluebubbles] edited message %s", message_id)
+            return SendResult(success=True, message_id=str(new_id), raw_response=res)
+        except Exception as exc:
+            logger.warning("[bluebubbles] edit_message failed for %s: %s", message_id, exc)
+            return SendResult(success=False, error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Chat info
+    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------
@@ -818,6 +944,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_REMOVED,
         }:
             return web.Response(text="ok")
+
+        # --- Acknowledgment tapback: immediately react to indicate "seen" ---
+        _seen_msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        _seen_chat_guid = self._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        if not _seen_chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                _seen_chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        if _seen_msg_guid and _seen_chat_guid:
+            asyncio.create_task(self.send_reaction(
+                chat_id=_seen_chat_guid,
+                message_id=_seen_msg_guid,
+                reaction="question",
+            ))
 
         text = (
             self._value(
