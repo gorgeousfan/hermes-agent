@@ -106,6 +106,12 @@ hermes skills uninstall <skill-name>
 | [**fastmcp**](/user-guide/skills/optional/mcp/mcp-fastmcp) | Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Use when creating a new MCP server, wrapping an API or database as MCP tools, exposing resources or prompts, or preparing a FastMCP server for Claude Code, Cur... |
 | [**mcporter**](/user-guide/skills/optional/mcp/mcp-mcporter) | Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation. |
 
+## media
+
+| Skill | Description |
+|-------|-------------|
+| [**youtube-unified-api**](/docs/user-guide/skills/optional/media/media-youtube-unified-api) | Call YouTube APIs through MyBrandMetrics Discovery. |
+
 ## migration
 
 | Skill | Description |

@@ -495,6 +495,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'media',
+                  key: 'skills-optional-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/media/media-youtube-unified-api',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'migration',
                   key: 'skills-optional-migration',
                   collapsed: true,
