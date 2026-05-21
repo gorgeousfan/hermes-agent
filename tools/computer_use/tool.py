@@ -457,7 +457,11 @@ def _maybe_follow_capture(
     if not do_capture:
         return _text_response(res)
     try:
-        cap = backend.capture(mode="som")
+        capture_active = getattr(backend, "capture_active", None)
+        if callable(capture_active):
+            cap = capture_active(mode="som")
+        else:
+            cap = backend.capture(mode="som")
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
