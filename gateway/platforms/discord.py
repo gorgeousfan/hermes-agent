@@ -1286,6 +1286,20 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Delete server-side commands that are no longer desired BEFORE
+        # creating any net-new ones. Discord enforces the 100 global
+        # application-command cap server-side at create time; creating new
+        # commands while stale ones still exist can transiently push the
+        # server count past 100, which Discord rejects with HTTP 400 code
+        # 30032. That aborts the sync, and since stale deletions used to run
+        # last they never execute to free space — leaving the app wedged on
+        # every reconnect. Pruning first keeps the peak count at
+        # max(len(existing), len(desired)) <= 100.
+        for stale_key in [k for k in existing_by_key if k not in desired_by_key]:
+            current = existing_by_key.pop(stale_key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1308,10 +1322,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),

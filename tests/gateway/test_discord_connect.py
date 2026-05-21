@@ -458,6 +458,98 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
+async def test_safe_sync_deletes_stale_before_creating_new():
+    """Stale commands must be deleted before net-new ones are created.
+
+    Discord enforces the 100 global application-command cap server-side at
+    create time. Creating new commands while stale ones still exist can push
+    the server count transiently past 100 (HTTP 400 / code 30032), aborting
+    the sync before the stale deletions run — wedging the app on every
+    reconnect. The reconcile must prune first so the peak count never exceeds
+    max(len(existing), len(desired)).
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    class _DesiredCommand:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def to_dict(self, tree):
+            assert tree is not None
+            return dict(self._payload)
+
+    class _ExistingCommand:
+        def __init__(self, command_id, payload):
+            self.id = command_id
+            self.name = payload["name"]
+            self.type = SimpleNamespace(value=payload["type"])
+            self._payload = payload
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **self._payload,
+                "name_localizations": {},
+                "description_localizations": {},
+            }
+
+    def _cmd(name):
+        return {
+            "name": name,
+            "description": f"desc for {name}",
+            "type": 1,
+            "options": [],
+            "nsfw": False,
+            "dm_permission": True,
+            "default_member_permissions": None,
+        }
+
+    desired_new = _cmd("newcmd")
+    stale_a = _ExistingCommand(101, _cmd("stale-a"))
+    stale_b = _ExistingCommand(102, _cmd("stale-b"))
+
+    order: list[str] = []
+
+    async def _record_upsert(app_id, payload):
+        order.append(f"upsert:{payload['name']}")
+
+    async def _record_delete(app_id, command_id):
+        order.append(f"delete:{command_id}")
+
+    fake_tree = SimpleNamespace(
+        get_commands=lambda: [_DesiredCommand(desired_new)],
+        fetch_commands=AsyncMock(return_value=[stale_a, stale_b]),
+    )
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(side_effect=_record_upsert),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(side_effect=_record_delete),
+    )
+    adapter._client = SimpleNamespace(
+        tree=fake_tree,
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 1,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 0,
+        "created": 1,
+        "deleted": 2,
+    }
+    # Every stale delete must precede the net-new create.
+    last_delete = max(i for i, op in enumerate(order) if op.startswith("delete:"))
+    first_upsert = min(i for i, op in enumerate(order) if op.startswith("upsert:"))
+    assert last_delete < first_upsert, order
+
+
+@pytest.mark.asyncio
 async def test_safe_sync_slash_commands_recreates_metadata_only_diffs():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
