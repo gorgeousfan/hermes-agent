@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
+import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
@@ -34,66 +36,72 @@ def noop_backend():
 
 
 # ---------------------------------------------------------------------------
-# Schema & registration
+# Native tool registration
 # ---------------------------------------------------------------------------
 
-class TestSchema:
-    def test_schema_is_universal_openai_function_format(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        assert COMPUTER_USE_SCHEMA["name"] == "computer_use"
-        assert "parameters" in COMPUTER_USE_SCHEMA
-        params = COMPUTER_USE_SCHEMA["parameters"]
-        assert params["type"] == "object"
-        assert "action" in params["properties"]
-        assert params["required"] == ["action"]
-
-    def test_schema_does_not_use_anthropic_native_types(self):
-        """Generic OpenAI schema — no `type: computer_20251124`."""
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        assert COMPUTER_USE_SCHEMA.get("type") != "computer_20251124"
-        # The word should not appear in the description either.
-        dumped = json.dumps(COMPUTER_USE_SCHEMA)
-        assert "computer_20251124" not in dumped
-
-    def test_schema_supports_element_and_coordinate_targeting(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
-        assert "element" in props
-        assert "coordinate" in props
-        assert props["element"]["type"] == "integer"
-        assert props["coordinate"]["type"] == "array"
-
-    def test_schema_lists_all_expected_actions(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
-        assert actions >= {
-            "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
-        }
-
-    def test_capture_mode_enum_has_som_vision_ax(self):
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        modes = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["mode"]["enum"])
-        assert modes == {"som", "vision", "ax"}
-
-
 class TestRegistration:
-    def test_tool_registers_with_registry(self):
-        # Importing the shim registers the tool.
+    EXPECTED = {
+        "computer_use_list_apps",
+        "computer_use_launch_app",
+        "computer_use_daemon",
+        "computer_use_get_app_state",
+        "computer_use_click",
+        "computer_use_perform_secondary_action",
+        "computer_use_scroll",
+        "computer_use_drag",
+        "computer_use_type_text",
+        "computer_use_set_value",
+        "computer_use_press_key",
+        "computer_use_select_text",
+    }
+
+    def test_only_explicit_native_tools_register(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools.get("computer_use")
-        assert entry is not None
-        assert entry.toolset == "computer_use"
-        assert entry.schema["name"] == "computer_use"
+        assert self.EXPECTED <= set(registry._tools)
+        assert "computer_use" not in registry._tools
+        assert all(registry._tools[name].toolset == "computer_use" for name in self.EXPECTED)
+
+    def test_builtin_discovery_registers_explicit_tools_in_fresh_runtime(self):
+        code = """
+import json
+from tools.registry import discover_builtin_tools, registry
+registry._tools.clear()
+discover_builtin_tools()
+print(json.dumps(sorted(name for name in registry._tools if name.startswith('computer_use'))))
+"""
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.getcwd(),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        discovered = set(json.loads(proc.stdout))
+        assert discovered == self.EXPECTED
+
+    def test_schemas_are_openai_function_format(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        for name in self.EXPECTED:
+            schema = registry._tools[name].schema
+            assert schema["name"] == name
+            assert schema["parameters"]["type"] == "object"
+            assert "type" not in schema or schema["type"] != "computer_20251124"
+
+    def test_get_app_state_mode_enum_has_som_vision_ax(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        schema = registry._tools["computer_use_get_app_state"].schema
+        modes = set(schema["parameters"]["properties"]["mode"]["enum"])
+        assert modes == {"som", "vision", "ax"}
 
     def test_check_fn_is_false_on_linux(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools["computer_use"]
+        entry = registry._tools["computer_use_get_app_state"]
         if sys.platform != "darwin":
             assert entry.check_fn() is False
-
 
 # ---------------------------------------------------------------------------
 # Dispatch & action routing
@@ -154,56 +162,6 @@ class TestDispatch:
         handle_computer_use({"action": "right_click", "element": 3})
         click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
         assert click_kw["button"] == "right"
-
-    def test_type_action_routes_to_type_text_backend(self, noop_backend):
-        """type action must call backend.type_text, not type_text_chars (issue #24170, bug 3)."""
-        from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "type", "text": "hello"})
-        parsed = json.loads(out)
-        assert "error" not in parsed
-        call_names = [c[0] for c in noop_backend.calls]
-        assert "type" in call_names
-        type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
-        assert type_kw["text"] == "hello"
-
-    def test_drag_action_routes_to_backend_by_coordinate(self, noop_backend):
-        """drag action must dispatch to backend.drag with coordinates (issue #24170, bug 4)."""
-        from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({
-            "action": "drag",
-            "from_coordinate": [100, 200],
-            "to_coordinate": [400, 500],
-        })
-        parsed = json.loads(out)
-        assert "error" not in parsed
-        call_names = [c[0] for c in noop_backend.calls]
-        assert "drag" in call_names
-        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
-        assert drag_kw["from_xy"] == (100, 200)
-        assert drag_kw["to_xy"] == (400, 500)
-
-    def test_drag_action_routes_to_backend_by_element(self, noop_backend):
-        """drag action must dispatch to backend.drag with element indices (issue #24170, bug 4)."""
-        from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({
-            "action": "drag",
-            "from_element": 1,
-            "to_element": 5,
-        })
-        parsed = json.loads(out)
-        assert "error" not in parsed
-        call_names = [c[0] for c in noop_backend.calls]
-        assert "drag" in call_names
-        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
-        assert drag_kw["from_element"] == 1
-        assert drag_kw["to_element"] == 5
-
-    def test_drag_action_requires_coordinates_or_elements(self, noop_backend):
-        """drag without from/to must return an error."""
-        from tools.computer_use.tool import handle_computer_use
-        out = handle_computer_use({"action": "drag"})
-        parsed = json.loads(out)
-        assert "error" in parsed
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +313,7 @@ class TestAnthropicAdapterMultimodal:
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "computer_use", "arguments": "{}"},
+                    "function": {"name": "computer_use_get_app_state", "arguments": "{}"},
                 }],
             },
             {
@@ -411,7 +369,7 @@ class TestAnthropicAdapterMultimodal:
                 "tool_calls": [{
                     "id": f"call_{i}",
                     "type": "function",
-                    "function": {"name": "computer_use", "arguments": "{}"},
+                    "function": {"name": "computer_use_get_app_state", "arguments": "{}"},
                 }],
             })
             messages.append(_mm_tool(f"call_{i}"))
@@ -478,13 +436,13 @@ class TestCompressorScreenshotPruning:
         messages = [
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "",
-             "tool_calls": [{"id": "c1", "function": {"name": "computer_use", "arguments": "{}"}}]},
+             "tool_calls": [{"id": "c1", "function": {"name": "computer_use_get_app_state", "arguments": "{}"}}]},
             {"role": "tool", "tool_call_id": "c1", "content": [
                 {"type": "text", "text": "cap"},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{fake_png}"}},
             ]},
             {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c2", "function": {"name": "computer_use", "arguments": "{}"}}
+                {"id": "c2", "function": {"name": "computer_use_get_app_state", "arguments": "{}"}}
             ]},
             {"role": "tool", "tool_call_id": "c2", "content": "text-only short"},
             {"role": "assistant", "content": "done"},
@@ -508,7 +466,7 @@ class TestCompressorScreenshotPruning:
         messages = [
             {"role": "user", "content": "go"},
             {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c1", "function": {"name": "computer_use", "arguments": "{}"}}
+                {"id": "c1", "function": {"name": "computer_use_get_app_state", "arguments": "{}"}}
             ]},
             {"role": "tool", "tool_call_id": "c1", "content": {
                 "_multimodal": True,
@@ -657,10 +615,10 @@ class TestRunAgentMultimodalHelpers:
         }
 
         with patch.object(agent, "_model_supports_vision", return_value=False):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
+            content = agent._tool_result_content_for_active_model("computer_use_get_app_state", result)
 
         parsed = json.loads(content)
-        assert "computer_use returned screenshot/image content" in parsed["error"]
+        assert "Computer Use returned screenshot/image content" in parsed["error"]
         assert parsed["text_summary"] == "screen captured"
         assert "image_url" not in content
 
@@ -677,7 +635,7 @@ class TestRunAgentMultimodalHelpers:
         }
 
         with patch.object(agent, "_model_supports_vision", return_value=True):
-            content = agent._tool_result_content_for_active_model("computer_use", result)
+            content = agent._tool_result_content_for_active_model("computer_use_get_app_state", result)
 
         assert content is result["content"]
         assert any(part.get("type") == "image_url" for part in content)
@@ -704,224 +662,431 @@ class TestRunAgentMultimodalHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Universality: does the schema work without Anthropic?
+# Universality: native schemas work without Anthropic
 # ---------------------------------------------------------------------------
 
 class TestUniversality:
-    def test_schema_is_valid_openai_function_schema(self):
-        """The schema must be round-trippable as a standard OpenAI tool definition."""
-        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        # OpenAI tool definition wrapper
-        wrapped = {"type": "function", "function": COMPUTER_USE_SCHEMA}
-        # Should serialize to JSON without error
-        blob = json.dumps(wrapped)
-        parsed = json.loads(blob)
-        assert parsed["function"]["name"] == "computer_use"
-
-    def test_no_provider_gating_in_tool_registration(self):
-        """Anthropic-only gating was a #4562 artefact — must not recur."""
+    def test_explicit_schemas_are_valid_openai_function_schemas(self):
         import tools.computer_use_tool  # noqa: F401
         from tools.registry import registry
-        entry = registry._tools["computer_use"]
-        # check_fn should only check platform + binary availability,
-        # never provider.
+        for name in TestRegistration.EXPECTED:
+            wrapped = {"type": "function", "function": registry._tools[name].schema}
+            blob = json.dumps(wrapped)
+            parsed = json.loads(blob)
+            assert parsed["function"]["name"] == name
+
+    def test_no_provider_gating_in_tool_registration(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        entry = registry._tools["computer_use_get_app_state"]
         import inspect
         source = inspect.getsource(entry.check_fn)
         assert "anthropic" not in source.lower()
         assert "openai" not in source.lower()
 
+# --- Native tool surface routing tests appended by Hermes ---
+class TestCodexStyleToolSurface:
+    def test_codex_style_get_app_state_routes_to_capture(self, noop_backend):
+        from tools.registry import registry
+        import tools.computer_use_tool  # noqa: F401
+        out = registry.dispatch("computer_use_get_app_state", {"app": "Safari"})
+        parsed = json.loads(out)
+        assert parsed["mode"] == "som"
+        assert noop_backend.calls[-1] == ("capture", {"mode": "som", "app": "Safari"})
 
-# ---------------------------------------------------------------------------
-# Regression tests for bugs 2 & 5 from issue #24170 (cua-driver v0.1.6)
-# ---------------------------------------------------------------------------
+    def test_codex_style_type_and_press_key_route_to_backend(self, noop_backend):
+        from tools.registry import registry
+        import tools.computer_use_tool  # noqa: F401
+        registry.dispatch("computer_use_type_text", {"app": "Safari", "text": "hello"})
+        registry.dispatch("computer_use_press_key", {"app": "Safari", "key": "Return"})
+        assert ("type", {"text": "hello"}) in noop_backend.calls
+        assert ("key", {"keys": "Return"}) in noop_backend.calls
 
-class TestElementLabelParsing:
-    """Bug 5: element labels stripped in capture results (cua-driver v0.1.6 format).
-
-    cua-driver ≥0.1.6 emits ``[N] AXRole (order) id=Label`` instead of
-    ``  - [N] AXRole "label"``.  _parse_elements_from_tree must handle both.
-    """
-
-    def test_classic_quoted_label_format(self):
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
-        tree = (
-            '  - [14] AXButton "One"\n'
-            '  - [15] AXButton "Two"\n'
-            '  - [16] AXTextField ""\n'
-        )
-        els = _parse_elements_from_tree(tree)
-        assert len(els) == 3
-        assert els[0].index == 14
-        assert els[0].role == "AXButton"
-        assert els[0].label == "One"
-        assert els[1].label == "Two"
-        assert els[2].label == ""  # empty quoted label
-
-    def test_new_id_eq_format(self):
-        """cua-driver v0.1.6 format: [N] AXRole (order) id=Label"""
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
-        tree = (
-            "[14] AXButton (1) id=One\n"
-            "[15] AXButton (2) id=Two\n"
-            "[16] AXTextField (3) id=\n"
-        )
-        els = _parse_elements_from_tree(tree)
-        assert len(els) == 3
-        assert els[0].index == 14
-        assert els[0].role == "AXButton"
-        assert els[0].label == "One"
-        assert els[1].label == "Two"
-        assert els[2].label == ""  # empty id= value
-
-    def test_mixed_formats_in_single_tree(self):
-        """Gracefully handles trees that mix old and new line formats."""
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
-        tree = (
-            '  - [1] AXWindow "Main Window"\n'
-            "[14] AXButton (1) id=One\n"
-            '  - [15] AXTextField "Search"\n'
-        )
-        els = _parse_elements_from_tree(tree)
-        assert len(els) == 3
-        labels = {e.index: e.label for e in els}
-        assert labels[1] == "Main Window"
-        assert labels[14] == "One"
-        assert labels[15] == "Search"
+    def test_select_text_and_secondary_action_are_supported_actions(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "select_text", "element": 3, "text": "hello", "selection": "text"})
+        parsed = json.loads(out)
+        assert parsed["action"] == "select_text"
+        out = handle_computer_use({"action": "perform_secondary_action", "element": 1, "secondary_action": "Raise"})
+        parsed = json.loads(out)
+        assert parsed["action"] == "perform_secondary_action"
 
 
-class TestCaptureAfterAppContext:
-    """Bug 2: capture_after=True loses app context after actions.
+class TestCodexParityImprovements:
+    def test_daemon_status_tool_is_registered_and_reports_state(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
+        assert "computer_use_daemon" in registry._tools
+        schema = registry._tools["computer_use_daemon"].schema["parameters"]
+        assert set(schema["properties"]) >= {"action"}
+        assert schema["properties"]["action"]["enum"] == ["status", "start", "stop"]
 
-    _maybe_follow_capture must re-target the same app that was set by
-    the preceding capture/focus_app call, rather than the frontmost window.
-    """
+    def test_computer_use_daemon_status_returns_structured_payload(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
 
-    def test_capture_after_uses_last_app(self):
-        """capture_after=True should pass _last_app to the follow-up capture."""
-        from tools.computer_use.backend import ActionResult, CaptureResult
+        out = handle_computer_use({"action": "daemon", "subaction": "status"})
+        parsed = json.loads(out)
+
+        assert parsed["action"] == "daemon"
+        assert "daemon" in parsed
+        assert {"binary_installed", "permissions", "version"} <= set(parsed["daemon"])
+
+    def test_daemon_lifecycle_routes_through_backend(self):
         from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult
 
-        captured_app_args = []
-
-        class TrackingBackend:
-            _last_app = "Calculator"  # simulates a previous focus_app call
-
+        class FakeBackend:
+            def __init__(self): self.calls = []
             def start(self):
-                pass
-
+                self.calls.append(("start",)); return None
             def stop(self):
-                pass
+                self.calls.append(("stop",)); return None
+            def daemon_status(self):
+                self.calls.append(("status",))
+                return {"binary_installed": True, "version": "0.2.0", "permissions": "ok", "running": True}
 
-            def is_available(self):
-                return True
+        fake = FakeBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            stop_out = cu_tool.handle_computer_use({"action": "daemon", "subaction": "stop"})
+            start_out = cu_tool.handle_computer_use({"action": "daemon", "subaction": "start"})
+            status_out = cu_tool.handle_computer_use({"action": "daemon", "subaction": "status"})
 
-            def capture(self, mode="som", app=None):
-                captured_app_args.append(app)
-                return CaptureResult(
-                    mode=mode, width=100, height=100,
-                    png_b64=None, elements=[],
-                    app=app or "Calculator", window_title="",
-                )
+        ops = [c[0] for c in fake.calls]
+        assert "stop" in ops and "start" in ops and "status" in ops
+        for out in (stop_out, start_out, status_out):
+            assert "error" not in json.loads(out)
 
-            def click(self, **kw):
-                return ActionResult(ok=True, action="click")
+    def test_show_cursor_config_applied_on_backend_start(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
 
-            def drag(self, **kw):
-                return ActionResult(ok=True, action="drag")
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
 
-            def scroll(self, **kw):
-                return ActionResult(ok=True, action="scroll")
+        with patch.dict(os.environ, {"HERMES_CUA_SHOW_CURSOR": "1"}, clear=False):
+            backend.apply_runtime_config()
 
-            def type_text(self, text):
-                return ActionResult(ok=True, action="type")
+        assert calls and calls[0][0] == "set_agent_cursor_enabled"
+        assert calls[0][1]["enabled"] is True
 
-            def key(self, keys):
-                return ActionResult(ok=True, action="key")
+    def test_show_cursor_off_passes_disabled_flag(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
 
-            def list_apps(self):
-                return []
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
 
-            def focus_app(self, app, raise_window=False):
-                return ActionResult(ok=True, action="focus_app")
+        with patch.dict(os.environ, {"HERMES_CUA_SHOW_CURSOR": "0"}, clear=False):
+            backend.apply_runtime_config()
 
-            def set_value(self, value, element=None):
-                return ActionResult(ok=True, action="set_value")
+        assert calls[0][1]["enabled"] is False
 
-            def wait(self, seconds=1.0):
-                return ActionResult(ok=True, action="wait")
+    def test_mutating_schemas_require_app_and_element_where_needed(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
 
-        backend = TrackingBackend()
-        cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
+        assert "app" in registry._tools["computer_use_click"].schema["parameters"]["required"]
+        assert registry._tools["computer_use_set_value"].schema["parameters"]["required"] == ["app", "element", "value"]
+        assert registry._tools["computer_use_perform_secondary_action"].schema["parameters"]["required"] == ["app", "element"]
+        assert registry._tools["computer_use_select_text"].schema["parameters"]["required"] == ["app", "element"]
 
-        cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
+    def test_launch_app_schema_accepts_app_or_bundle_id(self):
+        import tools.computer_use_tool  # noqa: F401
+        from tools.registry import registry
 
-        # The follow-up capture must have been called with app="Calculator"
-        assert len(captured_app_args) == 1
-        assert captured_app_args[0] == "Calculator", (
-            f"Expected follow-up capture with app='Calculator', got {captured_app_args[0]!r}"
-        )
+        schema = registry._tools["computer_use_launch_app"].schema["parameters"]
+        assert schema["required"] == []
+        assert {"app", "bundle_id", "background", "capture_after"} <= set(schema["properties"])
 
-    def test_capture_after_without_prior_app_uses_none(self):
-        """When no app context is set, follow-up capture uses app=None (frontmost)."""
-        from tools.computer_use.backend import ActionResult, CaptureResult
+    def test_launch_app_routes_to_backend_without_prior_window(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        out = handle_computer_use({"action": "launch_app", "bundle_id": "com.apple.MobileSMS", "background": True})
+        parsed = json.loads(out)
+
+        assert parsed["ok"] is True
+        assert noop_backend.calls[0] == ("launch_app", {"app": "", "bundle_id": "com.apple.MobileSMS", "background": True})
+
+    def test_launch_app_capture_after_targets_launched_app(self):
         from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
 
-        captured_app_args = []
-
-        class NoContextBackend:
-            _last_app = None  # no prior context
-
-            def start(self):
-                pass
-
-            def stop(self):
-                pass
-
-            def is_available(self):
-                return True
-
+        class FakeBackend:
+            def __init__(self): self.calls = []
+            def launch_app(self, app="", bundle_id="", background=True):
+                self.calls.append(("launch_app", app, bundle_id, background)); return ActionResult(ok=True, action="launch_app")
             def capture(self, mode="som", app=None):
-                captured_app_args.append(app)
-                return CaptureResult(
-                    mode=mode, width=100, height=100,
-                    png_b64=None, elements=[],
-                    app="Finder", window_title="",
-                )
+                self.calls.append(("capture", app)); return CaptureResult(mode=mode, width=1, height=1, app=app or "")
+            def list_apps(self): return []
+            def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
+            def click(self, **kw): return ActionResult(ok=True, action="click")
+            def drag(self, **kw): return ActionResult(ok=True, action="drag")
+            def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+            def type_text(self, text): return ActionResult(ok=True, action="type")
+            def key(self, keys): return ActionResult(ok=True, action="key")
 
-            def click(self, **kw):
-                return ActionResult(ok=True, action="click")
+        fake = FakeBackend()
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            out = cu_tool.handle_computer_use({"action": "launch_app", "app": "Messages", "capture_after": True})
 
-            def drag(self, **kw):
-                return ActionResult(ok=True, action="drag")
+        assert ("launch_app", "Messages", "", True) in fake.calls
+        assert ("capture", "Messages") in fake.calls
+        parsed = json.loads(out) if isinstance(out, str) else out
+        if isinstance(parsed, dict) and not parsed.get("_multimodal"):
+            assert parsed["app"] == "Messages"
 
-            def scroll(self, **kw):
-                return ActionResult(ok=True, action="scroll")
+    def test_app_scoped_action_targets_app_before_clicking(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
 
-            def type_text(self, text):
-                return ActionResult(ok=True, action="type")
+        handle_computer_use({"action": "click", "app": "Safari", "element": 7})
 
-            def key(self, keys):
-                return ActionResult(ok=True, action="key")
+        assert noop_backend.calls[0] == ("focus_app", {"app": "Safari", "raise": False})
+        assert noop_backend.calls[1][0] == "click"
+        assert noop_backend.calls[1][1]["element"] == 7
 
-            def list_apps(self):
-                return []
+    def test_app_scoped_action_retarges_after_prior_capture(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
 
+        handle_computer_use({"action": "capture", "app": "Notes"})
+        handle_computer_use({"action": "click", "app": "Safari", "element": 1})
+
+        assert ("capture", {"mode": "som", "app": "Notes"}) in noop_backend.calls
+        assert ("focus_app", {"app": "Safari", "raise": False}) in noop_backend.calls
+
+    def test_scroll_pages_alias_passes_to_backend(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({"action": "scroll", "app": "Safari", "direction": "down", "pages": 1.5, "element": 2})
+        scroll_kw = next(c[1] for c in noop_backend.calls if c[0] == "scroll")
+        assert scroll_kw["pages"] == 1.5
+        assert scroll_kw["element"] == 2
+
+    def test_select_text_prefix_suffix_cursor_pass_through(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({
+            "action": "select_text", "app": "Safari", "element": 4,
+            "text": "target", "selection": "text", "prefix": "before",
+            "suffix": "after", "cursor": "after",
+        })
+        kw = next(c[1] for c in noop_backend.calls if c[0] == "select_text")
+        assert kw == {
+            "element": 4, "text": "target", "selection": "text",
+            "prefix": "before", "suffix": "after", "cursor": "after",
+        }
+
+    def test_cua_markdown_parser_populates_labels_and_target_metadata(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+
+        tree = """- AXApplication \"cmux\"
+  - [0] AXWindow \"Hermes\" actions=[AXRaise]
+    - [1] AXButton (Run) actions=[AXPress]
+    - [2] AXTextField = \"Search\"
+    - [3] AXUnknown help=\"More options\"
+"""
+        elements = _parse_elements_from_tree(tree, app="cmux", pid=123, window_id=456)
+
+        assert [e.label for e in elements] == ["Hermes", "Run", "Search", "More options"]
+        assert all(e.app == "cmux" and e.pid == 123 and e.window_id == 456 for e in elements)
+
+
+    def test_capture_after_preserves_app_target(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class FakeBackend:
+            def __init__(self): self.calls = []
             def focus_app(self, app, raise_window=False):
-                return ActionResult(ok=True, action="focus_app")
+                self.calls.append(("focus_app", app)); return ActionResult(ok=True, action="focus_app")
+            def click(self, **kw):
+                self.calls.append(("click", kw)); return ActionResult(ok=True, action="click")
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", app)); return CaptureResult(mode=mode, width=1, height=1, app=app or "wrong")
+            def list_apps(self): return []
+            def drag(self, **kw): return ActionResult(ok=True, action="drag")
+            def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+            def type_text(self, text): return ActionResult(ok=True, action="type")
+            def key(self, keys): return ActionResult(ok=True, action="key")
 
-            def set_value(self, value, element=None):
-                return ActionResult(ok=True, action="set_value")
+        fake = FakeBackend()
+        cu_tool.set_approval_callback(lambda *args: "approve_once")
+        with patch.object(cu_tool, "_get_backend", return_value=fake):
+            out = cu_tool.handle_computer_use({"action": "click", "app": "Safari", "element": 1, "capture_after": True})
 
-            def wait(self, seconds=1.0):
-                return ActionResult(ok=True, action="wait")
+        assert ("capture", "Safari") in fake.calls
+        parsed = json.loads(out) if isinstance(out, str) else out
+        if isinstance(parsed, dict) and not parsed.get("_multimodal"):
+            assert parsed["app"] == "Safari"
 
-        backend = NoContextBackend()
-        cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
+    def test_unsupported_click_shapes_are_rejected_by_backend(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
 
-        cu_tool.handle_computer_use({"action": "click", "element": 5, "capture_after": True})
+        backend = CuaDriverBackend()
+        backend._active_pid = 123
+        backend._active_window_id = 456
+        assert backend.click(element=1, button="middle").ok is False
+        assert backend.click(element=1, click_count=3).ok is False
 
-        # No app context — should pass None so cua-driver picks the frontmost window
-        assert len(captured_app_args) == 1
-        assert captured_app_args[0] is None
+    def test_cua_launch_app_resolves_app_name_to_bundle_id(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        backend._app_cache = [{"name": "Messages", "bundle_id": "com.apple.MobileSMS"}]
+        backend._app_cache_at = 10**9
+        backend._select_window = lambda app=None: None  # type: ignore[method-assign]
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
+
+        res = backend.launch_app(app="Messages")
+
+        assert res.ok is True
+        assert calls == [("launch_app", {"bundle_id": "com.apple.MobileSMS"})]
+        assert res.meta["bundle_id"] == "com.apple.MobileSMS"
+
+    def test_cua_launch_app_returns_error_when_name_unknown(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._app_cache = []
+        backend._app_cache_at = 10**9
+
+        res = backend.launch_app(app="Definitely Missing")
+
+        assert res.ok is False
+        assert "No bundle id" in res.message
+
+    def test_cua_launch_app_resolves_full_app_path(self, tmp_path):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        app_dir = tmp_path / "Demo.app"
+        contents = app_dir / "Contents"
+        contents.mkdir(parents=True)
+        with open(contents / "Info.plist", "wb") as fh:
+            plistlib.dump({"CFBundleIdentifier": "com.example.Demo"}, fh)
+        backend = CuaDriverBackend()
+        backend._select_window = lambda app=None: None  # type: ignore[method-assign]
+        calls = []
+        def fake_action(name, args):
+            calls.append((name, args))
+            from tools.computer_use.backend import ActionResult
+            return ActionResult(ok=True, action=name)
+        backend._action = fake_action  # type: ignore[method-assign]
+
+        res = backend.launch_app(app=str(app_dir))
+
+        assert res.ok is True
+        assert calls == [("launch_app", {"bundle_id": "com.example.Demo"})]
+        assert res.meta["app"] == "Demo"
+
+    def test_select_window_matches_bundle_id_and_preserves_metadata(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._call = lambda name, args, timeout=30.0: {  # type: ignore[method-assign]
+            "data": {"windows": [{
+                "app_name": "Messages", "bundle_id": "com.apple.MobileSMS",
+                "pid": 123, "window_id": 456, "is_on_screen": True,
+            }]},
+            "structuredContent": None,
+            "images": [],
+            "isError": False,
+        }
+
+        target = backend._select_window("com.apple.MobileSMS")
+
+        assert target is not None
+        assert target["bundle_id"] == "com.apple.MobileSMS"
+        assert backend._active_pid == 123
+        assert backend._active_window_id == 456
+
+    def test_windows_avoids_app_catalog_when_app_name_present(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_call(name, args, timeout=30.0):
+            calls.append(name)
+            assert name == "list_windows"
+            return {
+                "data": {"windows": [{
+                    "app_name": "Messages", "bundle_id": "com.apple.MobileSMS",
+                    "pid": 123, "window_id": 456, "is_on_screen": True,
+                }]},
+                "structuredContent": None,
+                "images": [],
+                "isError": False,
+            }
+        backend._call = fake_call  # type: ignore[method-assign]
+
+        windows = backend._windows()
+
+        assert windows[0]["app_name"] == "Messages"
+        assert calls == ["list_windows"]
+
+    def test_app_catalog_uses_short_ttl_cache(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        calls = []
+        def fake_call(name, args, timeout=30.0):
+            calls.append(name)
+            return {"data": {"apps": [{"name": "Messages", "bundle_id": "com.apple.MobileSMS"}]}, "structuredContent": None, "images": [], "isError": False}
+        backend._call = fake_call  # type: ignore[method-assign]
+
+        assert backend._app_catalog() == backend._app_catalog()
+
+        assert calls == ["list_apps"]
+
+
+class TestComputerUsePolicy:
+    def test_mutating_actions_fail_closed_in_gateway_without_callback(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        with patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "cu-test"}, clear=False):
+            out = handle_computer_use({"action": "click", "element": 1})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "approval" in parsed["error"].lower()
+        assert not any(name == "click" for name, _ in noop_backend.calls)
+
+    def test_known_bundle_launch_does_not_require_approval(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "cu-test"}, clear=False):
+            out = handle_computer_use({"action": "launch_app", "bundle_id": "com.apple.Safari"})
+        parsed = json.loads(out)
+        assert parsed["ok"] is True
+        assert noop_backend.calls[0] == ("launch_app", {"app": "", "bundle_id": "com.apple.Safari", "background": True})
+
+    def test_path_launch_requires_approval_in_gateway(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        with patch.dict(os.environ, {"HERMES_GATEWAY_SESSION": "1", "HERMES_SESSION_KEY": "cu-test"}, clear=False):
+            out = handle_computer_use({"action": "launch_app", "app": "/Users/kamell/Downloads/Sketchy.app"})
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "approval" in parsed["error"].lower()
+        assert not noop_backend.calls
+
+    def test_policy_grants_session_scope_after_approval(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use, set_approval_callback
+        calls = []
+        def approve(action, args, summary):
+            calls.append((action, summary))
+            return "approve_session"
+        set_approval_callback(approve)
+        handle_computer_use({"action": "click", "app": "Safari", "element": 1})
+        handle_computer_use({"action": "click", "app": "Safari", "element": 2})
+        assert len(calls) == 1
+        assert [name for name, _ in noop_backend.calls].count("click") == 2

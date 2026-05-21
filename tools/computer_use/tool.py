@@ -1,16 +1,14 @@
-"""Entry point for the `computer_use` tool.
+"""Native Hermes Computer Use dispatcher.
 
-Universal (any-model) macOS desktop control via cua-driver's background
-computer-use primitive. Replaces #4562's Anthropic-native `computer_20251124`
-approach — the schema here is standard OpenAI function-calling so every
-tool-capable model can drive it.
+The model-facing surface lives in ``tools/computer_use_tool.py`` as explicit
+``computer_use_*`` tools. This module owns shared validation, policy, backend
+selection, dispatch, and response shaping for those native tools.
 
 Return contract
 ---------------
-For text-only results (wait, key, list_apps, focus_app, failures, etc.):
-  JSON string.
+For text-only results: JSON string.
 
-For captures / actions with `capture_after=True`:
+For app state results or actions with `capture_after=True`:
   A dict wrapped as the OpenAI-style multi-part tool-message content:
 
       {
@@ -46,6 +44,7 @@ from tools.computer_use.backend import (
     ComputerUseBackend,
     UIElement,
 )
+from tools.computer_use.policy import ComputerUsePolicy, ComputerUseRequest, app_from_args
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +67,14 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
-# Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+# Actions that read or perform low-impact setup. Always allowed.
+_SAFE_ACTIONS = frozenset({"capture", "get_app_state", "wait", "list_apps", "launch_app", "daemon"})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "perform_secondary_action", "drag", "scroll", "type", "type_text",
+    "key", "press_key", "set_value", "select_text", "focus_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -114,7 +114,16 @@ def _is_blocked_type(text: str) -> Optional[str]:
     return None
 
 
+def _launch_requires_approval(args: Dict[str, Any]) -> bool:
+    app = str(args.get("app") or "").strip()
+    if not app:
+        return False
+    expanded = os.path.expanduser(app)
+    return expanded.endswith(".app") or os.path.sep in expanded
+
+
 # ---------------------------------------------------------------------------
+
 # Backend selection — env-swappable for tests
 # ---------------------------------------------------------------------------
 
@@ -122,8 +131,7 @@ def _is_blocked_type(text: str) -> Optional[str]:
 _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None
 # Session-scoped approval state.
-_session_auto_approve = False
-_always_allow: set = set()  # action names the user unlocked for the session
+_policy = ComputerUsePolicy()
 
 
 def _get_backend() -> ComputerUseBackend:
@@ -144,7 +152,7 @@ def _get_backend() -> ComputerUseBackend:
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow
+    global _backend, _approval_callback
     with _backend_lock:
         if _backend is not None:
             try:
@@ -152,8 +160,8 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
             except Exception:
                 pass
         _backend = None
-    _session_auto_approve = False
-    _always_allow = set()
+    _approval_callback = None
+    _policy.reset_session()
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -196,11 +204,46 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("list_apps", {}))
         return []
 
+    def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
+        self.calls.append(("launch_app", {"app": app, "bundle_id": bundle_id, "background": background}))
+        return ActionResult(ok=True, action="launch_app")
+
+    def daemon_status(self) -> Dict[str, Any]:
+        self.calls.append(("daemon_status", {}))
+        return {"binary_installed": True, "running": True, "version": "test", "permissions": "ok"}
+
+    def apply_runtime_config(self) -> None:
+        self.calls.append(("apply_runtime_config", {}))
+        return None
+
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        self.calls.append(("set_value", {"value": value, "element": element}))
+        return ActionResult(ok=True, action="set_value")
 
+    def perform_secondary_action(self, element: Optional[int] = None, secondary_action: str = "AXShowMenu") -> ActionResult:
+        self.calls.append(("perform_secondary_action", {"element": element, "secondary_action": secondary_action}))
+        return ActionResult(ok=True, action="perform_secondary_action")
+
+    def select_text(
+        self,
+        element: Optional[int] = None,
+        text: str = "",
+        selection: str = "all",
+        prefix: str = "",
+        suffix: str = "",
+        cursor: Optional[str] = None,
+    ) -> ActionResult:
+        self.calls.append(("select_text", {
+            "element": element, "text": text, "selection": selection,
+            "prefix": prefix, "suffix": suffix, "cursor": cursor,
+        }))
+        return ActionResult(ok=True, action="select_text")
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -212,6 +255,15 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     (image + summary) which run_agent.py wraps into the tool message.
     """
     action = (args.get("action") or "").strip().lower()
+    action = {
+        "get_app_state": "capture",
+        "type_text": "type",
+        "press_key": "key",
+    }.get(action, action)
+    args = dict(args)
+    args["action"] = action
+    if action == "key" and "keys" not in args and "key" in args:
+        args["keys"] = args.get("key")
     if not action:
         return json.dumps({"error": "missing `action`"})
 
@@ -235,8 +287,9 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
-    # Approval gate (destructive actions only).
-    if action in _DESTRUCTIVE_ACTIONS:
+    # Approval gate. Known-app launch is setup; path-based app launch can run
+    # newly downloaded software and must be confirmed at action time.
+    if action in _DESTRUCTIVE_ACTIONS or (action == "launch_app" and _launch_requires_approval(args)):
         err = _request_approval(action, args)
         if err is not None:
             return err
@@ -259,28 +312,51 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     """Return None if approved, or a JSON error string if denied."""
-    global _session_auto_approve, _always_allow
-    if _session_auto_approve:
+    req = ComputerUseRequest(action=action, app=app_from_args(args), args=args)
+    decision = _policy.evaluate(req)
+    if decision.allowed:
         return None
-    if action in _always_allow:
-        return None
+    if not decision.approval_required:
+        return json.dumps({"error": decision.reason, "action": action})
+
+    summary = _summarize_action(action, args)
     cb = _approval_callback
     if cb is None:
-        # No CLI approval wired — default allow. Gateway approval is handled
-        # one layer out via the normal tool-approval infra.
+        if os.environ.get("HERMES_GATEWAY_SESSION") or os.environ.get("HERMES_EXEC_ASK"):
+            try:
+                from tools.approval import request_gateway_approval_blocking
+                verdict = request_gateway_approval_blocking({
+                    "command": f"computer_use: {summary}",
+                    "description": f"Allow computer_use to perform `{action}`?",
+                    "pattern_key": f"computer_use:{(req.app or '*').lower()}:{action}",
+                    "pattern_keys": [f"computer_use:{(req.app or '*').lower()}:{action}"],
+                    "tool": "computer_use",
+                    "computer_use": {"action": action, "app": req.app, "risk": decision.risk.value, "summary": summary},
+                })
+            except Exception:
+                verdict = "deny"
+            if verdict in {"once", "approve_once"}:
+                return None
+            if verdict in {"session", "always", "approve_session", "always_approve", "approve_always"}:
+                _policy.grant(req, verdict)
+                return None
+            return json.dumps({
+                "error": "computer_use approval denied or unavailable",
+                "action": action,
+                "risk": decision.risk.value,
+                "scope": list(decision.scope_key or req.scope_key),
+                "summary": summary,
+            })
         return None
-    summary = _summarize_action(action, args)
     try:
         verdict = cb(action, args, summary)
     except Exception as e:
         logger.warning("approval callback failed: %s", e)
         verdict = "deny"
-    if verdict == "approve_once":
+    if verdict in {"approve_once", "once"}:
         return None
-    if verdict == "approve_session" or verdict == "always_approve":
-        _always_allow.add(action)
-        if verdict == "always_approve":
-            _session_auto_approve = True
+    if verdict in {"approve_session", "session", "always_approve", "approve_always", "always"}:
+        _policy.grant(req, verdict)
         return None
     return json.dumps({"error": "denied by user", "action": action})
 
@@ -298,7 +374,8 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
         dst = args.get("to_element") or args.get("to_coordinate")
         return f"drag {src} → {dst}"
     if action == "scroll":
-        return f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}"
+        dist = f"{args.get('pages')} page(s)" if args.get("pages") is not None else f"x{args.get('amount', 3)}"
+        return f"scroll {args.get('direction', '?')} {dist}"
     if action == "type":
         text = args.get("text", "")
         return f"type {text[:60]!r}" + ("..." if len(text) > 60 else "")
@@ -309,8 +386,33 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     return action
 
 
+
+def _target_app_if_requested(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Optional[str]:
+    """Resolve app-scoped mutating calls before executing the action.
+
+    Codex Computer Use requires app on mutating calls. Hermes keeps runtime
+    backward compatibility for already-targeted sessions, but when app is
+    supplied it must be real: select the target window and fail before acting if
+    it cannot be resolved.
+    """
+    app = args.get("app")
+    if not app or action in _SAFE_ACTIONS or action in {"wait", "list_apps", "focus_app"}:
+        return None
+    if not hasattr(backend, "focus_app"):
+        return json.dumps({"error": f"backend cannot target app {app!r} for {action}"})
+    res = backend.focus_app(str(app), raise_window=False)
+    if not getattr(res, "ok", False):
+        return json.dumps({
+            "error": f"could not target app {app!r} for {action}: {getattr(res, 'message', '')}",
+            "hint": "Call computer_use_list_apps or computer_use_get_app_state(app=...) to find an on-screen target window.",
+        })
+    return None
+
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
     capture_after = bool(args.get("capture_after"))
+    target_error = _target_app_if_requested(backend, action, args)
+    if target_error:
+        return target_error
 
     if action == "capture":
         mode = str(args.get("mode", "som"))
@@ -328,12 +430,39 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         apps = backend.list_apps()
         return json.dumps({"apps": apps, "count": len(apps)})
 
+    if action == "launch_app":
+        app = str(args.get("app") or "")
+        bundle_id = str(args.get("bundle_id") or "")
+        if not app and not bundle_id:
+            return json.dumps({"error": "launch_app requires `app` or `bundle_id`"})
+        res = backend.launch_app(app=app, bundle_id=bundle_id, background=bool(args.get("background", True)))
+        target = str(res.meta.get("app") or app or bundle_id) if getattr(res, "meta", None) else (app or bundle_id)
+        return _maybe_follow_capture(backend, res, capture_after, app=target)
+
+    if action == "daemon":
+        subaction = str(args.get("subaction") or args.get("op") or "status").lower()
+        if subaction not in {"status", "start", "stop"}:
+            return json.dumps({"error": f"daemon: unknown subaction {subaction!r}; use status|start|stop"})
+        if subaction == "stop":
+            try:
+                backend.stop()
+            except Exception as e:
+                logger.warning("daemon stop failed: %s", e)
+        if subaction == "start":
+            try:
+                backend.start()
+            except Exception as e:
+                logger.warning("daemon start failed: %s", e)
+                return json.dumps({"action": "daemon", "subaction": subaction, "error": str(e)})
+        payload = backend.daemon_status() if hasattr(backend, "daemon_status") else {}
+        return json.dumps({"action": "daemon", "subaction": subaction, "daemon": payload})
+
     if action == "focus_app":
         app = args.get("app")
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -345,7 +474,8 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         elif action == "middle_click":
             button = "middle"
         else:
-            button = button or "left"
+            button = args.get("mouse_button") or button or "left"
+            click_count = int(args.get("click_count") or click_count)
         element = args.get("element")
         coord = args.get("coordinate") or (None, None)
         x, y = (coord[0], coord[1]) if coord and coord[0] is not None else (None, None)
@@ -354,15 +484,9 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             x=x, y=y, button=button or "left", click_count=click_count,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "drag":
-        has_elements = args.get("from_element") is not None and args.get("to_element") is not None
-        has_coords = args.get("from_coordinate") and args.get("to_coordinate")
-        if not has_elements and not has_coords:
-            return json.dumps({
-                "error": "drag requires from_coordinate/to_coordinate or from_element/to_element",
-            })
         res = backend.drag(
             from_element=args.get("from_element"),
             to_element=args.get("to_element"),
@@ -371,34 +495,59 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             button=args.get("button", "left"),
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
         res = backend.scroll(
             direction=args.get("direction", "down"),
             amount=int(args.get("amount", 3)),
+            pages=float(args["pages"]) if args.get("pages") is not None else None,
             element=args.get("element"),
             x=coord[0] if coord and coord[0] is not None else None,
             y=coord[1] if coord and coord[1] is not None else None,
             modifiers=args.get("modifiers"),
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "type":
         res = backend.type_text(args.get("text", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "key":
         res = backend.key(args.get("keys", ""))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
+
+    if action == "perform_secondary_action":
+        if hasattr(backend, "perform_secondary_action"):
+            res = backend.perform_secondary_action(
+                element=args.get("element"),
+                secondary_action=args.get("secondary_action") or args.get("name") or "AXShowMenu",
+            )
+        else:
+            res = ActionResult(ok=False, action="perform_secondary_action", message="backend does not support secondary actions")
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
+
+    if action == "select_text":
+        if hasattr(backend, "select_text"):
+            res = backend.select_text(
+                element=args.get("element"),
+                text=args.get("text", ""),
+                selection=args.get("selection", "all"),
+                prefix=args.get("prefix", ""),
+                suffix=args.get("suffix", ""),
+                cursor=args.get("cursor"),
+            )
+        else:
+            res = ActionResult(ok=False, action="select_text", message="backend does not support select_text")
+        return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     return json.dumps({"error": f"unknown action {action!r}"})
 
@@ -458,16 +607,15 @@ def _capture_response(cap: CaptureResult) -> Any:
 
 
 def _maybe_follow_capture(
-    backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    backend: ComputerUseBackend,
+    res: ActionResult,
+    do_capture: bool,
+    app: Optional[str] = None,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
     try:
-        # Preserve the app context established by the preceding capture/focus_app so
-        # that capture_after=True re-captures the same app rather than the frontmost
-        # window (which may have changed if the action caused a focus shift).
-        last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        cap = backend.capture(mode="som", app=app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
@@ -516,16 +664,11 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def check_computer_use_requirements() -> bool:
-    """Return True iff computer_use can run on this host.
+    """Return True iff native Computer Use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    Conditions: macOS + configured backend binary installed (or override via env).
     """
     if sys.platform != "darwin":
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
-
-
-def get_computer_use_schema() -> Dict[str, Any]:
-    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-    return COMPUTER_USE_SCHEMA
