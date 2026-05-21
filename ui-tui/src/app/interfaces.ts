@@ -105,6 +105,7 @@ export interface UiState {
   info: null | SessionInfo
   inlineDiffs: boolean
   mouseTracking: boolean
+  pasteCollapseLines: number
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
