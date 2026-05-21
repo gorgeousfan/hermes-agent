@@ -78,6 +78,7 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+CODEX_USAGE_LIMIT_RECONCILE_GRACE_SECONDS = 5 * 60
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -303,6 +304,11 @@ def _codex_account_id_from_token(access_token: str) -> Optional[str]:
     return None
 
 
+def codex_account_id_for_entry(entry: Any) -> Optional[str]:
+    """Return the non-secret ChatGPT account id encoded in a Codex pool entry."""
+    return _codex_account_id_from_token(str(getattr(entry, "access_token", "") or ""))
+
+
 def _fetch_codex_entry_usage_status(entry: PooledCredential) -> Optional[_CodexUsageStatus]:
     access_token = str(entry.access_token or "").strip()
     if not access_token:
@@ -369,6 +375,16 @@ def _fetch_codex_entry_usage_status(entry: PooledCredential) -> Optional[_CodexU
     return None
 
 
+def _codex_usage_limit_reconcile_grace_seconds() -> float:
+    raw = os.getenv("HERMES_CODEX_USAGE_LIMIT_RECONCILE_GRACE_SECONDS", "")
+    if not raw:
+        return float(CODEX_USAGE_LIMIT_RECONCILE_GRACE_SECONDS)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return float(CODEX_USAGE_LIMIT_RECONCILE_GRACE_SECONDS)
+
+
 def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
         return None
@@ -380,31 +396,52 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     return None
 
 
+def _is_codex_usage_limit_error(reason: Any, message: Any = "") -> bool:
+    reason_text = str(reason or "").lower()
+    message_text = str(message or "").lower()
+    return (
+        "usage_limit_reached" in reason_text
+        or "usage limit has been reached" in message_text
+    )
+
+
+def _codex_usage_limit_hold_until(
+    entry: PooledCredential,
+    *,
+    now: Optional[float] = None,
+) -> Optional[float]:
+    if entry.last_status != STATUS_EXHAUSTED:
+        return None
+    if not _is_codex_usage_limit_error(entry.last_error_reason, entry.last_error_message):
+        return None
+    reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+    if reset_at is None:
+        return None
+    now_value = now if now is not None else time.time()
+    if now_value >= reset_at:
+        return None
+    status_at = _parse_absolute_timestamp(getattr(entry, "last_status_at", None))
+    if status_at is None:
+        return None
+    grace_until = status_at + _codex_usage_limit_reconcile_grace_seconds()
+    return min(reset_at, grace_until)
+
+
 def _has_authoritative_future_usage_limit(
     entry: PooledCredential,
     *,
     now: Optional[float] = None,
 ) -> bool:
-    """True when a fresh Codex 429 body supplied a future usage reset.
+    """True while a fresh Codex usage-limit reset is in its reconcile hold.
 
     The Codex usage probe can lag or disagree with the Responses endpoint.  If
-    the endpoint that just rejected the request gave us ``usage_limit_reached``
-    plus a future ``resets_at``, keep that cooldown authoritative until it
-    elapses instead of clearing it from the softer usage probe.
+    the endpoint that just rejected the request gave us ``usage_limit_reached``,
+    keep that cooldown authoritative only for a short bounded grace period.
+    After that, live usage may clear stale future reset timestamps.
     """
-    if entry.last_status != STATUS_EXHAUSTED:
-        return False
-    reason = str(entry.last_error_reason or "").lower()
-    message = str(entry.last_error_message or "").lower()
-    if (
-        "usage_limit_reached" not in reason
-        and "usage limit has been reached" not in message
-    ):
-        return False
-    reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
-    if reset_at is None:
-        return False
-    return (now if now is not None else time.time()) < reset_at
+    now_value = now if now is not None else time.time()
+    hold_until = _codex_usage_limit_hold_until(entry, now=now_value)
+    return hold_until is not None and now_value < hold_until
 
 
 def _normalize_custom_pool_name(name: str) -> str:
@@ -546,6 +583,54 @@ class CredentialPool:
                 self._entries[idx] = new
                 return
 
+    def _codex_account_entries(self, account_id: Optional[str]) -> List[PooledCredential]:
+        if self.provider != "openai-codex" or not account_id:
+            return []
+        return [
+            entry for entry in self._entries
+            if codex_account_id_for_entry(entry) == account_id
+        ]
+
+    def _propagate_codex_usage_limit_exhaustion(self) -> int:
+        if self.provider != "openai-codex":
+            return 0
+
+        changed = 0
+        seen_accounts: Set[str] = set()
+        for entry in list(self._entries):
+            account_id = codex_account_id_for_entry(entry)
+            if not account_id or account_id in seen_accounts:
+                continue
+            seen_accounts.add(account_id)
+            account_entries = self._codex_account_entries(account_id)
+            sources = [
+                candidate for candidate in account_entries
+                if (
+                    candidate.last_status == STATUS_EXHAUSTED
+                    and _is_codex_usage_limit_error(
+                        candidate.last_error_reason,
+                        candidate.last_error_message,
+                    )
+                )
+            ]
+            if not sources:
+                continue
+            source = max(sources, key=lambda candidate: candidate.last_status_at or 0)
+            for candidate in account_entries:
+                updated = replace(
+                    candidate,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=source.last_status_at or time.time(),
+                    last_error_code=source.last_error_code or 429,
+                    last_error_reason=source.last_error_reason,
+                    last_error_message=source.last_error_message,
+                    last_error_reset_at=source.last_error_reset_at,
+                )
+                if updated != candidate:
+                    self._replace_entry(candidate, updated)
+                    changed += 1
+        return changed
+
     def _persist(self) -> None:
         write_credential_pool(
             self.provider,
@@ -559,16 +644,38 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        status_at = time.time()
         updated = replace(
             entry,
             last_status=STATUS_EXHAUSTED,
-            last_status_at=time.time(),
+            last_status_at=status_at,
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
+        if (
+            self.provider == "openai-codex"
+            and _is_codex_usage_limit_error(
+                normalized_error.get("reason"),
+                normalized_error.get("message"),
+            )
+        ):
+            account_id = codex_account_id_for_entry(updated)
+            for candidate in self._codex_account_entries(account_id):
+                if candidate.id == updated.id:
+                    continue
+                duplicate = replace(
+                    candidate,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=status_at,
+                    last_error_code=status_code,
+                    last_error_reason=normalized_error.get("reason"),
+                    last_error_message=normalized_error.get("message"),
+                    last_error_reset_at=normalized_error.get("reset_at"),
+                )
+                self._replace_entry(candidate, duplicate)
         self._persist()
         return updated
 
@@ -1273,6 +1380,8 @@ class CredentialPool:
         now = time.time()
         cleared_any = False
         available: List[PooledCredential] = []
+        if self._propagate_codex_usage_limit_exhaustion():
+            cleared_any = True
         for entry in self._entries:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
@@ -1427,54 +1536,91 @@ class CredentialPool:
     def _reconcile_codex_usage_unlocked(self) -> int:
         changed = 0
         now = time.time()
-        for entry in list(self._entries):
-            if entry.last_status != STATUS_EXHAUSTED:
+        changed += self._propagate_codex_usage_limit_exhaustion()
+        handled_accounts: Set[str] = set()
+        handled_entry_ids: Set[str] = set()
+        for original_entry in list(self._entries):
+            entry = self._entry_by_id(original_entry.id) or original_entry
+            account_id = codex_account_id_for_entry(entry)
+            if account_id:
+                if account_id in handled_accounts:
+                    continue
+                handled_accounts.add(account_id)
+                account_entries = self._codex_account_entries(account_id)
+            else:
+                if entry.id in handled_entry_ids:
+                    continue
+                account_entries = [entry]
+            handled_entry_ids.update(candidate.id for candidate in account_entries)
+            exhausted_entries = [
+                candidate for candidate in account_entries
+                if candidate.last_status == STATUS_EXHAUSTED
+            ]
+            if not exhausted_entries:
                 continue
-            if _has_authoritative_future_usage_limit(entry, now=now):
+            held_entry = next(
+                (
+                    candidate for candidate in exhausted_entries
+                    if _has_authoritative_future_usage_limit(candidate, now=now)
+                ),
+                None,
+            )
+            if held_entry is not None:
+                hold_until = _codex_usage_limit_hold_until(held_entry, now=now)
                 logger.debug(
                     "credential pool: keeping Codex usage-limit cooldown for %s until %.0f",
-                    entry.label or entry.id[:8],
-                    _parse_absolute_timestamp(entry.last_error_reset_at) or 0,
+                    held_entry.label or held_entry.id[:8],
+                    hold_until or 0,
                 )
+                continue
+            entry = exhausted_entries[0]
+            if entry.last_status != STATUS_EXHAUSTED:
                 continue
             if self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:
                     continue
                 entry = refreshed
+                account_id = codex_account_id_for_entry(entry)
+                account_entries = self._codex_account_entries(account_id) if account_id else [entry]
             status = _fetch_codex_entry_usage_status(entry)
             if status is None:
                 continue
             if status.available:
-                updated = replace(
-                    entry,
-                    last_status=STATUS_OK,
-                    last_status_at=None,
-                    last_error_code=None,
-                    last_error_reason=None,
-                    last_error_message=None,
-                    last_error_reset_at=None,
-                )
-                self._replace_entry(entry, updated)
-                changed += 1
+                for candidate in account_entries:
+                    if candidate.last_status != STATUS_EXHAUSTED:
+                        continue
+                    updated = replace(
+                        candidate,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    if updated != candidate:
+                        self._replace_entry(candidate, updated)
+                        changed += 1
                 logger.info(
                     "credential pool: cleared stale Codex exhaustion for %s from live usage",
                     entry.label or entry.id[:8],
                 )
                 continue
 
-            updated = replace(
-                entry,
-                last_status=STATUS_EXHAUSTED,
-                last_status_at=entry.last_status_at or time.time(),
-                last_error_code=429,
-                last_error_reason=status.reason or entry.last_error_reason,
-                last_error_message=status.message or entry.last_error_message,
-                last_error_reset_at=status.reset_at or entry.last_error_reset_at,
-            )
-            if updated != entry:
-                self._replace_entry(entry, updated)
-                changed += 1
+            for candidate in account_entries:
+                updated = replace(
+                    candidate,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=candidate.last_status_at or time.time(),
+                    last_error_code=429,
+                    last_error_reason=status.reason or candidate.last_error_reason,
+                    last_error_message=status.message or candidate.last_error_message,
+                    last_error_reset_at=status.reset_at or candidate.last_error_reset_at,
+                )
+                if updated != candidate:
+                    self._replace_entry(candidate, updated)
+                    changed += 1
         if changed:
             self._persist()
         return changed

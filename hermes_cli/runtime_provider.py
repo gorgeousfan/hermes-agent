@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_pool import (
+    CredentialPool,
+    PooledCredential,
+    codex_account_id_for_entry,
+    get_custom_provider_pool_key,
+    load_pool,
+)
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
@@ -238,6 +244,19 @@ def _credential_pool_exhausted_error(provider: str, pool: CredentialPool) -> Aut
         f"All {count or 'configured'} {provider} credential pool {plural} "
         "are unavailable; same-provider rotation has no usable credential left."
     )
+    if provider == "openai-codex" and count > 1:
+        account_ids = {
+            account_id for account_id in (
+                codex_account_id_for_entry(entry) for entry in entries
+            )
+            if account_id
+        }
+        if account_ids and len(account_ids) < count:
+            message += (
+                f" Pool contains {len(account_ids)} unique ChatGPT "
+                f"{'account' if len(account_ids) == 1 else 'accounts'} "
+                f"across {count} entries; duplicate account entries share quota."
+            )
     if retry_candidates:
         retry_at, label = min(retry_candidates, key=lambda item: item[0])
         message += f" Next retry window: {label} at {_format_epoch_utc(retry_at)}."

@@ -1,6 +1,23 @@
+import base64
+import json
+
 import pytest
 
 from hermes_cli import runtime_provider as rp
+
+
+def _jwt_with_chatgpt_account(account_id: str, sub: str) -> str:
+    def _part(payload: dict) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    claims = {
+        "sub": sub,
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+        },
+    }
+    return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
@@ -66,6 +83,32 @@ def test_resolve_runtime_provider_pool_exhausted_raises_pool_error(monkeypatch):
     assert "credential pool" in str(err)
     assert "primary" in str(err)
     assert "No Codex credentials stored" not in str(err)
+
+
+def test_credential_pool_exhausted_error_mentions_unique_codex_accounts():
+    class _Entry:
+        def __init__(self, idx, label, account_id):
+            self.id = f"acct{idx}"
+            self.label = label
+            self.access_token = _jwt_with_chatgpt_account(account_id, f"user-{idx}")
+            self.last_error_code = 429
+            self.last_error_reason = "usage_limit_reached"
+            self.last_error_message = "The usage limit has been reached."
+            self.last_error_reset_at = 1779038128
+            self.last_status_at = None
+
+    class _Pool:
+        def entries(self):
+            return [
+                _Entry(1, "primary-a", "chatgpt-a"),
+                _Entry(2, "primary-b", "chatgpt-a"),
+                _Entry(3, "secondary", "chatgpt-b"),
+            ]
+
+    err = rp._credential_pool_exhausted_error("openai-codex", _Pool())
+
+    assert "2 unique ChatGPT accounts across 3 entries" in str(err)
+    assert "duplicate account entries share quota" in str(err)
 
 
 def test_resolve_runtime_provider_auto_pool_exhausted_skips_singleton(monkeypatch):
