@@ -912,7 +912,7 @@ def run_conversation(
             logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
         
-        api_start_time = time.time()
+        api_start_time = time.monotonic()
         retry_count = 0
         max_retries = agent._api_max_retries
         primary_recovery_attempted = False
@@ -1077,7 +1077,7 @@ def run_conversation(
                 else:
                     response = agent._interruptible_api_call(api_kwargs)
                 
-                api_duration = time.time() - api_start_time
+                api_duration = time.monotonic() - api_start_time
                 
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
@@ -1284,9 +1284,9 @@ def run_conversation(
                     logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
                     # Sleep in small increments to stay responsive to interrupts
-                    sleep_end = time.time() + wait_time
+                    sleep_end = time.monotonic() + wait_time
                     _backoff_touch_counter = 0
-                    while time.time() < sleep_end:
+                    while time.monotonic() < sleep_end:
                         if agent._interrupt_requested:
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             agent._persist_session(messages, conversation_history)
@@ -1675,7 +1675,7 @@ def run_conversation(
                     thinking_spinner = None
                 if agent.thinking_callback:
                     agent.thinking_callback("")
-                api_elapsed = time.time() - api_start_time
+                api_elapsed = time.monotonic() - api_start_time
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
                 interrupted = True
@@ -2184,7 +2184,7 @@ def run_conversation(
                     )
 
                 retry_count += 1
-                elapsed_time = time.time() - api_start_time
+                elapsed_time = time.monotonic() - api_start_time
                 agent._touch_activity(
                     f"API error recovery (attempt {retry_count}/{max_retries})"
                 )
@@ -2866,9 +2866,9 @@ def run_conversation(
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
                 # instead of blocking the entire wait_time in one sleep() call
-                sleep_end = time.time() + wait_time
+                sleep_end = time.monotonic() + wait_time
                 _backoff_touch_counter = 0
-                while time.time() < sleep_end:
+                while time.monotonic() < sleep_end:
                     if agent._interrupt_requested:
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                         agent._persist_session(messages, conversation_history)
