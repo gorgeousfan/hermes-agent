@@ -9,6 +9,9 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import type { Locale } from '../i18n/types.js'
+import { setGatewayLocale } from '../i18n/store.js'
+import { getTuiT } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -23,7 +26,7 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
-const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
+const statusFromBusy = () => (getUiState().busy ? getTuiT('status.running') : getTuiT('status.ready'))
 
 const applySkin = (s: GatewaySkin) =>
   patchUiState({
@@ -206,9 +209,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
-  const handleReady = (skin?: GatewaySkin) => {
+  const handleReady = (skin?: GatewaySkin, language?: string) => {
     if (skin) {
       applySkin(skin)
+    }
+
+    // Set locale from gateway config
+    if (language) {
+      setGatewayLocale(language as Locale)
     }
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
@@ -287,13 +295,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
-        handleReady(ev.payload?.skin)
+        handleReady(ev.payload?.skin, ev.payload?.language)
 
         return
 
       case 'skin.changed':
         if (ev.payload) {
           applySkin(ev.payload)
+          // Also update locale if language is included in the skin payload
+          const skinPayload = ev.payload as any
+          if (skinPayload?.language) {
+            setGatewayLocale(skinPayload.language as Locale)
+          }
         }
 
         return

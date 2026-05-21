@@ -1,89 +1,99 @@
-# Hermes 정적 메시지 카탈로그 -- 한국어
-# See locales/en.yaml for the source of truth; keep keys in sync.
-
 approval:
-  dangerous_header: "⚠️  위험한 명령: {description}"
-  choose_long:     "      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부"
-  choose_short:    "      [o]한 번  |  [s]세션  |  [d]거부"
-  prompt_long:     "      선택 [o/s/a/D]: "
-  prompt_short:    "      선택 [o/s/D]: "
-  timeout:         "      ⏱ 시간 초과 - 명령을 거부합니다"
-  allowed_once:    "      ✓ 한 번 허용됨"
-  allowed_session: "      ✓ 이 세션에서 허용됨"
-  allowed_always:  "      ✓ 영구 허용 목록에 추가됨"
-  denied:          "      ✗ 거부됨"
-  cancelled:       "      ✗ 취소됨"
-  blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
-
+  dangerous_header: '⚠️  위험한 명령: {description}'
+  choose_long: '      [o]한 번  |  [s]세션  |  [a]항상  |  [d]거부'
+  choose_short: '      [o]한 번  |  [s]세션  |  [d]거부'
+  prompt_long: '      선택 [o/s/a/D]: '
+  prompt_short: '      선택 [o/s/D]: '
+  timeout: '      ⏱ 시간 초과 - 명령을 거부합니다'
+  allowed_once: '      ✓ 한 번 허용됨'
+  allowed_session: '      ✓ 이 세션에서 허용됨'
+  allowed_always: '      ✓ 영구 허용 목록에 추가됨'
+  denied: '      ✗ 거부됨'
+  cancelled: '      ✗ 취소됨'
+  blocklist_message: 이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다.
 gateway:
-  approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
-  draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
-  goal_cleared:     "✓ 목표가 삭제되었습니다."
-  no_active_goal:   "활성 목표가 없습니다."
-  config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
-  config_save_failed: "⚠️ 설정을 저장할 수 없습니다: {error}"
-
+  approval_expired: ⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요.
+  draining: ⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중...
+  goal_cleared: ✓ 목표가 삭제되었습니다.
+  no_active_goal: 활성 목표가 없습니다.
+  config_read_failed: '⚠️ config.yaml을 읽을 수 없습니다: {error}'
+  config_save_failed: '⚠️ 설정을 저장할 수 없습니다: {error}'
   model:
-    error_prefix:           "오류: {error}"
-    switched:               "모델이 `{model}`(으)로 전환되었습니다"
-    provider_label:         "제공자: {provider}"
-    context_label:          "컨텍스트: {tokens} 토큰"
-    max_output_label:       "최대 출력: {tokens} 토큰"
-    cost_label:             "비용: {cost}"
-    capabilities_label:     "기능: {capabilities}"
-    prompt_caching_enabled: "프롬프트 캐싱: 활성화됨"
-    warning_prefix:         "경고: {warning}"
-    saved_global:           "config.yaml에 저장됨 (`--global`)"
-    session_only_hint:      "_(세션 한정 — 영구 저장하려면 `--global`을 추가하세요)_"
-    current_label:          "현재: `{model}` ({provider})"
-    current_tag:            " (현재)"
-    more_models_suffix:     " (+{count}개 더 있음)"
-    usage_switch_model:     "`/model <name>` — 모델 전환"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 제공자 전환"
-    usage_persist:          "`/model <name> --global` — 영구 저장"
-
+    error_prefix: '오류: {error}'
+    switched: 모델이 `{model}`(으)로 전환되었습니다
+    provider_label: '제공자: {provider}'
+    context_label: '컨텍스트: {tokens} 토큰'
+    max_output_label: '최대 출력: {tokens} 토큰'
+    cost_label: '비용: {cost}'
+    capabilities_label: '기능: {capabilities}'
+    prompt_caching_enabled: '프롬프트 캐싱: 활성화됨'
+    warning_prefix: '경고: {warning}'
+    saved_global: config.yaml에 저장됨 (`--global`)
+    session_only_hint: _(세션 한정 — 영구 저장하려면 `--global`을 추가하세요)_
+    current_label: '현재: `{model}` ({provider})'
+    current_tag: ' (현재)'
+    more_models_suffix: ' (+{count}개 더 있음)'
+    usage_switch_model: '`/model <name>` — 모델 전환'
+    usage_switch_provider: '`/model <name> --provider <slug>` — 제공자 전환'
+    usage_persist: '`/model <name> --global` — 영구 저장'
   agents:
-    header:                "🤖 **활성 에이전트 및 작업**"
-    active_agents:         "**활성 에이전트:** {count}"
-    this_chat:             " · 이 채팅"
-    more:                  "... 외 {count}개 더"
-    running_processes:     "**실행 중인 백그라운드 프로세스:** {count}"
-    async_jobs:            "**게이트웨이 비동기 작업:** {count}"
-    none:                  "활성 에이전트나 실행 중인 작업이 없습니다."
-    state_starting:        "시작 중"
-    state_running:         "실행 중"
-
+    header: 🤖 **활성 에이전트 및 작업**
+    active_agents: '**활성 에이전트:** {count}'
+    this_chat: ' · 이 채팅'
+    more: '... 외 {count}개 더'
+    running_processes: '**실행 중인 백그라운드 프로세스:** {count}'
+    async_jobs: '**게이트웨이 비동기 작업:** {count}'
+    none: 활성 에이전트나 실행 중인 작업이 없습니다.
+    state_starting: 시작 중
+    state_running: 실행 중
   approve:
-    no_pending:            "승인 대기 중인 명령이 없습니다."
-    once_singular:         "✅ 명령이 승인되었습니다. 에이전트가 재개됩니다..."
-    once_plural:           "✅ 명령이 승인되었습니다 ({count}개). 에이전트가 재개됩니다..."
-    session_singular:      "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨). 에이전트가 재개됩니다..."
-    session_plural:        "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨) ({count}개). 에이전트가 재개됩니다..."
-    always_singular:       "✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다..."
-    always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
-
+    no_pending: 승인 대기 중인 명령이 없습니다.
+    once_singular: ✅ 명령이 승인되었습니다. 에이전트가 재개됩니다...
+    once_plural: ✅ 명령이 승인되었습니다 ({count}개). 에이전트가 재개됩니다...
+    session_singular: ✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨). 에이전트가 재개됩니다...
+    session_plural: ✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨) ({count}개). 에이전트가 재개됩니다...
+    always_singular: ✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다...
+    always_plural: ✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다...
   background:
-    usage:                 "사용법: /background <prompt>\n예시: /background 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
-    started:               "🔄 백그라운드 작업이 시작되었습니다: \"{preview}\"\n작업 ID: {task_id}\n계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다."
+    usage: '사용법: /background <prompt>
 
+      예시: /background 오늘 HN 인기 글을 요약해줘
+
+
+      프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다.'
+    started: '🔄 백그라운드 작업이 시작되었습니다: "{preview}"
+
+      작업 ID: {task_id}
+
+      계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다.'
   branch:
-    db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
-    no_conversation:       "분기할 대화가 없습니다 — 먼저 메시지를 보내주세요."
-    create_failed:         "분기 생성에 실패했습니다: {error}"
-    switch_failed:         "분기는 생성되었으나 전환에 실패했습니다."
-    branched_one:          "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
-    branched_many:         "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
+    db_unavailable: 세션 데이터베이스를 사용할 수 없습니다.
+    no_conversation: 분기할 대화가 없습니다 — 먼저 메시지를 보내주세요.
+    create_failed: '분기 생성에 실패했습니다: {error}'
+    switch_failed: 분기는 생성되었으나 전환에 실패했습니다.
+    branched_one: '⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)
 
+      원본: `{parent}`
+
+      분기: `{new}`
+
+      원본으로 돌아가려면 `/resume`을 사용하세요.'
+    branched_many: '⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)
+
+      원본: `{parent}`
+
+      분기: `{new}`
+
+      원본으로 돌아가려면 `/resume`을 사용하세요.'
   commands:
-    usage:                 "사용법: `/commands [page]`"
-    skill_header:          "⚡ **스킬 명령**:"
-    default_desc:          "스킬 명령"
-    none:                  "사용 가능한 명령이 없습니다."
-    header:                "📚 **명령 목록** (총 {total}개, {page}/{total_pages} 페이지)"
-    nav_prev:              "`/commands {page}` ← 이전"
-    nav_next:              "다음 → `/commands {page}`"
-    out_of_range:          "_(요청한 페이지 {requested}이(가) 범위를 벗어났습니다. {page} 페이지를 표시합니다.)_"
-
+    usage: '사용법: `/commands [page]`'
+    skill_header: '⚡ **스킬 명령**:'
+    default_desc: 스킬 명령
+    none: 사용 가능한 명령이 없습니다.
+    header: 📚 **명령 목록** (총 {total}개, {page}/{total_pages} 페이지)
+    nav_prev: '`/commands {page}` ← 이전'
+    nav_next: 다음 → `/commands {page}`
+    out_of_range: _(요청한 페이지 {requested}이(가) 범위를 벗어났습니다. {page} 페이지를 표시합니다.)_
   compress:
     not_enough:            "압축할 대화가 충분하지 않습니다 (최소 4개의 메시지가 필요합니다)."
     no_provider:           "구성된 제공자가 없습니다 -- 압축할 수 없습니다."
@@ -95,257 +105,1037 @@ gateway:
     failed:                "압축 실패: {error}"
 
   debug:
-    upload_failed:         "✗ 디버그 보고서 업로드 실패: {error}"
-    header:                "**디버그 보고서가 업로드되었습니다:**"
-    auto_delete:           "⏱ 페이스트는 6시간 후 자동 삭제됩니다."
-    full_logs_hint:        "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
-    share_hint:            "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
-
+    upload_failed: '✗ 디버그 보고서 업로드 실패: {error}'
+    header: '**디버그 보고서가 업로드되었습니다:**'
+    auto_delete: ⏱ 페이스트는 6시간 후 자동 삭제됩니다.
+    full_logs_hint: 전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요.
+    share_hint: 지원을 받으려면 이 링크를 Hermes 팀과 공유하세요.
   deny:
-    stale:                 "❌ 명령이 거부되었습니다 (승인이 만료됨)."
-    no_pending:            "거부 대기 중인 명령이 없습니다."
-    denied_singular:       "❌ 명령이 거부되었습니다."
-    denied_plural:         "❌ 명령이 거부되었습니다 ({count}개)."
-
+    stale: ❌ 명령이 거부되었습니다 (승인이 만료됨).
+    no_pending: 거부 대기 중인 명령이 없습니다.
+    denied_singular: ❌ 명령이 거부되었습니다.
+    denied_plural: ❌ 명령이 거부되었습니다 ({count}개).
   fast:
-    not_supported:         "⚡ /fast는 Priority Processing을 지원하는 OpenAI 모델에서만 사용할 수 있습니다."
-    status:                "⚡ Priority Processing\n\n현재 모드: `{mode}`\n\n_사용법:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 알 수 없는 인수: `{arg}`\n\n**유효한 옵션:** normal, fast, status"
-    saved:                 "⚡ ✓ Priority Processing: **{label}** (설정에 저장됨)\n_(다음 메시지부터 적용됩니다)_"
-    session_only:          "⚡ ✓ Priority Processing: **{label}** (이 세션에만 적용)"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
+    not_supported: ⚡ /fast는 Priority Processing을 지원하는 OpenAI 모델에서만 사용할 수 있습니다.
+    status: '⚡ Priority Processing
 
+
+      현재 모드: `{mode}`
+
+
+      _사용법:_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ 알 수 없는 인수: `{arg}`
+
+
+      **유효한 옵션:** normal, fast, status'
+    saved: '⚡ ✓ Priority Processing: **{label}** (설정에 저장됨)
+
+      _(다음 메시지부터 적용됩니다)_'
+    session_only: '⚡ ✓ Priority Processing: **{label}** (이 세션에만 적용)'
+    label_fast: FAST
+    label_normal: NORMAL
+    status_fast: fast
+    status_normal: normal
   footer:
-    status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
-    usage:                 "사용법: `/footer [on|off|status]`"
-    saved:                 "📎 런타임 푸터: **{state}**{example}\n_(전역 저장됨 — 다음 메시지부터 적용됩니다)_"
-    example_line:          "\n예시: `{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
+    status: '📎 런타임 푸터: **{state}**
 
+      필드: `{fields}`
+
+      플랫폼: `{platform}`'
+    usage: '사용법: `/footer [on|off|status]`'
+    saved: '📎 런타임 푸터: **{state}**{example}
+
+      _(전역 저장됨 — 다음 메시지부터 적용됩니다)_'
+    example_line: '
+
+      예시: `{preview}`'
+    state_on: 'ON'
+    state_off: 'OFF'
   goal:
-    unavailable:           "이 세션에서는 목표 기능을 사용할 수 없습니다."
-    no_goal_set:           "설정된 목표가 없습니다."
-    paused:                "⏸ 목표 일시정지: {goal}"
-    no_resume:             "재개할 목표가 없습니다."
-    resumed:               "▶ 목표 재개: {goal}\n메시지를 보내 계속하거나 기다려 주세요 — 다음 차례에 다음 단계를 진행하겠습니다."
-    invalid:               "잘못된 목표: {error}"
-    set:                   "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
+    unavailable: 이 세션에서는 목표 기능을 사용할 수 없습니다.
+    no_goal_set: 설정된 목표가 없습니다.
+    paused: '⏸ 목표 일시정지: {goal}'
+    no_resume: 재개할 목표가 없습니다.
+    resumed: '▶ 목표 재개: {goal}
 
+      메시지를 보내 계속하거나 기다려 주세요 — 다음 차례에 다음 단계를 진행하겠습니다.'
+    invalid: '잘못된 목표: {error}'
+    set: '⊙ 목표 설정됨 ({budget}회 예산): {goal}
+
+      목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.
+
+      제어: /goal status · /goal pause · /goal resume · /goal clear'
   help:
-    header:                "📖 **Hermes 명령**\n"
-    skill_header:          "\n⚡ **스킬 명령** ({count}개 활성):"
-    more_use_commands:     "\n... 외 {count}개 더. 전체 목록은 `/commands`로 확인하세요."
+    header: '📖 **Hermes 명령**
 
+      '
+    skill_header: '
+
+      ⚡ **스킬 명령** ({count}개 활성):'
+    more_use_commands: '
+
+      ... 외 {count}개 더. 전체 목록은 `/commands`로 확인하세요.'
   insights:
-    invalid_days:          "잘못된 --days 값: {value}"
-    error:                 "인사이트 생성 중 오류: {error}"
-
+    invalid_days: '잘못된 --days 값: {value}'
+    error: '인사이트 생성 중 오류: {error}'
   kanban:
-    error_prefix:          "⚠ kanban 오류: {error}"
-    subscribed_suffix:     "(구독 중 — {task_id}이(가) 완료되거나 차단되면 알림을 받습니다)"
-    truncated_suffix:      "… (잘림; 전체 출력을 보려면 터미널에서 `hermes kanban …`을 사용하세요)"
-    no_output:             "(출력 없음)"
-
+    error_prefix: '⚠ kanban 오류: {error}'
+    subscribed_suffix: (구독 중 — {task_id}이(가) 완료되거나 차단되면 알림을 받습니다)
+    truncated_suffix: … (잘림; 전체 출력을 보려면 터미널에서 `hermes kanban …`을 사용하세요)
+    no_output: (출력 없음)
   personality:
-    none_configured:       "`{path}/config.yaml`에 구성된 성격이 없습니다"
-    header:                "🎭 **사용 가능한 성격**\n"
-    none_option:           "• `none` — (성격 오버레이 없음)"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n사용법: `/personality <name>`"
-    save_failed:           "⚠️ 성격 변경 저장에 실패했습니다: {error}"
-    cleared:               "🎭 성격이 해제되었습니다 — 기본 에이전트 동작을 사용합니다.\n_(다음 메시지부터 적용됩니다)_"
-    set_to:                "🎭 성격이 **{name}**(으)로 설정되었습니다\n_(다음 메시지부터 적용됩니다)_"
-    unknown:               "알 수 없는 성격: `{name}`\n\n사용 가능: {available}"
+    none_configured: '`{path}/config.yaml`에 구성된 성격이 없습니다'
+    header: '🎭 **사용 가능한 성격**
 
+      '
+    none_option: • `none` — (성격 오버레이 없음)
+    item: • `{name}` — {preview}
+    usage: '
+
+      사용법: `/personality <name>`'
+    save_failed: '⚠️ 성격 변경 저장에 실패했습니다: {error}'
+    cleared: '🎭 성격이 해제되었습니다 — 기본 에이전트 동작을 사용합니다.
+
+      _(다음 메시지부터 적용됩니다)_'
+    set_to: '🎭 성격이 **{name}**(으)로 설정되었습니다
+
+      _(다음 메시지부터 적용됩니다)_'
+    unknown: '알 수 없는 성격: `{name}`
+
+
+      사용 가능: {available}'
   profile:
-    header:                "👤 **프로필:** `{profile}`"
-    home:                  "📂 **홈:** `{home}`"
-
+    header: 👤 **프로필:** `{profile}`
+    home: 📂 **홈:** `{home}`
   reasoning:
-    level_default:             "medium (기본값)"
-    level_disabled:            "none (비활성화됨)"
-    scope_session:             "세션 재정의"
-    scope_global:              "전역 설정"
-    status:                    "🧠 **추론 설정**\n\n**노력:** `{level}`\n**범위:** {scope}\n**표시:** {display}\n\n_사용법:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
-    display_on:                "켜짐 ✓"
-    display_off:               "꺼짐"
-    display_set_on:            "🧠 ✓ 추론 표시: **켜짐**\n**{platform}**에서 응답 전에 모델의 사고 과정이 표시됩니다."
-    display_set_off:           "🧠 ✓ 추론 표시: **꺼짐** (**{platform}**에서)"
-    reset_global_unsupported:  "⚠️ `/reasoning reset --global`은 지원되지 않습니다. 전역 기본값을 변경하려면 `/reasoning <level> --global`을 사용하세요."
-    reset_done:                "🧠 ✓ 세션 추론 재정의가 해제되었습니다. 전역 설정으로 돌아갑니다."
-    unknown_arg:               "⚠️ 알 수 없는 인수: `{arg}`\n\n**유효한 수준:** none, minimal, low, medium, high, xhigh\n**표시:** show, hide\n**영구화:** 이 세션을 넘어 저장하려면 `--global`을 추가하세요"
-    set_global:                "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (설정에 저장됨)\n_(다음 메시지부터 적용됩니다)_"
-    set_global_save_failed:    "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 설정 저장 실패)\n_(다음 메시지부터 적용됩니다)_"
-    set_session:               "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 영구 저장하려면 `--global` 추가)\n_(다음 메시지부터 적용됩니다)_"
+    level_default: medium (기본값)
+    level_disabled: none (비활성화됨)
+    scope_session: 세션 재정의
+    scope_global: 전역 설정
+    status: '🧠 **추론 설정**
 
+
+      **노력:** `{level}`
+
+      **범위:** {scope}
+
+      **표시:** {display}
+
+
+      _사용법:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: 켜짐 ✓
+    display_off: 꺼짐
+    display_set_on: '🧠 ✓ 추론 표시: **켜짐**
+
+      **{platform}**에서 응답 전에 모델의 사고 과정이 표시됩니다.'
+    display_set_off: '🧠 ✓ 추론 표시: **꺼짐** (**{platform}**에서)'
+    reset_global_unsupported: ⚠️ `/reasoning reset --global`은 지원되지 않습니다. 전역 기본값을 변경하려면 `/reasoning <level> --global`을 사용하세요.
+    reset_done: 🧠 ✓ 세션 추론 재정의가 해제되었습니다. 전역 설정으로 돌아갑니다.
+    unknown_arg: '⚠️ 알 수 없는 인수: `{arg}`
+
+
+      **유효한 수준:** none, minimal, low, medium, high, xhigh
+
+      **표시:** show, hide
+
+      **영구화:** 이 세션을 넘어 저장하려면 `--global`을 추가하세요'
+    set_global: '🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (설정에 저장됨)
+
+      _(다음 메시지부터 적용됩니다)_'
+    set_global_save_failed: '🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 설정 저장 실패)
+
+      _(다음 메시지부터 적용됩니다)_'
+    set_session: '🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 영구 저장하려면 `--global` 추가)
+
+      _(다음 메시지부터 적용됩니다)_'
   reload_mcp:
-    cancelled:             "🟡 /reload-mcp가 취소되었습니다. MCP 도구는 변경되지 않았습니다."
-    always_followup:       "ℹ️ 이후 `/reload-mcp` 호출은 확인 없이 실행됩니다. config.yaml의 `approvals.mcp_reload_confirm: true`로 다시 활성화할 수 있습니다."
-    confirm_prompt:        "⚠️ **/reload-mcp 확인**\n\nMCP 서버를 재로드하면 이 세션의 도구 세트가 재구성되며 **제공자 프롬프트 캐시가 무효화됩니다** — 다음 메시지에서 전체 입력 토큰이 다시 전송됩니다. 긴 컨텍스트 또는 고도 추론 모델에서는 비용이 클 수 있습니다.\n\n선택하세요:\n• **한 번 승인** — 지금 재로드\n• **항상 승인** — 지금 재로드하고 이 프롬프트를 영구 비활성화\n• **취소** — MCP 도구를 변경하지 않음\n\n_텍스트 대체: `/approve`, `/always`, `/cancel`로 응답하세요._"
-    header:                "🔄 **MCP 서버가 재로드되었습니다**\n"
-    reconnected:           "♻️ 재연결됨: {names}"
-    added:                 "➕ 추가됨: {names}"
-    removed:               "➖ 제거됨: {names}"
-    none_connected:        "연결된 MCP 서버가 없습니다."
-    tools_available:       "\n🔧 {servers}개 서버에서 {tools}개 도구 사용 가능"
-    failed:                "❌ MCP 재로드 실패: {error}"
+    cancelled: 🟡 /reload-mcp가 취소되었습니다. MCP 도구는 변경되지 않았습니다.
+    always_followup: 'ℹ️ 이후 `/reload-mcp` 호출은 확인 없이 실행됩니다. config.yaml의 `approvals.mcp_reload_confirm: true`로 다시 활성화할 수 있습니다.'
+    confirm_prompt: '⚠️ **/reload-mcp 확인**
 
+
+      MCP 서버를 재로드하면 이 세션의 도구 세트가 재구성되며 **제공자 프롬프트 캐시가 무효화됩니다** — 다음 메시지에서 전체 입력 토큰이 다시 전송됩니다. 긴 컨텍스트 또는 고도 추론 모델에서는 비용이 클
+      수 있습니다.
+
+
+      선택하세요:
+
+      • **한 번 승인** — 지금 재로드
+
+      • **항상 승인** — 지금 재로드하고 이 프롬프트를 영구 비활성화
+
+      • **취소** — MCP 도구를 변경하지 않음
+
+
+      _텍스트 대체: `/approve`, `/always`, `/cancel`로 응답하세요._'
+    header: '🔄 **MCP 서버가 재로드되었습니다**
+
+      '
+    reconnected: '♻️ 재연결됨: {names}'
+    added: '➕ 추가됨: {names}'
+    removed: '➖ 제거됨: {names}'
+    none_connected: 연결된 MCP 서버가 없습니다.
+    tools_available: '
+
+      🔧 {servers}개 서버에서 {tools}개 도구 사용 가능'
+    failed: '❌ MCP 재로드 실패: {error}'
   reload_skills:
-    header:                "🔄 **스킬이 재로드되었습니다**\n"
-    no_new:                "새로운 스킬이 감지되지 않았습니다."
-    total:                 "\n📚 {count}개 스킬 사용 가능"
-    added_header:          "➕ **추가된 스킬:**"
-    removed_header:        "➖ **제거된 스킬:**"
-    item_with_desc:        "    - {name}: {desc}"
-    item_no_desc:          "    - {name}"
-    failed:                "❌ 스킬 재로드 실패: {error}"
+    header: '🔄 **스킬이 재로드되었습니다**
 
+      '
+    no_new: 새로운 스킬이 감지되지 않았습니다.
+    total: '
+
+      📚 {count}개 스킬 사용 가능'
+    added_header: ➕ **추가된 스킬:**
+    removed_header: ➖ **제거된 스킬:**
+    item_with_desc: '    - {name}: {desc}'
+    item_no_desc: '    - {name}'
+    failed: '❌ 스킬 재로드 실패: {error}'
   reset:
-    header_default:        "✨ 세션이 초기화되었습니다! 새로 시작합니다."
-    header_new:            "✨ 새 세션이 시작되었습니다!"
-    header_titled:         "✨ 새 세션이 시작되었습니다: {title}"
-    title_rejected:        "\n⚠️ 제목이 거부되었습니다: {error}"
-    title_error_untitled:  "\n⚠️ {error} — 제목 없이 세션을 시작했습니다."
-    title_empty_untitled:  "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
-    tip:                   "\n✦ 팁: {tip}"
+    header_default: ✨ 세션이 초기화되었습니다! 새로 시작합니다.
+    header_new: ✨ 새 세션이 시작되었습니다!
+    header_titled: '✨ 새 세션이 시작되었습니다: {title}'
+    title_rejected: '
 
+      ⚠️ 제목이 거부되었습니다: {error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — 제목 없이 세션을 시작했습니다.'
+    title_empty_untitled: '
+
+      ⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다.'
+    tip: '
+
+      ✦ 팁: {tip}'
   restart:
-    in_progress:           "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
-    restarting:            "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
-
+    in_progress: ⏳ 게이트웨이 재시작이 이미 진행 중입니다...
+    restarting: ♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요.
   resume:
-    db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
-    no_named_sessions:     "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
-    list_header:           "📋 **이름이 지정된 세션**\n"
-    list_item:             "• **{title}**{preview_part}"
-    list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\n사용법: `/resume <session name>`"
-    list_failed:           "세션 목록을 가져올 수 없습니다: {error}"
-    not_found:             "'**{name}**'와 일치하는 세션이 없습니다.\n사용 가능한 세션을 보려면 인수 없이 `/resume`을 사용하세요."
-    already_on:            "📌 이미 **{name}** 세션에 있습니다."
-    switch_failed:         "세션 전환에 실패했습니다."
-    resumed_one:           "↻ **{title}** 세션 재개됨 (메시지 {count}개). 대화가 복원되었습니다."
-    resumed_many:          "↻ **{title}** 세션 재개됨 (메시지 {count}개). 대화가 복원되었습니다."
-    resumed_no_count:      "↻ **{title}** 세션 재개됨. 대화가 복원되었습니다."
+    db_unavailable: 세션 데이터베이스를 사용할 수 없습니다.
+    no_named_sessions: '이름이 지정된 세션이 없습니다.
 
+      현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요.'
+    list_header: '📋 **이름이 지정된 세션**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' — _{preview}_'
+    list_footer: '
+
+      사용법: `/resume <session name>`'
+    list_failed: '세션 목록을 가져올 수 없습니다: {error}'
+    not_found: '''**{name}**''와 일치하는 세션이 없습니다.
+
+      사용 가능한 세션을 보려면 인수 없이 `/resume`을 사용하세요.'
+    already_on: 📌 이미 **{name}** 세션에 있습니다.
+    switch_failed: 세션 전환에 실패했습니다.
+    resumed_one: ↻ **{title}** 세션 재개됨 (메시지 {count}개). 대화가 복원되었습니다.
+    resumed_many: ↻ **{title}** 세션 재개됨 (메시지 {count}개). 대화가 복원되었습니다.
+    resumed_no_count: ↻ **{title}** 세션 재개됨. 대화가 복원되었습니다.
   retry:
-    no_previous:           "재시도할 이전 메시지가 없습니다."
-
+    no_previous: 재시도할 이전 메시지가 없습니다.
   rollback:
-    not_enabled:           "체크포인트가 활성화되어 있지 않습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```"
-    none_found:            "{cwd}에 체크포인트를 찾을 수 없습니다"
-    invalid_number:        "잘못된 체크포인트 번호입니다. 1-{max}을 사용하세요."
-    restored:              "✅ 체크포인트 {hash}(으)로 복원됨: {reason}\n롤백 전 스냅샷이 자동으로 저장되었습니다."
-    restore_failed:        "❌ {error}"
+    not_enabled: "체크포인트가 활성화되어 있지 않습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```"
+    none_found: '{cwd}에 체크포인트를 찾을 수 없습니다'
+    invalid_number: 잘못된 체크포인트 번호입니다. 1-{max}을 사용하세요.
+    restored: '✅ 체크포인트 {hash}(으)로 복원됨: {reason}
 
+      롤백 전 스냅샷이 자동으로 저장되었습니다.'
+    restore_failed: ❌ {error}
   set_home:
-    save_failed:           "홈 채널 저장에 실패했습니다: {error}"
-    success:               "✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.\n크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다."
+    save_failed: '홈 채널 저장에 실패했습니다: {error}'
+    success: '✅ 홈 채널이 **{name}**(ID: {chat_id})(으)로 설정되었습니다.
 
+      크론 작업과 플랫폼 간 메시지가 여기로 전달됩니다.'
   status:
-    header:                "📊 **Hermes 게이트웨이 상태**"
-    session_id:            "**세션 ID:** `{session_id}`"
-    title:                 "**제목:** {title}"
-    created:               "**생성됨:** {timestamp}"
-    last_activity:         "**최종 활동:** {timestamp}"
-    tokens:                "**토큰:** {tokens}"
-    agent_running:         "**에이전트 실행 중:** {state}"
-    state_yes:             "예 ⚡"
-    state_no:              "아니오"
-    queued:                "**대기 중인 후속 작업:** {count}"
-    platforms:             "**연결된 플랫폼:** {platforms}"
-
+    header: 📊 **Hermes 게이트웨이 상태**
+    session_id: '**세션 ID:** `{session_id}`'
+    title: '**제목:** {title}'
+    created: '**생성됨:** {timestamp}'
+    last_activity: '**최종 활동:** {timestamp}'
+    tokens: '**토큰:** {tokens}'
+    agent_running: '**에이전트 실행 중:** {state}'
+    state_yes: 예 ⚡
+    state_no: 아니오
+    queued: '**대기 중인 후속 작업:** {count}'
+    platforms: '**연결된 플랫폼:** {platforms}'
   stop:
-    stopped_pending:       "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."
-    stopped:               "⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다."
-    no_active:             "중지할 활성 작업이 없습니다."
-
+    stopped_pending: ⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다.
+    stopped: ⚡ 중지되었습니다. 이 세션을 계속할 수 있습니다.
+    no_active: 중지할 활성 작업이 없습니다.
   title:
-    db_unavailable:        "세션 데이터베이스를 사용할 수 없습니다."
-    warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ 정리 후 제목이 비어 있습니다. 인쇄 가능한 문자를 사용해 주세요."
-    set_to:                "✏️ 세션 제목 설정됨: **{title}**"
-    not_found:             "데이터베이스에서 세션을 찾을 수 없습니다."
-    current_with_title:    "📌 세션: `{session_id}`\n제목: **{title}**"
-    current_no_title:      "📌 세션: `{session_id}`\n제목이 설정되지 않았습니다. 사용법: `/title 내 세션 이름`"
+    db_unavailable: 세션 데이터베이스를 사용할 수 없습니다.
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ 정리 후 제목이 비어 있습니다. 인쇄 가능한 문자를 사용해 주세요.
+    set_to: '✏️ 세션 제목 설정됨: **{title}**'
+    not_found: 데이터베이스에서 세션을 찾을 수 없습니다.
+    current_with_title: '📌 세션: `{session_id}`
 
+      제목: **{title}**'
+    current_no_title: '📌 세션: `{session_id}`
+
+      제목이 설정되지 않았습니다. 사용법: `/title 내 세션 이름`'
   topic:
-    not_telegram_dm:         "/topic 명령은 Telegram 비공개 채팅에서만 사용할 수 있습니다."
-    no_session_db:           "세션 데이터베이스를 사용할 수 없습니다."
-    unauthorized:            "이 봇에서 /topic을 사용할 권한이 없습니다."
-    restore_needs_topic:     "세션을 복원하려면 먼저 Telegram 토픽을 만들거나 열고, 해당 토픽 안에서 /topic <session-id>를 보내세요. 새 토픽을 만들려면 All Messages를 열고 그곳으로 메시지를 보내세요."
-    topics_disabled:         "이 봇에는 아직 Telegram 토픽이 활성화되어 있지 않습니다.\n\n활성화 방법:\n1. @BotFather를 엽니다.\n2. 봇을 선택합니다.\n3. Bot Settings → Threads Settings를 엽니다.\n4. Threaded Mode를 켜고 사용자가 새 스레드를 만들 수 있도록 허용합니다.\n\n그런 다음 다시 /topic을 보내세요."
-    topics_user_disallowed:  "Telegram 토픽이 활성화되어 있지만, 사용자가 토픽을 만들 수 없습니다.\n\n@BotFather → 봇 선택 → Bot Settings → Threads Settings를 열고 'Disallow users to create new threads'를 끄세요.\n\n그런 다음 다시 /topic을 보내세요."
-    enable_failed:           "Telegram 토픽 모드 활성화에 실패했습니다: {error}"
-    bound_status:            "이 토픽은 다음에 연결되어 있습니다:\n세션: {label}\nID: {session_id}\n\n이 토픽을 새 세션으로 교체하려면 /new를 사용하세요.\n병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    thread_ready:            "Telegram 다중 세션 토픽이 활성화되었습니다.\n\n이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요."
-    untitled_session:        "제목 없는 세션"
+    not_telegram_dm: /topic 명령은 Telegram 비공개 채팅에서만 사용할 수 있습니다.
+    no_session_db: 세션 데이터베이스를 사용할 수 없습니다.
+    unauthorized: 이 봇에서 /topic을 사용할 권한이 없습니다.
+    restore_needs_topic: 세션을 복원하려면 먼저 Telegram 토픽을 만들거나 열고, 해당 토픽 안에서 /topic <session-id>를 보내세요. 새 토픽을 만들려면 All Messages를
+      열고 그곳으로 메시지를 보내세요.
+    topics_disabled: '이 봇에는 아직 Telegram 토픽이 활성화되어 있지 않습니다.
 
+
+      활성화 방법:
+
+      1. @BotFather를 엽니다.
+
+      2. 봇을 선택합니다.
+
+      3. Bot Settings → Threads Settings를 엽니다.
+
+      4. Threaded Mode를 켜고 사용자가 새 스레드를 만들 수 있도록 허용합니다.
+
+
+      그런 다음 다시 /topic을 보내세요.'
+    topics_user_disallowed: 'Telegram 토픽이 활성화되어 있지만, 사용자가 토픽을 만들 수 없습니다.
+
+
+      @BotFather → 봇 선택 → Bot Settings → Threads Settings를 열고 ''Disallow users to create new threads''를 끄세요.
+
+
+      그런 다음 다시 /topic을 보내세요.'
+    enable_failed: 'Telegram 토픽 모드 활성화에 실패했습니다: {error}'
+    bound_status: '이 토픽은 다음에 연결되어 있습니다:
+
+      세션: {label}
+
+      ID: {session_id}
+
+
+      이 토픽을 새 세션으로 교체하려면 /new를 사용하세요.
+
+      병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요.'
+    thread_ready: 'Telegram 다중 세션 토픽이 활성화되었습니다.
+
+
+      이 토픽은 독립된 Hermes 세션으로 사용됩니다. 이 토픽의 현재 세션을 교체하려면 /new를 사용하세요. 병렬 작업을 위해서는 All Messages를 열고 메시지를 보내 다른 토픽을 만드세요.'
+    untitled_session: 제목 없는 세션
   undo:
-    nothing:               "되돌릴 내용이 없습니다."
-    removed:               "↩️ 메시지 {count}개를 되돌렸습니다.\n제거됨: \"{preview}\""
+    nothing: 되돌릴 내용이 없습니다.
+    removed: '↩️ 메시지 {count}개를 되돌렸습니다.
 
+      제거됨: "{preview}"'
   update:
-    platform_not_messaging:  "✗ /update는 메시징 플랫폼에서만 사용할 수 있습니다. 터미널에서 `hermes update`를 실행하세요."
-    not_git_repo:            "✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다."
-    hermes_cmd_not_found:    "✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes update`를 직접 실행해 보세요."
-    start_failed:            "✗ 업데이트 시작 실패: {error}"
-    starting:                "⚕ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다."
-
+    platform_not_messaging: ✗ /update는 메시징 플랫폼에서만 사용할 수 있습니다. 터미널에서 `hermes update`를 실행하세요.
+    not_git_repo: ✗ git 저장소가 아닙니다 — 업데이트할 수 없습니다.
+    hermes_cmd_not_found: ✗ `hermes` 명령을 찾을 수 없습니다. Hermes는 실행 중이지만 PATH나 현재 Python 인터프리터를 통해 실행 파일을 찾을 수 없습니다. 터미널에서 `hermes
+      update`를 직접 실행해 보세요.
+    start_failed: '✗ 업데이트 시작 실패: {error}'
+    starting: ⚕ Hermes 업데이트를 시작합니다… 진행 상황을 여기에 스트리밍하겠습니다.
   usage:
-    rate_limits:              "⏱️ **요청 제한:** {state}"
-    header_session:           "📊 **세션 토큰 사용량**"
-    label_model:              "모델: `{model}`"
-    label_input_tokens:       "입력 토큰: {count}"
-    label_cache_read:         "캐시 읽기 토큰: {count}"
-    label_cache_write:        "캐시 쓰기 토큰: {count}"
-    label_output_tokens:      "출력 토큰: {count}"
-    label_total:              "합계: {count}"
-    label_api_calls:          "API 호출: {count}"
-    label_cost:               "비용: {prefix}${amount}"
-    label_cost_included:      "비용: 포함됨"
-    label_context:            "컨텍스트: {used} / {total} ({pct}%)"
-    label_compressions:       "압축: {count}"
-    header_session_info:      "📊 **세션 정보**"
-    label_messages:           "메시지: {count}"
-    label_estimated_context:  "예상 컨텍스트: 약 {count} 토큰"
-    detailed_after_first:     "_(자세한 사용량은 첫 에이전트 응답 이후 확인할 수 있습니다)_"
-    no_data:                  "이 세션에 사용 가능한 사용량 데이터가 없습니다."
-
+    rate_limits: ⏱️ **요청 제한:** {state}
+    header_session: 📊 **세션 토큰 사용량**
+    label_model: '모델: `{model}`'
+    label_input_tokens: '입력 토큰: {count}'
+    label_cache_read: '캐시 읽기 토큰: {count}'
+    label_cache_write: '캐시 쓰기 토큰: {count}'
+    label_output_tokens: '출력 토큰: {count}'
+    label_total: '합계: {count}'
+    label_api_calls: 'API 호출: {count}'
+    label_cost: '비용: {prefix}${amount}'
+    label_cost_included: '비용: 포함됨'
+    label_context: '컨텍스트: {used} / {total} ({pct}%)'
+    label_compressions: '압축: {count}'
+    header_session_info: 📊 **세션 정보**
+    label_messages: '메시지: {count}'
+    label_estimated_context: '예상 컨텍스트: 약 {count} 토큰'
+    detailed_after_first: _(자세한 사용량은 첫 에이전트 응답 이후 확인할 수 있습니다)_
+    no_data: 이 세션에 사용 가능한 사용량 데이터가 없습니다.
   verbose:
-    not_enabled:           "`/verbose` 명령은 메시징 플랫폼에서 활성화되어 있지 않습니다.\n\n`config.yaml`에서 활성화하세요:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
-    mode_off:              "⚙️ 도구 진행 상황: **OFF** — 도구 활동이 표시되지 않습니다."
-    mode_new:              "⚙️ 도구 진행 상황: **NEW** — 도구가 변경될 때 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
-    mode_all:              "⚙️ 도구 진행 상황: **ALL** — 모든 도구 호출이 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40)."
-    mode_verbose:          "⚙️ 도구 진행 상황: **VERBOSE** — 모든 도구 호출이 전체 인수와 함께 표시됩니다."
-    saved_suffix:          "_(**{platform}**에 저장됨 — 다음 메시지부터 적용됩니다)_"
-    save_failed:           "_(설정에 저장할 수 없습니다: {error})_"
-
+    not_enabled: "`/verbose` 명령은 메시징 플랫폼에서 활성화되어 있지 않습니다.\n\n`config.yaml`에서 활성화하세요:\n```yaml\ndisplay:\n  tool_progress_command:\
+      \ true\n```"
+    mode_off: '⚙️ 도구 진행 상황: **OFF** — 도구 활동이 표시되지 않습니다.'
+    mode_new: '⚙️ 도구 진행 상황: **NEW** — 도구가 변경될 때 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40).'
+    mode_all: '⚙️ 도구 진행 상황: **ALL** — 모든 도구 호출이 표시됩니다 (미리보기 길이: `display.tool_preview_length`, 기본 40).'
+    mode_verbose: '⚙️ 도구 진행 상황: **VERBOSE** — 모든 도구 호출이 전체 인수와 함께 표시됩니다.'
+    saved_suffix: _(**{platform}**에 저장됨 — 다음 메시지부터 적용됩니다)_
+    save_failed: '_(설정에 저장할 수 없습니다: {error})_'
   voice:
-    enabled_voice_only:    "음성 모드가 활성화되었습니다.\n음성 메시지를 보내시면 음성으로 답변하겠습니다.\n모든 메시지에 대해 음성으로 응답받으려면 /voice tts를 사용하세요."
-    disabled_text:         "음성 모드가 비활성화되었습니다. 텍스트로만 응답합니다."
-    tts_enabled:           "자동 TTS가 활성화되었습니다.\n모든 응답에 음성 메시지가 포함됩니다."
-    status_mode:           "음성 모드: {label}"
-    status_channel:        "음성 채널: #{channel}"
-    status_participants:   "참가자: {count}"
-    status_member:         "  - {name}{status}"
-    speaking:              " (말하는 중)"
-    enabled_short:         "음성 모드가 활성화되었습니다."
-    disabled_short:        "음성 모드가 비활성화되었습니다."
-    label_off:             "꺼짐 (텍스트 전용)"
-    label_voice_only:      "켜짐 (음성 메시지에 음성으로 응답)"
-    label_all:             "TTS (모든 메시지에 음성으로 응답)"
+    enabled_voice_only: '음성 모드가 활성화되었습니다.
 
+      음성 메시지를 보내시면 음성으로 답변하겠습니다.
+
+      모든 메시지에 대해 음성으로 응답받으려면 /voice tts를 사용하세요.'
+    disabled_text: 음성 모드가 비활성화되었습니다. 텍스트로만 응답합니다.
+    tts_enabled: '자동 TTS가 활성화되었습니다.
+
+      모든 응답에 음성 메시지가 포함됩니다.'
+    status_mode: '음성 모드: {label}'
+    status_channel: '음성 채널: #{channel}'
+    status_participants: '참가자: {count}'
+    status_member: '  - {name}{status}'
+    speaking: ' (말하는 중)'
+    enabled_short: 음성 모드가 활성화되었습니다.
+    disabled_short: 음성 모드가 비활성화되었습니다.
+    label_off: 꺼짐 (텍스트 전용)
+    label_voice_only: 켜짐 (음성 메시지에 음성으로 응답)
+    label_all: TTS (모든 메시지에 음성으로 응답)
   yolo:
-    disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
-    enabled:                    "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
-
+    disabled: ⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다.
+    enabled: ⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요.
   shared:
-    session_db_unavailable:      "세션 데이터베이스를 사용할 수 없습니다."
-    session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
-    session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
-    warn_passthrough:            "⚠️ {error}"
+    session_db_unavailable: 세션 데이터베이스를 사용할 수 없습니다.
+    session_db_unavailable_prefix: 세션 데이터베이스를 사용할 수 없습니다
+    session_not_found: 데이터베이스에서 세션을 찾을 수 없습니다.
+    warn_passthrough: ⚠️ {error}
+tip:
+  '001': /background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.
+  '002': /branch forks the current session so you can explore a different direction without losing progress.
+  '003': /compress manually compresses conversation context when things get long.
+  '004': /rollback lists filesystem checkpoints — restore files the agent modified to any prior state.
+  '005': /rollback diff 2 previews what changed since checkpoint 2 without restoring anything.
+  '006': /rollback 2 src/file.py restores a single file from a specific checkpoint.
+  '007': /title \"my project\" names your session — resume it later with /resume or hermes -c.
+  008: /resume picks up where you left off in a previously named session.
+  009: /queue <prompt> queues a message for the next turn without interrupting the current one.
+  '010': /undo removes the last user/assistant exchange from the conversation.
+  '011': /retry resends your last message — useful when the agent's response wasn't quite right.
+  '012': '/verbose cycles tool progress display: off → new → all → verbose.'
+  '013': /reasoning high increases the model's thinking depth. /reasoning show displays the reasoning.
+  '014': /fast toggles priority processing for faster API responses (provider-dependent).
+  '015': /yolo skips all dangerous command approval prompts for the rest of the session.
+  '016': /model lets you switch models mid-session — try /model sonnet or /model gpt-5.
+  '017': /model --global changes your default model permanently.
+  018: /personality pirate sets a fun personality — 14 built-in options from kawaii to shakespeare.
+  019: /skin changes the CLI theme — try ares, mono, slate, poseidon, or charizard.
+  '020': /statusbar toggles a persistent bar showing model, tokens, context fill %, cost, and duration.
+  '021': /tools disable browser temporarily removes browser tools for the current session.
+  '022': /browser connect attaches browser tools to your running Chrome instance via CDP.
+  '023': /plugins lists installed plugins and their status.
+  '024': /cron manages scheduled tasks — set up recurring prompts with delivery to any platform.
+  '025': /reload-mcp hot-reloads MCP server configuration without restarting.
+  '026': /usage shows token usage, cost breakdown, and session duration.
+  '027': /insights shows usage analytics for the last 30 days.
+  028: /paste checks your clipboard for an image and attaches it to your next message.
+  029: /profile shows which profile is active and its home directory.
+  '030': /config shows your current configuration at a glance.
+  '031': /stop kills all running background processes spawned by the agent.
+  '032': '@file:path/to/file.py injects file contents directly into your message.'
+  '033': '@file:main.py:10-50 injects only lines 10-50 of a file.'
+  '034': '@folder:src/ injects a directory tree listing.'
+  '035': '@diff injects your unstaged git changes into the message.'
+  '036': '@staged injects your staged git changes (git diff --staged).'
+  '037': '@git:5 injects the last 5 commits with full patches.'
+  038: '@url:https://example.com fetches and injects a web page''s content.'
+  039: Typing @ triggers filesystem path completion — navigate to any file interactively.
+  '040': 'Combine multiple references: \"Review @file:main.py and @file:test.py for consistency.\"'
+  '041': Alt+Enter inserts a newline for multi-line input. (Windows Terminal intercepts Alt+Enter — use Ctrl+Enter instead.)
+  '042': Ctrl+C interrupts the agent. Double-press within 2 seconds to force exit.
+  '043': Ctrl+Z suspends Hermes to the background — run fg in your shell to resume.
+  '044': Tab accepts auto-suggestion ghost text or autocompletes slash commands.
+  '045': Type a new message while the agent is working to interrupt and redirect it.
+  '046': Alt+V pastes an image from your clipboard into the conversation.
+  '047': Pasting 5+ lines auto-saves to a file and inserts a compact reference instead.
+  048: hermes -c resumes your most recent CLI session. hermes -c \"project name\" resumes by title.
+  049: hermes -w creates an isolated git worktree — perfect for parallel agent workflows.
+  '050': 'hermes -w -q \"Fix issue #42\" combines worktree isolation with a one-shot query.'
+  '051': hermes chat -t web,terminal enables only specific toolsets for a focused session.
+  '052': hermes chat -s github-pr-workflow preloads a skill at launch.
+  '053': hermes chat -q \"query\" runs a single non-interactive query and exits.
+  '054': hermes chat --max-turns 200 overrides the default 90-iteration limit per turn.
+  '055': hermes chat --checkpoints enables filesystem snapshots before every destructive file change.
+  '056': hermes --yolo bypasses all dangerous command approval prompts for the entire session.
+  '057': hermes chat --source telegram tags the session for filtering in hermes sessions list.
+  058: hermes -p work chat runs under a specific profile without changing your default.
+  059: hermes doctor --fix diagnoses and auto-repairs config and dependency issues.
+  '060': hermes dump outputs a compact setup summary — great for bug reports.
+  '061': hermes config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.
+  '062': hermes config edit opens config.yaml in your default editor.
+  '063': hermes config check scans for missing or stale configuration options.
+  '064': hermes sessions browse opens an interactive session picker with search.
+  '065': hermes sessions stats shows session counts by platform and database size.
+  '066': hermes sessions prune --older-than 30 cleans up old sessions.
+  '067': hermes skills search react --source skills-sh searches the skills.sh public directory.
+  068: hermes skills check scans installed hub skills for upstream updates.
+  069: hermes skills tap add myorg/skills-repo adds a custom GitHub skill source.
+  '070': hermes skills snapshot export setup.json exports your skill configuration for backup or sharing.
+  '071': hermes mcp add github --command npx adds MCP servers from the command line.
+  '072': hermes mcp serve runs Hermes itself as an MCP server for other agents.
+  '073': hermes auth add lets you add multiple API keys for credential pool rotation.
+  '074': hermes completion bash >> ~/.bashrc enables tab completion for all commands and profiles.
+  '075': hermes logs -f follows agent.log in real time. --level WARNING --since 1h filters output.
+  '076': hermes backup creates a zip backup of your entire Hermes home directory.
+  '077': hermes profile create coder creates an isolated profile that becomes its own command.
+  078: hermes profile create work --clone copies your current config and keys to a new profile.
+  079: hermes update syncs new bundled skills to ALL profiles automatically.
+  080: hermes gateway install sets up Hermes as a system service (systemd/launchd).
+  081: hermes memory setup lets you configure an external memory provider (Honcho, Mem0, etc.).
+  082: hermes webhook subscribe creates event-driven webhook routes with HMAC validation.
+  083: 'Save money: hermes tools disables unused tools, hermes skills config trims skills down.'
+  084: /reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.
+  085: hermes models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without
+    downgrading your main chat model.
+  086: 'Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.'
+  087: 'Set display.streaming: true to see tokens appear in real time as the model generates.'
+  088: 'Set display.show_reasoning: true to watch the model''s chain-of-thought reasoning.'
+  089: 'Set display.compact: true to reduce whitespace in output for denser information.'
+  090: 'Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run
+    via /steer.'
+  091: 'Set display.resume_display: minimal to skip the full conversation recap on session resume.'
+  092: 'Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).'
+  093: 'Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.'
+  094: 'Set file_read_max_chars: 200000 to increase the max content per read_file call.'
+  095: 'Set approvals.mode: smart to let an LLM auto-approve safe commands and auto-deny dangerous ones.'
+  096: Set fallback_model in config.yaml to automatically fail over to a backup provider.
+  097: 'Set privacy.redact_pii: true to hash user IDs and phone numbers before sending to the LLM.'
+  098: 'Set browser.record_sessions: true to auto-record browser sessions as WebM videos.'
+  099: 'Set worktree: true in config.yaml to always create a git worktree (same as hermes -w).'
+  '100': 'Set security.website_blocklist.enabled: true to block specific domains from web tools.'
+  '101': 'Set cron.wrap_response: false to deliver raw agent output without the cron header/footer.'
+  '102': HERMES_TIMEZONE overrides the server timezone with any IANA timezone string.
+  '103': 'Environment variable substitution works in config.yaml: use ${VAR_NAME} syntax.'
+  '104': Quick commands in config.yaml run shell commands instantly with zero token usage.
+  '105': Custom personalities can be defined in config.yaml under agent.personalities.
+  '106': provider_routing controls OpenRouter provider sorting, whitelisting, and blacklisting.
+  '107': execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.
+  '108': delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated
+    contexts for parallel work.
+  '109': web_extract works on PDF URLs — pass any PDF link and it converts to markdown.
+  '110': search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.
+  '111': patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.
+  '112': patch supports V4A format for bulk multi-file edits in a single call.
+  '113': read_file suggests similar filenames when a file isn't found.
+  '114': read_file auto-deduplicates — re-reading an unchanged file returns a lightweight stub.
+  '115': browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.
+  '116': browser_console can evaluate JavaScript expressions in the page context.
+  '117': image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.
+  '118': text_to_speech converts text to audio — plays as voice bubbles on Telegram.
+  '119': send_message can reach any connected messaging platform from within a session.
+  '120': The todo tool helps the agent track complex multi-step tasks during a session.
+  '121': session_search performs full-text search across ALL past conversations.
+  '122': The agent automatically saves preferences, corrections, and environment facts to memory.
+  '123': mixture_of_agents routes hard problems through 4 frontier LLMs collaboratively.
+  '124': Terminal commands support background mode with notify_on_complete for long-running tasks.
+  '125': Terminal background processes support watch_patterns to alert on specific output lines.
+  '126': 'The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.'
+  '127': Each profile gets its own config, API keys, memory, sessions, skills, and cron jobs.
+  '128': Profile names become shell commands — 'hermes profile create coder' creates the 'coder' command.
+  '129': hermes profile export coder -o backup.tar.gz creates a portable profile archive.
+  '130': If two profiles accidentally share a bot token, the second gateway is blocked with a clear error.
+  '131': Sessions auto-generate descriptive titles after the first exchange — no manual naming needed.
+  '132': 'Session titles support lineage: \"my project\" → \"my project #2\" → \"my project #3\".'
+  '133': When exiting, Hermes prints a resume command with session ID and stats.
+  '134': hermes sessions export backup.jsonl exports all sessions for backup or analysis.
+  '135': hermes -r SESSION_ID resumes any specific past session by its ID.
+  '136': Memory is a frozen snapshot — changes appear in the system prompt only at next session start.
+  '137': Memory entries are automatically scanned for prompt injection and exfiltration patterns.
+  '138': 'The agent has two memory stores: personal notes (~2200 chars) and user profile (~1375 chars).'
+  '139': Corrections you give the agent (\"no, do it this way\") are often auto-saved to memory.
+  '140': Over 80 bundled skills covering github, creative, mlops, productivity, research, and more.
+  '141': Every installed skill automatically becomes a slash command — type / to see them all.
+  '142': hermes skills install official/security/1password installs optional skills from the repo.
+  '143': Skills can restrict to specific OS platforms — some only load on macOS or Linux.
+  '144': skills.external_dirs in config.yaml lets you load skills from custom directories.
+  '145': The agent can create its own skills as procedural memory using skill_manage.
+  '146': The plan skill saves markdown plans under .hermes/plans/ in the active workspace.
+  '147': 'Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".'
+  '148': Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.
+  '149': If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.
+  '150': Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.
+  '151': Cron jobs run in completely fresh agent sessions — prompts must be self-contained.
+  '152': Voice mode works with zero API keys if faster-whisper is installed (free local speech-to-text).
+  '153': 'Five TTS providers available: Edge TTS (free), ElevenLabs, OpenAI, NeuTTS (free local), MiniMax.'
+  '154': /voice on enables voice mode in the CLI. Ctrl+B toggles push-to-talk recording.
+  '155': Streaming TTS plays sentences as they generate — you don't wait for the full response.
+  '156': Voice messages on Telegram, Discord, WhatsApp, and Slack are auto-transcribed.
+  '157': 'Hermes runs on 21 messaging platforms: Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams,
+    email, and more.'
+  '158': hermes gateway install sets it up as a system service that starts on boot.
+  '159': DingTalk uses Stream Mode — no webhooks or public URL needed.
+  '160': BlueBubbles brings iMessage to Hermes via a local macOS server.
+  '161': Webhook routes support HMAC validation, rate limiting, and event filtering.
+  '162': The API server exposes an OpenAI-compatible endpoint compatible with Open WebUI and LibreChat.
+  '163': 'Discord voice channel mode: the bot joins VC, transcribes speech, and talks back.'
+  '164': 'group_sessions_per_user: true gives each person their own session in group chats.'
+  '165': /sethome marks a chat as the home channel for cron job deliveries.
+  '166': The gateway supports inactivity-based timeouts — active agents can run indefinitely.
+  '167': 'Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.'
+  '168': Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones.
+  '169': SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.
+  '170': Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.
+  '171': MCP subprocesses receive a filtered environment — only safe system vars pass through.
+  '172': Context files (.hermes.md, AGENTS.md) are security-scanned for prompt injection before loading.
+  '173': command_allowlist in config.yaml permanently approves specific shell command patterns.
+  '174': Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.
+  '175': The status bar turns yellow, then orange, then red as context fills up.
+  '176': SOUL.md at ~/.hermes/SOUL.md is the agent's primary identity — customize it to shape behavior.
+  '177': Hermes loads project context from .hermes.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match).
+  '178': Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders.
+  '179': Context files are capped at 20,000 characters with smart head/tail truncation.
+  '180': 'Five browser providers: local Chromium, Browserbase, Browser Use, Camofox, and Firecrawl.'
+  '181': Camofox is an anti-detection browser — Firefox fork with C++ fingerprint spoofing.
+  '182': browser_navigate returns a page snapshot automatically — no need to call browser_snapshot after.
+  '183': browser_vision with annotate=true overlays numbered labels on interactive elements.
+  '184': MCP servers are configured in config.yaml — both stdio and HTTP transports supported.
+  '185': 'Per-server tool filtering: tools.include whitelists and tools.exclude blacklists specific tools.'
+  '186': MCP servers auto-generate toolsets at runtime — hermes tools can toggle them per platform.
+  '187': 'MCP OAuth support: auth: oauth enables browser-based authorization with PKCE.'
+  '188': Checkpoints have zero overhead when no files are modified — enabled by default.
+  '189': A pre-rollback snapshot is saved automatically so you can undo the undo.
+  '190': /rollback also undoes the conversation turn, so the agent doesn't remember rolled-back changes.
+  '191': Checkpoints use shadow repos in ~/.hermes/checkpoints/ — your project's .git is never touched.
+  '192': batch_runner.py processes hundreds of prompts in parallel for training data generation.
+  '193': hermes chat -Q enables quiet mode for programmatic use — suppresses banner and spinner.
+  '194': Trajectory saving (--save-trajectories) captures full tool-use traces for model training.
+  '195': 'Three plugin types: general (tools/hooks), memory providers, and context engines.'
+  '196': hermes plugins install owner/repo installs plugins directly from GitHub.
+  '197': '8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.'
+  '198': Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.
+  '199': Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.
+  '200': The agent auto-generates session titles in a background thread — zero latency impact.
+  '201': Smart model routing can auto-route simple queries to a cheaper model.
+  '202': 'Slash commands support prefix matching: /h resolves to /help, /mod to /model.'
+  '203': Dragging a file path into the terminal auto-attaches images or sends as context.
+  '204': .worktreeinclude in your repo root lists gitignored files to copy into worktrees.
+  '205': hermes acp runs Hermes as an ACP server for VS Code, Zed, and JetBrains integration.
+  '206': 'Custom providers: save named endpoints in config.yaml under custom_providers.'
+  '207': HERMES_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.
+  '208': credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.
+  '209': hermes login supports OAuth-based auth for Nous and OpenAI Codex providers.
+  '210': The API server supports both Chat Completions and Responses API with server-side state.
+  '211': 'tool_preview_length: 0 in config shows full file paths in the spinner''s activity feed.'
+  '212': hermes status --deep runs deeper diagnostic checks across all components.
+  '213': Cron jobs can attach a Python script (--script) whose stdout is injected into the prompt as context.
+  '214': Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines.
+  '215': prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.
+  '216': SOUL.md completely replaces the agent's default identity — rewrite it to make Hermes your own.
+  '217': SOUL.md is auto-seeded with a default personality on first run. Edit ~/.hermes/SOUL.md to customize.
+  '218': /compress <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.
+  '219': On second+ compression, the compressor updates the previous summary instead of starting from scratch.
+  '220': Before a gateway session reset, Hermes auto-flushes important facts to memory in the background.
+  '221': 'network.force_ipv4: true in config.yaml fixes hangs on servers with broken IPv6 — monkey-patches socket.'
+  '222': 'The terminal tool annotates common exit codes: grep returning 1 = ''No matches found (not an error)''.'
+  '223': Failed foreground terminal commands auto-retry up to 3 times with exponential backoff (2s, 4s, 8s).
+  '224': Bare sudo commands are auto-rewritten to pipe SUDO_PASSWORD from .env — no interactive prompt needed.
+  '225': 'execute_code has built-in helpers: json_parse() for tolerant parsing, shell_quote(), and retry() with backoff.'
+  '226': execute_code's 7 sandbox tools (web_search, terminal, read/write/search/patch) use RPC — never enter context.
+  '227': Reading the same file region 3+ times triggers a warning. At 4+, it's hard-blocked to prevent loops.
+  '228': write_file and patch detect if a file was externally modified since the last read and warn about staleness.
+  '229': V4A patch format supports Add File, Delete File, and Move File directives — not just Update.
+  '230': MCP servers can request LLM completions back via sampling — the agent becomes a tool for the server.
+  '231': MCP servers send notifications/tools/list_changed to trigger automatic tool re-registration without restart.
+  '232': 'delegate_task with acp_command: ''claude'' spawns Claude Code as a child agent from any platform.'
+  '233': Delegation has a heartbeat thread — child activity propagates to the parent, preventing gateway timeouts.
+  '234': When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.
+  '235': agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.
+  '236': agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.
+  '237': agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the
+    error — lower it for fast fallback.
+  '238': The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.
+  '239': Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.
+  '240': The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.
+  '241': 'Stale git worktrees are auto-cleaned: 24-72h old with no unpushed commits get pruned on startup.'
+  '242': Each profile gets its own subprocess HOME at HERMES_HOME/home/ — isolated git, ssh, npm, gh configs.
+  '243': HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal.
+  '244': 'Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container.'
+  '245': 'Ctrl+C has 5 priority tiers: cancel recording → cancel prompts → cancel picker → interrupt agent → exit.'
+  '246': Every interrupt during an agent run is logged to ~/.hermes/interrupt_debug.log with timestamps.
+  '247': BROWSER_CDP_URL connects browser tools to any running Chrome — accepts WebSocket, HTTP, or host:port.
+  '248': BROWSERBASE_ADVANCED_STEALTH=true enables advanced anti-detection with custom Chromium (Scale Plan).
+  '249': The CLI auto-switches to compact mode in terminals narrower than 80 columns.
+  '250': 'Quick commands support two types: exec (run shell command directly) and alias (redirect to another command).'
+  '251': 'Per-task delegation model: delegation.model and delegation.provider in config route subagents to cheaper models.'
+  '252': delegation.reasoning_effort independently controls thinking depth for subagents.
+  '253': 'display.platforms in config.yaml allows per-platform display overrides: {telegram: {tool_progress: all}}.'
+  '254': human_delay.mode in config simulates human typing speed — configurable min_ms/max_ms range.
+  '255': Config version migrations run automatically on load — new config keys appear without manual intervention.
+  '256': GPT and Codex models get special system prompt guidance for tool discipline and mandatory tool use.
+  '257': Gemini models get tailored directives for absolute paths, parallel tool calls, and non-interactive commands.
+  '258': context.engine in config.yaml can be set to a plugin name for alternative context management strategies.
+  '259': Browser pages over 8000 tokens are auto-summarized by the auxiliary LLM before returning to the agent.
+  '260': 'The compressor does a cheap pre-pass: tool outputs over 200 chars are replaced with placeholders before the LLM
+    runs.'
+  '261': When compression fails, further attempts are paused for 10 minutes to avoid API hammering.
+  '262': Long dangerous commands (>70 chars) get a 'view' option in the approval prompt to see the full text first.
+  '263': Audio level visualization shows ▁▂▃▄▅▆▇ bars during voice recording based on microphone RMS levels.
+  '264': Profile names cannot collide with existing PATH binaries — 'hermes profile create ls' would be rejected.
+  '265': hermes profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).
+  '266': The voice record key is configurable via voice.record_key in config.yaml — not just Ctrl+B.
+  '267': .cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.
+  '268': Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.
+  '269': GPT-5 and Codex use 'developer' role instead of 'system' in the message format.
+  '270': 'Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.'
+  '271': The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.
+  '272': hermes claw migrate --dry-run previews OpenClaw migration without writing anything.
+  '273': File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed.
+  '274': Slash commands never trigger the large-paste collapse — /command with big arguments works correctly.
+  '275': In interrupt mode, slash commands typed during agent execution bypass interrupt logic and run immediately.
+  '276': HERMES_DEV=1 bypasses container mode detection for local development.
+  '277': Each MCP server gets its own toolset (mcp-servername) that can be toggled independently via hermes tools.
+  '278': MCP ${ENV_VAR} placeholders in config are resolved at server spawn — including vars from ~/.hermes/.env.
+  '279': Skills from trusted repos (NousResearch) get a 'trusted' security level; community skills get extra scanning.
+  '280': The skills quarantine at ~/.hermes/skills/.hub/quarantine/ holds skills pending security review.
+  '281': /steer <prompt> injects a note after the next tool call — nudge direction mid-task without interrupting.
+  '282': /goal <text> sets a standing Ralph-loop objective — Hermes auto-continues turn after turn until a judge says done.
+  '283': /snapshot create [label] saves a full state snapshot of Hermes config; /snapshot restore <id> reverts later.
+  '284': /copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.
+  '285': /redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.
+  '286': /agents (alias /tasks) shows active agents and running background tasks across the current session.
+  '287': /footer toggles the gateway footer on final replies showing model, tool counts, and turn timing.
+  '288': /busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.
+  '289': /topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.
+  '290': /approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.
+  '291': /restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.
+  '292': /kanban boards switch <slug> changes the active multi-project Kanban board from inside chat.
+  '293': /reload reloads ~/.hermes/.env into the running session — pick up new API keys without restarting.
+  '294': cronjob with no_agent=True runs a script on schedule and sends its stdout directly — zero tokens, zero LLM.
+  '295': An empty cron script stdout means silent tick — nothing is delivered, perfect for threshold watchdogs.
+  '296': HERMES_CRON_MAX_PARALLEL (default 4) caps how many cron jobs run per tick so bursts don't saturate your keys.
+  '297': Gateway hooks live under ~/.hermes/hooks/<name>/ with HOOK.yaml + handler.py — handler must be named `handle`.
+  '298': Hook events include gateway:startup, session:start, agent:step, and command:* wildcard subscriptions.
+  '299': Drop a ~/.hermes/BOOT.md checklist and a gateway:startup hook runs it as a one-shot agent every boot.
+  '300': hermes curator run --dry-run previews what the curator would archive or consolidate without mutating anything.
+  '301': hermes curator pin <skill> hard-fences a skill against both auto-archival and the agent's skill_manage tool.
+  '302': hermes curator rollback restores skills from a pre-run snapshot — backups live under skills/.curator_backups/.
+  '303': hermes auth reset <provider> clears all cooldowns and exhaustion flags on a credential pool.
+  '304': 'credential_pool_strategies.<provider>: round_robin cycles keys evenly instead of the fill_first default.'
+  '305': 'use_gateway: true per-tool routes web, image, tts, or browser through your Nous subscription — no extra keys.'
+  '306': 'provider_routing.data_collection: deny excludes data-storing providers on OpenRouter.'
+  '307': 'provider_routing.require_parameters: true only routes to providers that support every param in your request.'
+  '308': HERMES_TUI_RESUME=1 auto-re-attaches to the most recent TUI session on launch — handy after SSH drops.
+  '309': HERMES_TUI_THEME=light|dark|<hex> forces the TUI theme on terminals that don't set COLORFGBG.
+  '310': Ctrl+G or Ctrl+X Ctrl+E in the TUI opens the input buffer in $EDITOR for long multi-line prompts.
+  '311': The TUI renders LaTeX inline — $E=mc^2$ becomes Unicode math instead of raw TeX.
+  '312': hermes dashboard launches a local web UI at 127.0.0.1:9119 — zero data leaves localhost.
+  '313': hermes dashboard --tui embeds the full Hermes TUI in your browser via xterm.js and a WebSocket PTY.
+  '314': Drop a YAML in ~/.hermes/dashboard-themes/ with two palette colors to reskin the entire dashboard.
+  '315': 'Dashboard plugins are drop-in: manifest.json + JS bundle in ~/.hermes/dashboard-plugins/ — no npm build required.'
+  '316': 'layoutVariant: cockpit in a dashboard theme adds a 260px left rail that plugins can populate via the sidebar slot.'
+  '317': 'display.tool_progress_command: true exposes /verbose on messaging platforms; it''s CLI-only by default.'
+  '318': HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).
+  '319': HERMES_WRITE_SAFE_ROOT restricts write_file and patch to a directory prefix; writes outside require approval.
+  '320': HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.
+  '321': HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.
+  '322': auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.
+  '323': Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.
+  '324': 'tts.provider: piper runs 44-language local TTS on CPU — voices auto-download to ~/.hermes/cache/piper-voices/.'
+  '325': 'tts.providers.<name>.type: command wires any CLI TTS engine with {input_path} and {output_path} placeholders.'
+  '326': API_SERVER_ENABLED=true runs an OpenAI-compatible endpoint alongside the gateway for Open WebUI and LibreChat.
+  '327': 'GATEWAY_PROXY_URL runs a split setup: platform I/O locally, agent work delegated to a remote API server.'
+  '328': MATRIX_DEVICE_ID pins a stable device ID for E2EE — without it, keys rotate every start and historic decrypt breaks.
+  '329': TELEGRAM_WEBHOOK_SECRET is required whenever TELEGRAM_WEBHOOK_URL is set — generate with openssl rand -hex 32.
+  '330': batch_runner.py --resume content-matches completed prompts by text so dataset reorders don't re-run finished work.
+  '331': /new starts a fresh session in place (alias /reset) — fresh session ID, clean history, CLI stays open.
+  '332': /clear wipes the terminal screen AND starts a new session — one shortcut for a visual reset.
+  '333': /history prints the current conversation in-line without leaving the CLI — useful for a quick re-read.
+  '334': /save writes the current conversation to disk without ending the session.
+  '335': '/status shows session info at a glance: ID, title, model, token usage, and elapsed time.'
+  '336': /image <path> attaches a local image file for your next prompt without pasting or drag-and-drop.
+  '337': /platforms shows gateway and messaging-platform connection status right from inside chat.
+  '338': /commands paginates the full slash-command + installed-skill list — useful on platforms without tab completion.
+  '339': /toolsets lists every available toolset so you know what -t/--toolsets accepts.
+  '340': /gquota shows Google Gemini Code Assist quota usage with progress bars when that provider is active.
+  '341': /voice tts toggles TTS-only mode — agent replies out loud but you still type your prompts.
+  '342': /reload-skills re-scans ~/.hermes/skills/ so drop-in skills appear without restarting the session.
+  '343': /indicator kaomoji|emoji|unicode|ascii picks the TUI busy-indicator style shown during agent runs.
+  '344': /debug uploads a support bundle (system info + logs) and returns shareable links — works in chat too.
+  '345': 'hermes -z "<prompt>" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts.'
+  '346': hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it.
+  '347': hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step.
+  '348': hermes chat --ignore-user-config skips ~/.hermes/config.yaml — reproducible bug reports and CI runs.
+  '349': hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.
+  '350': hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.
+  '351': hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.
+  '352': hermes import restores a session export or profile archive produced by sessions export or profile export.
+  '353': hermes fallback manages the fallback_model chain interactively — no hand-editing config.yaml.
+  '354': hermes pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.
+  '355': hermes setup walks first-time users through provider, keys, and platform wiring in one interactive flow.
+  '356': hermes status --deep runs the full health sweep across every component; plain hermes status is the quick view.
+  '357': HERMES_AGENT_TIMEOUT=0 disables the gateway inactivity kill for a running agent — use for long research runs.
+  '358': HERMES_ENABLE_PROJECT_PLUGINS=1 auto-loads repo-local plugins from ./.hermes/plugins/ — trust-gated by design.
+  '359': HERMES_DISABLE_FILE_STATE_GUARD=1 turns off the 'file changed since you read it' guard on patch and write_file.
+  '360': HERMES_ALLOW_PRIVATE_URLS=true lets web tools hit localhost and private networks — off by default in gateway mode.
+  '361': HERMES_OPTIONAL_SKILLS=name1,name2 auto-installs extra optional-catalog skills on first run per profile.
+  '362': HERMES_BUNDLED_SKILLS points at a custom bundled-skill tree — used by Homebrew and Nix packaging.
+  '363': HERMES_DUMP_REQUEST_STDOUT=1 dumps every API request payload to stdout instead of log files.
+  '364': HERMES_OAUTH_TRACE=1 logs redacted OAuth token exchange and refresh attempts for debugging provider auth.
+  '365': HERMES_STREAM_RETRIES (default 3) controls mid-stream reconnect attempts on transient network errors.
+  '366': HERMES_GATEWAY_BUSY_ACK_ENABLED=false silences the ⚡/⏳/⏩ ack messages when a user messages a busy agent.
+  '367': HERMES_AGENT_NOTIFY_INTERVAL (default 180s) sets how often the gateway pings with progress on long turns.
+  '368': HERMES_RESTART_DRAIN_TIMEOUT (default 900s) caps how long /restart waits for in-flight runs before forcing.
+  '369': HERMES_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.
+  '370': 'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.'
+  '371': image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.
+  '372': AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.
+  '373': 'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.'
+  '374': TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.
+  '375': --source tool chats are excluded from hermes sessions list by default — set --source explicitly to see them.
+  '376': Session IDs are timestamp-prefixed (20250305_091523_abcd) so sorting works naturally in ls and jq.
+  '377': API_SERVER_MODEL_NAME customizes the model name on /v1/models — essential for multi-profile Open WebUI setups.
+  '378': Dashboard plugins are served from /dashboard-plugins/<name>/ — drop files into ~/.hermes/dashboard-plugins/.
+cmd:
+  new: Start a new session (fresh session ID + history)
+  topic: Enable or inspect Telegram DM topic sessions
+  clear: Clear screen and start a new session
+  redraw: Force a full UI repaint (recovers from terminal drift)
+  history: Show conversation history
+  save: Save the current conversation
+  retry: Retry the last message (resend to agent)
+  undo: Remove the last user/assistant exchange
+  title: Set a title for the current session
+  handoff: Hand off this session to a messaging platform (Telegram, Discord, etc.)
+  branch: Branch the current session (explore a different path)
+  compress: Manually compress conversation context
+  rollback: List or restore filesystem checkpoints
+  snapshot: Create or restore state snapshots of Hermes config/state
+  stop: Kill all running background processes
+  approve: Approve a pending dangerous command
+  deny: Deny a pending dangerous command
+  background: Run a prompt in the background
+  agents: Show active agents and running tasks
+  queue: Queue a prompt for the next turn (doesn't interrupt)
+  steer: Inject a message after the next tool call without interrupting
+  goal: Set a standing goal Hermes works on across turns until achieved
+  subgoal: Add or manage extra criteria on the active goal
+  status: Show session info
+  whoami: Show your slash command access (admin / user)
+  profile: Show active profile name and home directory
+  sethome: Set this chat as the home channel
+  resume: Resume a previously-named session
+  sessions: Browse and resume previous sessions
+  config: Show current configuration
+  model: Switch model for this session
+  codex-runtime: Toggle codex app-server runtime for OpenAI/Codex models
+  gquota: Show Google Gemini Code Assist quota usage
+  personality: Set a predefined personality
+  statusbar: Toggle the context/model status bar
+  verbose: 'Cycle tool progress display: off -> new -> all -> verbose'
+  footer: Toggle gateway runtime-metadata footer on final replies
+  yolo: Toggle YOLO mode (skip all dangerous command approvals)
+  reasoning: Manage reasoning effort and display
+  fast: Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)
+  skin: Show or change the display skin/theme
+  indicator: Pick the TUI busy-indicator style
+  voice: Toggle voice mode
+  busy: Control what Enter does while Hermes is working
+  tools: 'Manage tools: /tools [list|disable|enable] [name...]'
+  toolsets: List available toolsets
+  skills: Search, install, inspect, or manage skills
+  cron: Manage scheduled tasks
+  curator: Background skill maintenance (status, run, pin, archive, list-archived)
+  kanban: Multi-profile collaboration board (tasks, links, comments)
+  reload: Reload .env variables into the running session
+  reload-mcp: Reload MCP servers from config
+  reload-skills: Re-scan ~/.hermes/skills/ for newly installed or removed skills
+  browser: Connect browser tools to your live Chrome via CDP
+  plugins: List installed plugins and their status
+  commands: Browse all commands and skills (paginated)
+  help: Show available commands
+  restart: Gracefully restart the gateway after draining active runs
+  usage: Show token usage and rate limits for the current session
+  insights: Show usage insights and analytics
+  platforms: Show gateway/messaging platform status
+  platform: Pause, resume, or list a failing gateway platform
+  copy: Copy the last assistant response to clipboard
+  paste: Attach clipboard image from your clipboard
+  image: Attach a local image file for your next prompt
+  update: Update Hermes Agent to the latest version
+  debug: Upload debug report (system info + logs) and get shareable links
+  quit: Exit the CLI (use --delete to also remove session history)
+banner:
+  session: 'Session: {session_id}'
+  available_tools: Available Tools
+  mcp_servers: MCP Servers
+  available_skills: Available Skills
+  no_skills: No skills installed
+  tools_count: '{tools_count} tools'
+  skills_count: '{total_skills} skills'
+  mcp_count: '{mcp_connected} MCP servers'
+  runtime: 'Runtime:'
+  profile: 'Profile:'
+  behind: ⚠ {behind} {commits_word} behind
+  commits: commits
+  commit: commit
+  codex_note: (terminal/file ops/MCP run inside codex)
+  toolsets_note: (and {remaining_toolsets} more toolsets...)
+  failed: — failed
+cli:
+  '4166': '{_DIM}External editor is only available inside the interactive CLI.{_RST}'
+  '4169': '{_DIM}Wait for the current command to finish before opening the editor.{_RST}'
+  '4172': '{_DIM}Finish the active prompt before opening the editor.{_RST}'
+  '4176': '{_DIM}No active input buffer is available for the external editor.{_RST}'
+  '4234': '⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}'
+  '4410': '\033[1;31mSession not found: {session_id}{_RST}'
+  '4537': 'Session title applied: {pending_title}'
+  '4541': 'Could not apply pending title: {e}'
+  '5147': 'Running processes: {running_count}'
+  '5154': 'Recently finished: {finished_count}'
+  '5178': '📎 Image #{n} attached from clipboard'
+  '5180': '{_DIM}(>_<) Clipboard has an image but extraction failed{_RST}'
+  '5182': '{_DIM}(._.) No image found in clipboard{_RST}'
+  '5266': 'Copied assistant response #{idx + 1} to clipboard'
+  '5268': 'Clipboard copy failed: {e}'
+  '5288': '📎 Attached image: {image_name}'
+  '5335': '{_DIM}✓ image analyzed{_RST}'
+  '5343': '{_DIM}⚠ vision analysis failed — path included for retry{_RST}'
+  '5351': '{_DIM}⚠ vision analysis error — path included for retry{_RST}'
+  '5538': '\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}'
+  '5539': '{_DIM}Multi-line: Alt+Enter for a new line{_RST}'
+  '5540': '{_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}'
+  '5665': '{_DIM}Session reset. New tool configuration is active.{_RST}'
+  '5947': 'Title rejected: {e}'
+  '5956': '{e} — session started untitled.'
+  '6020': 'Could not load gateway config: {exc}'
+  '6026': Unknown platform
+  '6032': 'Could not load gateway config: {exc}'
+  '6037': Platform
+  '6042': No home channel configured for {platform_name}.
+  '6043': Set one with /sethome on the destination chat first.
+  '6077': 'Could not ensure session row in state.db: {exc}'
+  '6097': Queued handoff of
+  '6098': Waiting for the gateway to pick it up...
+  '6116': ↻ Handoff complete. The session is now active on {platform_name}.
+  '6117': 'Resume it on this CLI later with: /resume {session_title}'
+  '6124': 'Handoff failed: {err}'
+  '6162': 'Session not found: {target}'
+  '4194': '{_DIM}Failed to open external editor: {exc}{_RST}'
+  '4413': '{_DIM}Use a session ID from a previous CLI run (hermes sessions list).{_RST}'
+  '5251': Invalid response number. Use 1-{assistant_count}.
+  '5277': '{_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}'
+  '5283': '{_DIM}(>_<) File not found: {path_token}{_RST}'
+  '5286': '{_DIM}(._.) Not a supported image file: {image_name}{_RST}'
+  '5292': '{_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}'
+  '5527': \n  {_BOLD}── {category} ──{_RST}
+  '5534': '\n  ⚡ {_BOLD}Skill Commands{_RST} ({skill_count} installed):'
+  '5546': '{_DIM}Paste image: Alt+V (or /paste){_RST}\n'
+  '6039': Platform
+  '6062': '{db_status}'
+  '6154': '{db_status}'
+  '6276': '{db_status}'
+  '6298': '{db_status}'
+  '6343': 'Failed to create branch session: {e}'
+  '6416': 'Original session: {parent_session_id}'
+  '6417': 'Branch session:   {new_session_id}'
+  '6883': 'Context: {ctx_formatted} tokens'
+  '6888': 'Max output: {max_output_formatted} tokens'
+  '6890': 'Cost: {cost}'
+  '6891': 'Capabilities: {capabilities}'
+  '7117': 'Context: {ctx_formatted} tokens'
+  '7120': 'Max output: {max_output_formatted} tokens'
+  '7122': 'Cost: {cost}'
+  '7123': 'Capabilities: {capabilities}'
+  '7843': '{db_status}'
+  '7858': '{db_status}'
+  '6251': ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.
+  '6827': ✗ {error}
+  '6856': ⚠ Agent swap failed ({exc}); change applied to next session.
+  '6865': '✓ Model switched: {new_model}'
+  '6866': 'Provider: {provider_label}'
+  '6900': ⚠ {warning}
+  '7054': ✗ {error}
+  '7087': ⚠ Agent swap failed ({exc}); change applied to next session.
+  '7100': '✓ Model switched: {new_model}'
+  '7101': 'Provider: {provider_label}'
+  '7135': ⚠ {warning}
+  '3645': '{_DIM}[thinking] {preview_text}{_RST}'
+  '3654': '{_DIM}[thinking] {preview}{_RST}'
+  '7169': '❌ could not load config: {exc}'
+  '7181': '{prefix} {line}'
+  '5323': '{_DIM}👁️  analyzing {image_name} ({size_kb}KB)...{_RST}'
+  '7733': '{_DIM}✓ UI redrawn{_RST}'
+  '7827': 'Session title set: {new_title}'
+  '7840': 'Session title queued: {new_title} (will be saved on first message)'
+  '7848': 'Session ID: {session_id}'
+  '8015': 'Steer failed: {exc}'
+  '8090': '\033[1;31mPlugin command error: {e}{_RST}'
+  '8132': '\033[1;31mUnknown command: {cmd_lower}{_RST}'
+  '8133': '{_DIM}{_ACCENT}Type /help for available commands{_RST}'
+  '8139': '{_ACCENT}Ambiguous command: {cmd_lower}{_RST}'
+  '8142': '\033[1;31mUnknown command: {cmd_lower}{_RST}'
+  '8143': '{_DIM}{_ACCENT}Type /help for available commands{_RST}'
+  '8241': '✅ Background task #{task_num} complete'
+  '8281': '❌ Background task #{task_num} failed: {e}'
+  '8569': '{_DIM}Goals unavailable (no active session).{_RST}'
+  '8582': '{_DIM}No goal set.{_RST}'
+  '8584': '⏸ Goal paused: {goal}'
+  '8590': '{_DIM}No goal to resume.{_RST}'
+  '8592': '▶ Goal resumed: {goal}'
+  '8605': '{_DIM}No active goal.{_RST}'
+  '8612': 'Invalid goal: {exc}'
+  '8615': '⊙ Goal set ({max_turns}-turn budget): {goal}'
+  '8648': '{_DIM}Goals unavailable (no active session).{_RST}'
+  '8652': '{_DIM}No active goal. Set one with /goal <text>.{_RST}'
+  '8677': '/subgoal remove: {exc}'
+  '8679': '✓ Removed subgoal {idx}: {removed}'
+  '8686': '/subgoal clear: {exc}'
+  '8691': '{_DIM}No subgoals to clear.{_RST}'
+  '8698': '/subgoal: {exc}'
+  '8701': '✓ Added subgoal {idx}: {text}'
+  '8909': 'Runtime footer: {state}'
+  '8981': '{_ACCENT}Reasoning effort:  {level}{_RST}'
+  '8982': '{_ACCENT}Reasoning display: {display_state}{_RST}'
+  '8994': '{_ACCENT}✓ Reasoning display: ON (saved){_RST}'
+  '8995': '{_DIM}  Model thinking will be shown during and after each response.{_RST}'
+  '9002': '{_ACCENT}✓ Reasoning display: OFF (saved){_RST}'
+  '9008': '{_DIM}(._.) Unknown argument: {arg}{_RST}'
+  '9009': '{_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}'
+  '9010': '{_DIM}Display:      show, hide{_RST}'
+  '9033': '{_ACCENT}Busy input mode: {busy_mode}{_RST}'
+  '9040': '{_DIM}Enter while busy: {_behavior}{_RST}'
+  '9041': '{_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}'
+  '9046': '{_DIM}(._.) Unknown argument: {arg}{_RST}'
+  '9047': '{_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}'
+  '9081': '{_ACCENT}{feature_name}: {status}{_RST}'
+  '9082': '{_DIM}Usage: /fast [normal|fast|status]{_RST}'
+  '9096': '{_DIM}(._.) Unknown argument: {arg}{_RST}'
+  '9097': '{_DIM}Usage: /fast [normal|fast|status]{_RST}'
+  '9102': '{_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}'
+  '9104': '{_ACCENT}✓ {feature_name} set to {label} (session only){_RST}'
+  '9744': ┊ {emoji} preparing {tool_name}…
+  '9942': \n{_DIM}Silence detected, auto-stopping...{_RST}
+  '10010': '{_DIM}No speech detected.{_RST}'
+  '10016': '{_DIM}Transcribing...{_RST}'
+  '10038': '{_DIM}No speech detected.{_RST}'
+  '10041': '\n{_DIM}Transcription failed: {error}{_RST}'
+  '10044': '\n{_DIM}Voice processing error: {e}{_RST}'
+  '10063': '{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}'
+  '10079': '{_DIM}Voice auto-restart failed: {e}{_RST}'
+  '10141': '{_DIM}TTS playback failed: {e}{_RST}'
+  '10165': 'Unknown voice subcommand: {subcommand}'
+  '10182': '{_DIM}Voice mode is already enabled.{_RST}'
+  '10190': \n{_ACCENT}Voice mode unavailable in this environment:{_RST}
+  '10197': \n{_ACCENT}Voice mode requirements not met:{_RST}
+  '10202': '\n  {_BOLD}Option 1: pkg install termux-api{_RST}'
+  '10203': '{_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}'
+  '10234': \n{_ACCENT}Voice mode enabled{tts_status}{_RST}
+  '10235': '{_DIM}{_ptt_display} to start/stop recording{_RST}'
+  '10236': '{_DIM}/voice tts  to toggle speech output{_RST}'
+  '10237': '{_DIM}/voice off  to disable voice mode{_RST}'
+  '10269': \n{_DIM}Voice mode disabled.{_RST}
+  '10274': '{_DIM}Enable voice mode first: /voice on{_RST}'
+  '10286': '{_ACCENT}Voice TTS {status}.{_RST}'
+  '10294': \n{_BOLD}Voice Mode Status{_RST}
+  '10302': 'Record key: {record_key}'
+  '10303': \n  {_BOLD}Requirements:{_RST}
+  '10368': \n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}
+  '10403': \n{_DIM}  ✓ Password received (cached for session){_RST}
+  '10405': \n{_DIM}  ⏭ Skipped{_RST}
+  '10417': \n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}
+  '10472': \n{_DIM}  ⏱ Timeout — denying command{_RST}
+  '10780': '{_DIM}Initializing agent...{_RST}'
+  '10861': '{_DIM}⚠ {w}{_RST}'
+  '11191': \n{_DIM}Continuous voice mode stopped due to error.{_RST}
+  '11816': '{_DIM}⚠ tirith security scanner enabled but not available'
+  '11878': '✗ Model selection failed: {_exc}'
+  '11957': '{_DIM}Steer failed ({exc}) — queued for next turn.{_RST}'
+  '11961': '{_ACCENT}⏩ Steered:'
+  '12254': \n{_DIM}Recording cancelled.{_RST}
+  '12354': \n{_DIM}Recording cancelled.{_RST}
+  '12462': \n{_DIM}Suspend (Ctrl+Z) is not supported on Windows.{_RST}
+  '12569': '\n{_DIM}Voice recording failed: {e}{_RST}'
+  '13589': '📎 Auto-attached image: {drop_name}'
+  '13591': '📄 Detected file: {drop_name}'
+  '13598': \n⚙️  {user_input}
+  '13658': '{_DIM}Voice auto-restart failed: {e}{_RST}'
+  '13902': '{_DIM}✓ Session {sid} deleted{_RST}'
+  '13904': '{_DIM}✗ Session {sid} not found for deletion{_RST}'

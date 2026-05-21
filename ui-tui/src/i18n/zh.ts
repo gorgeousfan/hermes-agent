@@ -1,0 +1,83 @@
+import type { TUITranslations } from './types.js';
+
+export const zh: TUITranslations = {
+  session: {
+    available_tools: '可用工具',
+    available_skills: '可用技能',
+    system_prompt: '系统提示',
+    mcp_servers: 'MCP 服务器',
+    scanning_skills: '扫描技能中',
+    no_system_prompt: '未加载系统提示。',
+    more_categories: '还有 {count} 个类别…',
+    more_toolsets: '还有 {count} 个工具集…',
+    tools_count: '{count} 个工具',
+    skills_count: '{count} 个技能',
+    help_commands: '/help 查看命令',
+    behind: '！落后 {count} 个{commits}，',
+    to_update: '运行更新',
+  },
+  thinking: {
+    thinking: '思考中',
+    tool_calls: '工具调用',
+    progress: '进度',
+    spawned: '已生成',
+    delegate_task: '委托任务',
+    spawn_tree: '生成树',
+    activity: '活动',
+  },
+  prompts: {
+    always_allow: '总是允许',
+    allow_once: '允许一次',
+    allow_session: '本次会话允许',
+  },
+  agents: {
+    budget: '预算',
+    tool_calls: '工具调用',
+    output: '输出',
+    progress: '进度',
+    summary: '摘要',
+    last_turn: '上一轮',
+    files: '文件',
+  },
+  branding: {
+    nous_research: 'Nous Research',
+    messenger: '数字之神信使',
+  },
+  status: {
+    running: '运行中…',
+    ready: '就绪',
+  },
+  statusBar: {
+    voiceOn: '语音开启',
+    voiceOff: '语音关闭',
+    voiceRec: '● 录音中',
+    voiceStt: '◉ 语音识别',
+  },
+  sessionCmd: {
+    newStarted: '新会话已启动',
+    titleSet: '会话标题已设置：{next}',
+    titleSetQueued: ' (会话初始化时排队)',
+    titleSetFailed: '警告：设置会话标题失败：{message}',
+  },
+  confirm: {
+    newSessionTitle: '开始新会话？',
+    clearSessionTitle: '清除当前会话？',
+    newSessionConfirm: '是的，开始新会话',
+    clearSessionConfirm: '是的，清除会话',
+    cancelLabel: '不，继续',
+    sessionDetail: '这将结束当前对话并清除记录。',
+  },
+  voice: {
+    modeOff: '语音：模式已关闭 — 使用 /voice on 启用',
+    helpTts: '  /voice tts  切换语音输出',
+    helpOff: '  /voice off  禁用语音模式',
+  },
+  subagent: {
+    queued: '排队中',
+    running: '运行中',
+    done: '完成',
+    error: '错误',
+    cancelled: '已取消',
+    interrupted: '被中断',
+  },
+};
