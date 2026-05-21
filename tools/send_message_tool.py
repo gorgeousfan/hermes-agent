@@ -32,6 +32,10 @@ _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+# Zulip target formats: "stream_name", "stream_name:topic_name", or "private:user@example.com" (or dm:email)
+_ZULIP_STREAM_RE = re.compile(r"^\s*([^:#]+)(?::([^:]+))?\s*$")
+_ZULIP_DM_RE = re.compile(r"^\s*(?:private|dm):([^\s:]+)\s*$")
+_ZULIP_TARGET_RE = re.compile(r"^\s*([^:#]+)(?::([^:]+))?\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -135,7 +139,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat), 'zulip:general', 'zulip:general:topic', 'zulip:private:user@example.com' (DM)"
             },
             "message": {
                 "type": "string",
@@ -383,6 +387,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if target_ref.strip().isdigit():
             return f"group:{target_ref.strip()}", None, True
         return None, None, False
+    if platform_name == "zulip":
+        return _parse_zulip_target_ref(target_ref)
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -397,6 +403,26 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
+    return None, None, False
+
+
+def _parse_zulip_target_ref(target_ref: str):
+    """Parse Zulip target: stream[:topic] or private:email / dm:email."""
+    if not target_ref:
+        return None, None, False
+    s = target_ref.strip()
+    # DM form: private:email or dm:email
+    dm = _ZULIP_DM_RE.fullmatch(s)
+    if dm:
+        return f"dm:{dm.group(1)}", None, True
+    # Stream or stream:topic
+    m = _ZULIP_STREAM_RE.fullmatch(s)
+    if m:
+        stream = m.group(1).strip()
+        topic = (m.group(2) or "").strip() or None
+        if topic:
+            return f"{stream}:{topic}", None, True
+        return stream, None, True
     return None, None, False
 
 
@@ -580,6 +606,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _feishu_available = False
 
+    # Zulip adapter import is optional (requires `zulip` package)
+    try:
+        from gateway.platforms.zulip import ZulipAdapter
+        _zulip_available = True
+    except ImportError:
+        _zulip_available = False
+
     media_files = media_files or []
 
     if platform == Platform.SLACK and message:
@@ -597,6 +630,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    _MAX_LENGTHS[Platform.ZULIP] = 4000  # from gateway/platforms/zulip.py
 
     # Check plugin registry for max_message_length
     if platform not in _MAX_LENGTHS:
@@ -724,11 +758,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Zulip: always use native _send_zulip (handles stream:topic, private:email, media uploads) ---
+    if platform == Platform.ZULIP:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_zulip(
+                pconfig,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and zulip; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -736,7 +786,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and zulip"
         )
 
     last_result = None
@@ -769,6 +819,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.ZULIP:
+            result = await _send_zulip(pconfig, chat_id, chunk)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -2008,6 +2060,86 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+
+
+async def _send_zulip(pconfig, chat_id, message, media_files=None):
+    """Send via Zulip using the native adapter helper.
+
+    Sends the text message first, then uploads and sends any media
+    attachments using the adapter's native file delivery methods.
+    """
+    try:
+        from gateway.platforms.zulip import ZulipAdapter, check_zulip_requirements
+        if not check_zulip_requirements():
+            return {"error": "Zulip requirements not met. Need zulip package."}
+    except ImportError:
+        return {"error": "Zulip adapter not available."}
+
+    try:
+        adapter = ZulipAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("Zulip: failed to connect to server")
+        try:
+            # 1. Send text message.
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"Zulip send failed: {result.error}")
+
+            last_message_id = result.message_id
+            warnings = []
+
+            # 2. Send media attachments.
+            _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+            _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
+            for media_path, is_voice in (media_files or []):
+                if not os.path.exists(media_path):
+                    warning = f"Media file not found, skipping: {media_path}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+                    continue
+
+                ext = os.path.splitext(media_path)[1].lower()
+                try:
+                    if ext in _IMAGE_EXTS:
+                        media_result = await adapter.send_image_file(
+                            chat_id=chat_id, image_path=media_path
+                        )
+                    elif ext in _VIDEO_EXTS:
+                        media_result = await adapter.send_video(
+                            chat_id=chat_id, video_path=media_path
+                        )
+                    else:
+                        # Documents, markdown files, archives, etc.
+                        media_result = await adapter.send_document(
+                            chat_id=chat_id, file_path=media_path
+                        )
+
+                    if media_result.success:
+                        last_message_id = media_result.message_id or last_message_id
+                    else:
+                        warning = f"Media delivery failed for {media_path}: {media_result.error}"
+                        logger.warning(warning)
+                        warnings.append(warning)
+                except Exception as exc:
+                    warning = f"Media delivery exception for {media_path}: {exc}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+
+            response = {
+                "success": True,
+                "platform": "zulip",
+                "chat_id": chat_id,
+                "message_id": last_message_id,
+            }
+            if warnings:
+                response["warnings"] = warnings
+            return response
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"Zulip send failed: {e}")
 
 
 # --- Registry ---

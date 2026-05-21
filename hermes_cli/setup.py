@@ -2414,6 +2414,12 @@ def _setup_qqbot():
     _gateway_setup_qqbot()
 
 
+def _setup_zulip():
+    """Configure Zulip (cloud or self-hosted) via gateway setup."""
+    from hermes_cli.gateway import _setup_zulip as _gateway_setup_zulip
+    _gateway_setup_zulip()
+
+
 def _setup_webhooks():
     """Configure webhook integration."""
     print_header("Webhooks")
