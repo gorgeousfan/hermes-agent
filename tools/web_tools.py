@@ -308,6 +308,37 @@ _GITHUB_HTML_HOSTS = {"github.com", "www.github.com"}
 _GITHUB_RAW_HOST = "raw.githubusercontent.com"
 _X_STATUS_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
 _X_ARTICLE_PATH_RE = re.compile(r"/i/article/\d+")
+_WEB_PROVIDER_PLUGINS_DISCOVERED = False
+
+
+class _SpecialRouteBlocked(Exception):
+    """Raised when a special URL route discovers a blocked redirected target."""
+
+    def __init__(
+        self,
+        url: str,
+        message: str,
+        blocked_by_policy: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.url = url
+        self.message = message
+        self.blocked_by_policy = blocked_by_policy
+
+
+def _ensure_web_provider_plugins_discovered() -> None:
+    """Discover bundled web-provider plugins once per process."""
+    global _WEB_PROVIDER_PLUGINS_DISCOVERED
+    if _WEB_PROVIDER_PLUGINS_DISCOVERED:
+        return
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # idempotent; ensures bundled providers are registered
+    except Exception as exc:
+        logger.debug("Web provider plugin discovery failed: %s", exc)
+    else:
+        _WEB_PROVIDER_PLUGINS_DISCOVERED = True
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -346,25 +377,55 @@ def _extract_meta_content(document: str, *, name: str = "", prop: str = "") -> s
 
 
 def _direct_fetch_text(url: str, timeout: int = 20) -> tuple[str, str, str]:
-    with httpx.stream(
-        "GET",
-        url,
-        headers={
-            "User-Agent": _DIRECT_FETCH_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
-        },
-        follow_redirects=True,
-        timeout=timeout,
-    ) as response:
-        response.raise_for_status()
-        content_type = response.headers.get("content-type", "")
-        body = bytearray()
-        for chunk in response.iter_bytes():
-            body.extend(chunk)
-            if len(body) > _SPECIAL_ROUTE_TEXT_MAX_BYTES:
-                raise ValueError("Special-routed response is larger than 2MB")
-        encoding = response.encoding or "utf-8"
-        return body.decode(encoding, errors="replace"), content_type, str(response.url)
+    """Fetch small text responses while validating each redirect target."""
+    headers = {
+        "User-Agent": _DIRECT_FETCH_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+    }
+    current_url = url
+    for _redirect_count in range(5):
+        if not is_safe_url(current_url):
+            raise _SpecialRouteBlocked(
+                current_url,
+                "Blocked: URL targets a private or internal network address",
+            )
+        blocked = check_website_access(current_url)
+        if blocked:
+            raise _SpecialRouteBlocked(
+                current_url,
+                blocked["message"],
+                {
+                    "host": blocked["host"],
+                    "rule": blocked["rule"],
+                    "source": blocked["source"],
+                },
+            )
+
+        with httpx.stream(
+            "GET",
+            current_url,
+            headers=headers,
+            follow_redirects=False,
+            timeout=timeout,
+        ) as response:
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    raise ValueError("Redirect response is missing a Location header")
+                current_url = urljoin(str(response.url), location)
+                continue
+
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "")
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > _SPECIAL_ROUTE_TEXT_MAX_BYTES:
+                    raise ValueError("Special-routed response is larger than 2MB")
+            encoding = response.encoding or "utf-8"
+            return body.decode(encoding, errors="replace"), content_type, str(response.url)
+
+    raise ValueError("Too many redirects while fetching special-routed URL")
 
 
 def _is_textish_url(url: str) -> bool:
@@ -377,16 +438,44 @@ def _is_textish_url(url: str) -> bool:
 def _github_raw_url(url: str) -> str:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
-    parts = [part for part in parsed.path.split("/") if part]
+    path_parts = [part for part in parsed.path.split("/") if part]
     if host == _GITHUB_RAW_HOST:
         return url
     if host not in _GITHUB_HTML_HOSTS:
         return ""
-    if len(parts) >= 5 and parts[2] in {"blob", "raw"}:
-        owner, repo, _, ref = parts[:4]
-        rest = "/".join(parts[4:])
-        if rest:
-            return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{rest}"
+    if len(path_parts) < 5 or path_parts[2] not in {"blob", "raw"}:
+        return ""
+
+    owner, repo, _, ref, *rest_parts = path_parts
+    rest = "/".join(rest_parts)
+    if rest:
+        return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{rest}"
+    return ""
+
+
+def _github_raw_url_from_html_link(raw_link: str, base_url: str) -> str:
+    candidate = urljoin(base_url, html.unescape(raw_link))
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").lower()
+    if host == _GITHUB_RAW_HOST:
+        return candidate
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if host in _GITHUB_HTML_HOSTS and len(path_parts) >= 4 and path_parts[2] == "raw":
+        owner, repo, _, *raw_path = path_parts
+        if raw_path:
+            return f"https://raw.githubusercontent.com/{owner}/{repo}/{'/'.join(raw_path)}"
+    return ""
+
+
+def _github_raw_url_from_html(document: str, base_url: str) -> str:
+    for pattern in (
+        r'href=["\']([^"\']*/raw/[^"\']+)["\']',
+        r'data-permalink-href=["\']([^"\']*/raw/[^"\']+)["\']',
+    ):
+        for match in re.finditer(pattern, document or "", re.IGNORECASE):
+            raw_url = _github_raw_url_from_html_link(match.group(1), base_url)
+            if raw_url:
+                return raw_url
     return ""
 
 
@@ -422,7 +511,19 @@ def _extract_direct_text_result(url: str, format: Optional[str] = None) -> Optio
     if not raw_url and not _is_textish_url(target_url):
         return None
 
-    body, content_type, final_url = _direct_fetch_text(target_url)
+    try:
+        body, content_type, final_url = _direct_fetch_text(target_url)
+    except _SpecialRouteBlocked:
+        raise
+    except Exception:
+        parsed = urlparse(url)
+        if (parsed.hostname or "").lower() not in _GITHUB_HTML_HOSTS:
+            raise
+        html_body, _html_content_type, html_url = _direct_fetch_text(url)
+        html_raw_url = _github_raw_url_from_html(html_body, html_url)
+        if not html_raw_url or html_raw_url == target_url:
+            raise
+        body, content_type, final_url = _direct_fetch_text(html_raw_url)
     parsed_final = urlparse(final_url)
     title = parsed_final.path.rsplit("/", 1)[-1] or final_url
 
@@ -523,6 +624,8 @@ def _extract_special_url_result(url: str, format: Optional[str] = None) -> Optio
     for extractor in extractors:
         try:
             result = extractor(url)
+        except _SpecialRouteBlocked:
+            raise
         except Exception as exc:
             logger.debug("Special URL extractor failed for %s: %s", url, exc)
             continue
@@ -1194,7 +1297,19 @@ async def web_extract_tool(
                 }
                 continue
 
-            special_result = _extract_special_url_result(url, format=format)
+            try:
+                special_result = _extract_special_url_result(url, format=format)
+            except _SpecialRouteBlocked as exc:
+                ordered_results[index] = {
+                    "url": exc.url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": exc.message,
+                }
+                if exc.blocked_by_policy:
+                    ordered_results[index]["blocked_by_policy"] = exc.blocked_by_policy
+                continue
             if special_result:
                 final_url = special_result.get("metadata", {}).get(
                     "sourceURL", special_result.get("url", url)
@@ -1235,11 +1350,7 @@ async def web_extract_tool(
             # async (parallel, firecrawl), others sync (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
             # in a thread so they don't block the event loop on network I/O.
-            try:
-                from hermes_cli.plugins import discover_plugins
-                discover_plugins()  # idempotent; ensures bundled providers are registered
-            except Exception as exc:
-                logger.debug("Web provider plugin discovery failed: %s", exc)
+            _ensure_web_provider_plugins_discovered()
 
             from agent.web_search_registry import (
                 get_active_extract_provider,
@@ -1311,9 +1422,6 @@ async def web_extract_tool(
                     }
 
         results = [result for result in ordered_results if result is not None]
-        if len(generic_results) > len(generic_positions):
-            results.extend(generic_results[len(generic_positions):])
-
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
