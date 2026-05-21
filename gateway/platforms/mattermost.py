@@ -649,6 +649,41 @@ class MattermostAdapter(BasePlatformAdapter):
             self._callback_app = None
             self._callback_site = None
 
+    def _check_allowed_user(self, body: dict) -> Tuple[bool, Optional[web.Response]]:
+        """Reject unauthorized users from clicking interactive buttons.
+
+        Button clicks bypass the normal message auth flow in gateway/run.py,
+        so we must check here as well, matching Slack's SLACK_ALLOWED_USERS gate
+        (gateway/platforms/slack.py:2499).
+
+        Returns (True, None) on success or (False, 403 Response) on failure.
+        Callers must return the Response immediately on failure without
+        consuming the approval/confirm/prompt state.
+        """
+        from aiohttp import web
+
+        allowed_csv = os.getenv("MATTERMOST_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return True, None
+
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        if "*" in allowed_ids:
+            return True, None
+
+        user_id = body.get("user_id", "")
+        if user_id and user_id in allowed_ids:
+            return True, None
+
+        user_name = body.get("user_name", user_id or "unknown")
+        logger.warning(
+            "Mattermost: Unauthorized button click by %s (%s) — ignoring",
+            user_name, user_id,
+        )
+        return False, web.json_response(
+            {"error": "unauthorized", "message": "User not in MATTERMOST_ALLOWED_USERS"},
+            status=403,
+        )
+
     async def _handle_approval_callback(self, request) -> Any:
         """Handle POST from Mattermost interactive approval buttons."""
         from aiohttp import web
@@ -658,6 +693,11 @@ class MattermostAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
+
+        # Authorization check — same posture as Slack.
+        ok, err_resp = self._check_allowed_user(body)
+        if not ok:
+            return err_resp
 
         context = body.get("context", {})
         approval_id_str = context.get("approval_id", "")
@@ -705,6 +745,11 @@ class MattermostAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
 
+        # Authorization check.
+        ok, err_resp = self._check_allowed_user(body)
+        if not ok:
+            return err_resp
+
         context = body.get("context", {})
         confirm_id = context.get("confirm_id", "")
         choice = context.get("choice", "cancel")
@@ -733,6 +778,11 @@ class MattermostAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid json"}, status=400)
+
+        # Authorization check.
+        ok, err_resp = self._check_allowed_user(body)
+        if not ok:
+            return err_resp
 
         context = body.get("context", {})
         prompt_key = context.get("prompt_key", "")
@@ -775,7 +825,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 "fallback": "Command approval required",
                 "color": "#FFA500",
                 "pretext": "⚠️ **Command Approval Required**",
-                "text": f"```\\n{cmd_preview}\\n```\\n*Reason: {description}*",
+                "text": f"```\n{cmd_preview}\n```\n*Reason: {description}*",
                 "actions": [
                     {"id": "once", "name": "✅ Allow Once", "integration": {
                         "url": cb_url, "context": {"approval_id": approval_id, "choice": "once", "post_id": ""}}},
@@ -881,7 +931,7 @@ class MattermostAdapter(BasePlatformAdapter):
             self._update_prompt_state[prompt_key] = session_key
             cb_url = f"http://127.0.0.1:{self._callback_port}/update-prompt"
 
-            default_hint = f"\\n\\n*Default: {default}*" if default else ""
+            default_hint = f"\n\n*Default: {default}*" if default else ""
 
             attachment = {
                 "fallback": "Update needs your input",
