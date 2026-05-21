@@ -92,8 +92,13 @@ class MattermostAdapter(BasePlatformAdapter):
         self._closing = False
 
         # Interactive button callback server.
+        self._callback_host: str = (
+            config.extra.get("callback_host", "")
+            or os.getenv("MATTERMOST_CALLBACK_HOST", "127.0.0.1")
+        )
         self._callback_port: int = int(
-            os.getenv("MATTERMOST_CALLBACK_PORT", "18065")
+            config.extra.get("callback_port")
+            or os.getenv("MATTERMOST_CALLBACK_PORT", "18065")
         )
         self._callback_app: Any = None
         self._callback_runner: Any = None
@@ -633,7 +638,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._callback_runner = web.AppRunner(self._callback_app)
         await self._callback_runner.setup()
         self._callback_site = web.TCPSite(
-            self._callback_runner, "127.0.0.1", self._callback_port
+            self._callback_runner, self._callback_host, self._callback_port
         )
         await self._callback_site.start()
         logger.info(
@@ -818,7 +823,7 @@ class MattermostAdapter(BasePlatformAdapter):
         try:
             approval_id = next(self._approval_counter)
             self._approval_state[approval_id] = session_key
-            cb_url = f"http://127.0.0.1:{self._callback_port}/approval"
+            cb_url = f"http://{self._callback_host}:{self._callback_port}/approval"
             cmd_preview = command[:1000] + "..." if len(command) > 1000 else command
 
             attachment = {
@@ -876,7 +881,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         try:
             self._confirm_state[confirm_id] = session_key
-            cb_url = f"http://127.0.0.1:{self._callback_port}/confirm"
+            cb_url = f"http://{self._callback_host}:{self._callback_port}/confirm"
 
             attachment = {
                 "fallback": title or "Confirm",
@@ -929,7 +934,7 @@ class MattermostAdapter(BasePlatformAdapter):
             import uuid
             prompt_key = str(uuid.uuid4())[:8]
             self._update_prompt_state[prompt_key] = session_key
-            cb_url = f"http://127.0.0.1:{self._callback_port}/update-prompt"
+            cb_url = f"http://{self._callback_host}:{self._callback_port}/update-prompt"
 
             default_hint = f"\n\n*Default: {default}*" if default else ""
 
