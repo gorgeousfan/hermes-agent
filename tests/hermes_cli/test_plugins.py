@@ -393,6 +393,13 @@ class TestPluginHooks:
             duration_ms=None, is_error=False,
         )
         mgr.invoke_hook(
+            "on_tool_progress",
+            session_id="s", task_id="t", tool_name="read_file",
+            tool_call_id="c1", stage="end", text="",
+            args={"path": "/tmp/example.txt"}, result="ok",
+            duration_ms=12.0, is_error=False,
+        )
+        mgr.invoke_hook(
             "on_interim_assistant",
             session_id="s", platform="cli", model="m",
             message_text="thinking", already_streamed=False, reason="pre_tool",

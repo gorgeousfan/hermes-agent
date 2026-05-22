@@ -187,6 +187,8 @@ VALID_HOOKS: Set[str] = {
     #   tool_name: str, tool_call_id: str | None,
     #   stage: "start" | "chunk" | "end",
     #   text: str,                  # rendered progress line or chunk
+    #   args: dict | None,          # populated on stage="end" when available
+    #   result: Any | None,         # populated on stage="end" when available
     #   duration_ms: float | None,  # populated on stage="end"
     "on_tool_progress",
     # Kwargs for on_interim_assistant (partial assistant message before final):

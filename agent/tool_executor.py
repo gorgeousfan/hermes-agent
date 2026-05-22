@@ -418,6 +418,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         tool_call_id=getattr(tc, "id", "") or "",
                         stage="end",
                         text="",
+                        args=function_args,
+                        result=function_result,
                         duration_ms=float(tool_duration) * 1000.0,
                         is_error=bool(is_error),
                     )
@@ -885,6 +887,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     stage="end",
                     text="",
+                    args=function_args,
+                    result=function_result,
                     duration_ms=float(tool_duration) * 1000.0,
                     is_error=bool(_is_error_result),
                 )
