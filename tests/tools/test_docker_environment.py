@@ -202,6 +202,131 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
+def _make_persistent_mock_run(monkeypatch, inspect_result):
+    """Mock subprocess.run with a configurable docker inspect response.
+
+    ``inspect_result`` is either a tuple ``(returncode, stdout)`` or None.
+    None means inspect is never called (i.e. inspect would error / not exist).
+    Returns the list of captured ``(cmd, kwargs)`` tuples.
+    """
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "inspect":
+                if inspect_result is None:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No such object")
+                rc, stdout = inspect_result
+                return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+            if cmd[1] == "start":
+                return subprocess.CompletedProcess(cmd, 0, stdout=cmd[-1] + "\n", stderr="")
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-container-id\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+    return calls
+
+
+def test_persistent_container_name_is_deterministic(monkeypatch):
+    """Persistent mode must derive a stable container name from the sandbox path.
+
+    Two instances with the same task_id should pick the same container name,
+    so a restart of the Hermes process can reattach instead of spawning a fresh
+    container on every run (#30336).
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _make_persistent_mock_run(monkeypatch, inspect_result=None)
+
+    env1 = _make_dummy_env(persistent_filesystem=True, task_id="docker-persist-task")
+    env2 = _make_dummy_env(persistent_filesystem=True, task_id="docker-persist-task")
+
+    assert env1._container_name == env2._container_name
+    assert env1._container_name.startswith("hermes-")
+    # 12-char sha1 prefix has 48 bits of entropy — wide enough to avoid
+    # colliding with a non-persistent uuid (which would be 8 chars).
+    assert len(env1._container_name) == len("hermes-") + 12
+
+
+def test_persistent_reuses_running_container(monkeypatch):
+    """When a container with the deterministic name is already running, reuse it.
+
+    No second ``docker run`` should be issued — the existing container ID is
+    adopted as ``_container_id`` so subsequent exec calls land on the same
+    container.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(
+        monkeypatch,
+        inspect_result=(0, "running\texisting-container-id\n"),
+    )
+
+    env = _make_dummy_env(persistent_filesystem=True, task_id="docker-reuse-running")
+
+    assert env._container_id == "existing-container-id"
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls == [], "docker run must not be invoked when an existing container is reused"
+
+
+def test_persistent_restarts_stopped_container(monkeypatch):
+    """A stopped persistent container should be restarted, not duplicated."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(
+        monkeypatch,
+        inspect_result=(0, "exited\tstopped-container-id\n"),
+    )
+
+    env = _make_dummy_env(persistent_filesystem=True, task_id="docker-restart-stopped")
+
+    assert env._container_id == "stopped-container-id"
+    cmds = [c[0] for c in calls if isinstance(c[0], list)]
+    start_calls = [c for c in cmds if len(c) >= 2 and c[1] == "start"]
+    run_calls = [c for c in cmds if len(c) >= 2 and c[1] == "run"]
+    assert len(start_calls) == 1, "stopped persistent container should be started exactly once"
+    assert start_calls[0][-1] == env._container_name
+    assert run_calls == [], "docker run must not be invoked when the existing container is restarted"
+
+
+def test_persistent_creates_when_no_existing_container(monkeypatch):
+    """When no container with the deterministic name exists, fall back to create."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(monkeypatch, inspect_result=None)
+
+    env = _make_dummy_env(persistent_filesystem=True, task_id="docker-create-new")
+
+    assert env._container_id == "fresh-container-id"
+    run_calls = [c[0] for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert len(run_calls) == 1
+    # The newly-created container must use the deterministic name so the next
+    # process can find it via docker inspect.
+    assert "--name" in run_calls[0]
+    name_idx = run_calls[0].index("--name")
+    assert run_calls[0][name_idx + 1] == env._container_name
+
+
+def test_non_persistent_uses_random_name_and_skips_inspect(monkeypatch):
+    """Non-persistent containers must keep ephemeral random names (no reuse path).
+
+    Reuse semantics only make sense when the container's filesystem persists
+    across restarts. For tmpfs-backed containers, reattaching would leak state.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(
+        monkeypatch,
+        inspect_result=(0, "running\tshould-not-be-used\n"),
+    )
+
+    env = _make_dummy_env(persistent_filesystem=False, task_id="docker-ephemeral")
+
+    cmds = [c[0] for c in calls if isinstance(c[0], list)]
+    inspect_calls = [c for c in cmds if len(c) >= 2 and c[1] == "inspect"]
+    assert inspect_calls == [], "non-persistent mode must not consult docker inspect"
+    assert env._container_id == "fresh-container-id"
+
+
 def test_non_persistent_cleanup_removes_container(monkeypatch):
     """When persistent=false, cleanup() must schedule docker stop + rm."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")

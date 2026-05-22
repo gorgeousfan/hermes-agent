@@ -5,6 +5,7 @@ configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -504,27 +505,44 @@ class DockerEnvironment(BaseEnvironment):
         # /usr/local/bin is not in PATH (common on macOS gateway/service).
         self._docker_exe = find_docker() or "docker"
 
-        # Start the container directly via `docker run -d`.
-        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
-        run_cmd = [
-            self._docker_exe, "run", "-d",
-            "--init",           # tini/catatonit as PID 1 — reaps zombie children
-            "--name", container_name,
-            "-w", cwd,
-            *all_run_args,
-            image,
-            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
-        ]
-        logger.debug(f"Starting container: {' '.join(run_cmd)}")
-        result = subprocess.run(
-            run_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # image pull may take a while
-            check=True,
-        )
-        self._container_id = result.stdout.strip()
-        logger.info(f"Started container {container_name} ({self._container_id[:12]})")
+        # Persistent containers reuse a deterministic name derived from the
+        # per-(profile, task_id) sandbox path so successive Hermes processes
+        # reconnect to the same container instead of leaving a trail of
+        # orphaned ``sleep infinity`` containers. Non-persistent containers
+        # stay ephemeral with a random name (no reuse semantics).
+        if self._persistent:
+            sandbox_key = str(get_sandbox_dir() / "docker" / task_id)
+            name_suffix = hashlib.sha1(sandbox_key.encode("utf-8")).hexdigest()[:12]
+            container_name = f"hermes-{name_suffix}"
+        else:
+            container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        self._container_name = container_name
+
+        reused = False
+        if self._persistent:
+            reused = self._try_reuse_persistent_container(container_name)
+
+        if not reused:
+            # Start the container directly via `docker run -d`.
+            run_cmd = [
+                self._docker_exe, "run", "-d",
+                "--init",           # tini/catatonit as PID 1 — reaps zombie children
+                "--name", container_name,
+                "-w", cwd,
+                *all_run_args,
+                image,
+                "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+            ]
+            logger.debug(f"Starting container: {' '.join(run_cmd)}")
+            result = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # image pull may take a while
+                check=True,
+            )
+            self._container_id = result.stdout.strip()
+            logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
         # Build the init-time env forwarding args (used only by init_session
         # to inject host env vars into the snapshot; subsequent commands get
@@ -533,6 +551,56 @@ class DockerEnvironment(BaseEnvironment):
 
         # Initialize session snapshot inside the container
         self.init_session()
+
+    def _try_reuse_persistent_container(self, container_name: str) -> bool:
+        """Reattach to an existing persistent container with this name, if any.
+
+        Returns True when ``self._container_id`` was populated from an existing
+        container (running or restarted), False when the caller should create a
+        new container. Any docker-side failure falls back to creation rather
+        than blocking the agent.
+        """
+        try:
+            inspect = subprocess.run(
+                [self._docker_exe, "inspect", "--format",
+                 "{{.State.Status}}\t{{.Id}}", container_name],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.debug("docker inspect failed for %s: %s", container_name, exc)
+            return False
+        if inspect.returncode != 0:
+            return False
+        parts = inspect.stdout.strip().split("\t", 1)
+        if len(parts) != 2 or not parts[1]:
+            return False
+        status, container_id = parts[0], parts[1]
+
+        if status != "running":
+            try:
+                start = subprocess.run(
+                    [self._docker_exe, "start", container_name],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                logger.warning(
+                    "docker start failed for %s (status=%s): %s",
+                    container_name, status, exc,
+                )
+                return False
+            if start.returncode != 0:
+                logger.warning(
+                    "docker start refused container %s (status=%s): %s",
+                    container_name, status, start.stderr.strip(),
+                )
+                return False
+
+        self._container_id = container_id
+        logger.info(
+            "Reusing persistent container %s (%s, prior status=%s)",
+            container_name, container_id[:12], status,
+        )
+        return True
 
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.
