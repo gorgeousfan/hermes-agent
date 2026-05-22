@@ -165,6 +165,31 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Streaming / progress observer hooks. Observers only -- return values are
+    # ignored. These fire from the agent's central display/streaming helpers so
+    # CLI, gateway, and subagent paths all observe the same events. Use them
+    # to mirror the CLI experience in external surfaces (web dashboards, etc.)
+    # without owning the display loop.
+    #
+    # Kwargs for on_stream_delta (per token / chunk):
+    #   session_id: str, platform: str, model: str,
+    #   delta_text: str,            # the newly-arrived chunk
+    #   content_type: "text" | "thinking",
+    #   message_so_far: str,        # cumulative text for this delta type
+    #   stream_id: str,             # stable id for this streaming run
+    "on_stream_delta",
+    # Kwargs for on_tool_progress (start / chunk / end of a tool run):
+    #   session_id: str, task_id: str | None,
+    #   tool_name: str, tool_call_id: str | None,
+    #   stage: "start" | "chunk" | "end",
+    #   text: str,                  # rendered progress line or chunk
+    #   duration_ms: float | None,  # populated on stage="end"
+    "on_tool_progress",
+    # Kwargs for on_interim_assistant (partial assistant message before final):
+    #   session_id: str, platform: str, model: str,
+    #   message_text: str,
+    #   reason: str,                # e.g. "pre_tool", "incomplete_codex"
+    "on_interim_assistant",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

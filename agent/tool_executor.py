@@ -164,6 +164,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 agent.tool_progress_callback("tool.started", name, preview, args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_tool_progress",
+                session_id=getattr(agent, "session_id", "") or "",
+                task_id=effective_task_id or "",
+                tool_name=name,
+                tool_call_id=getattr(tc, "id", "") or "",
+                stage="start",
+                text=_build_tool_preview(name, args) or "",
+                duration_ms=None,
+                is_error=False,
+            )
+        except Exception:
+            logging.debug("on_tool_progress hook (start) failed", exc_info=True)
 
     for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
@@ -392,6 +407,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+            if not blocked:
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_tool_progress",
+                        session_id=getattr(agent, "session_id", "") or "",
+                        task_id=effective_task_id or "",
+                        tool_name=function_name,
+                        tool_call_id=getattr(tc, "id", "") or "",
+                        stage="end",
+                        text="",
+                        duration_ms=float(tool_duration) * 1000.0,
+                        is_error=bool(is_error),
+                    )
+                except Exception:
+                    logging.debug("on_tool_progress hook (end) failed", exc_info=True)
 
             if agent.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -554,6 +585,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent.tool_progress_callback("tool.started", function_name, preview, function_args)
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
+        if not _execution_blocked:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_tool_progress",
+                    session_id=getattr(agent, "session_id", "") or "",
+                    task_id=effective_task_id or "",
+                    tool_name=function_name,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    stage="start",
+                    text=_build_tool_preview(function_name, function_args) or "",
+                    duration_ms=None,
+                    is_error=False,
+                )
+            except Exception:
+                logging.debug("on_tool_progress hook (start) failed", exc_info=True)
 
         if not _execution_blocked and agent.tool_start_callback:
             try:
@@ -827,6 +874,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
+        if not _execution_blocked:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_tool_progress",
+                    session_id=getattr(agent, "session_id", "") or "",
+                    task_id=effective_task_id or "",
+                    tool_name=function_name,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    stage="end",
+                    text="",
+                    duration_ms=float(tool_duration) * 1000.0,
+                    is_error=bool(_is_error_result),
+                )
+            except Exception:
+                logging.debug("on_tool_progress hook (end) failed", exc_info=True)
 
         agent._current_tool = None
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")

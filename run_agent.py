@@ -3056,6 +3056,8 @@ class AIAgent:
                         pass
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
+        self._active_stream_id = ""
+        self._active_thinking_id = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
         """Accumulate visible assistant text emitted through stream callbacks."""
@@ -3083,18 +3085,32 @@ class AIAgent:
 
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
-        cb = getattr(self, "interim_assistant_callback", None)
-        if cb is None or not isinstance(assistant_msg, dict):
+        if not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
         visible = self._strip_think_blocks(content or "").strip()
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is not None:
+            try:
+                cb(visible, already_streamed=already_streamed)
+            except Exception:
+                logger.debug("interim_assistant_callback error", exc_info=True)
         try:
-            cb(visible, already_streamed=already_streamed)
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_interim_assistant",
+                session_id=getattr(self, "session_id", "") or "",
+                platform=getattr(self, "platform", "") or "",
+                model=getattr(self, "model", "") or "",
+                message_text=visible,
+                already_streamed=already_streamed,
+                reason="mid_turn",
+            )
         except Exception:
-            logger.debug("interim_assistant_callback error", exc_info=True)
+            logger.debug("on_interim_assistant hook failed", exc_info=True)
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
@@ -3147,7 +3163,25 @@ class AIAgent:
             except Exception:
                 pass
         if delivered:
+            was_first = not getattr(self, "_current_streamed_assistant_text", "")
+            if was_first or not getattr(self, "_active_stream_id", ""):
+                import uuid as _uuid
+                self._active_stream_id = _uuid.uuid4().hex
             self._record_streamed_assistant_text(text)
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_stream_delta",
+                    session_id=getattr(self, "session_id", "") or "",
+                    platform=getattr(self, "platform", "") or "",
+                    model=getattr(self, "model", "") or "",
+                    delta_text=text,
+                    content_type="text",
+                    message_so_far=getattr(self, "_current_streamed_assistant_text", "") or "",
+                    stream_id=getattr(self, "_active_stream_id", "") or "",
+                )
+            except Exception:
+                logger.debug("on_stream_delta hook failed", exc_info=True)
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
@@ -3157,6 +3191,23 @@ class AIAgent:
                 cb(text)
             except Exception:
                 pass
+        try:
+            if not getattr(self, "_active_thinking_id", ""):
+                import uuid as _uuid
+                self._active_thinking_id = _uuid.uuid4().hex
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_stream_delta",
+                session_id=getattr(self, "session_id", "") or "",
+                platform=getattr(self, "platform", "") or "",
+                model=getattr(self, "model", "") or "",
+                delta_text=text or "",
+                content_type="thinking",
+                message_so_far="",
+                stream_id=getattr(self, "_active_thinking_id", "") or "",
+            )
+        except Exception:
+            logger.debug("on_stream_delta (thinking) hook failed", exc_info=True)
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
