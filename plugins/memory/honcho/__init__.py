@@ -1117,11 +1117,52 @@ class HonchoMemoryProvider(MemoryProvider):
             ),
         }
 
+    @staticmethod
+    def _flatten_content(content):
+        """Flatten OpenAI multimodal list content to a plain string.
+
+        ``sync_turn`` is sometimes invoked with the OpenAI vision-style
+        list shape (e.g. ``[{"type": "text", "text": ...},
+        {"type": "image_url", ...}]``). ``sanitize_context`` expects a
+        string, so we collapse list content into a newline-joined
+        textual representation here — image / non-text parts become
+        ``[image]`` / ``[<type>]`` placeholders so the resulting
+        Honcho turn still reflects that visuals were exchanged.
+        """
+        if not isinstance(content, list):
+            return content
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            t = item.get("type")
+            if t in ("text", "input_text", "output_text"):
+                text = item.get("text", "")
+                if not isinstance(text, str):
+                    text = str(text) if text is not None else ""
+                if text:
+                    parts.append(text)
+            elif t in ("image_url", "input_image"):
+                parts.append("[image]")
+            elif t:
+                parts.append(f"[{t}]")
+        return "\n".join(parts)
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
         Messages exceeding the Honcho API limit (default 25k chars) are
         split into multiple messages with continuation markers.
+
+        ``user_content`` / ``assistant_content`` may be either a plain
+        string or the OpenAI multimodal list shape; the latter is
+        flattened to text before sanitisation so vision turns are
+        still recorded (with ``[image]`` markers) instead of being
+        silently dropped (#30252).
         """
         if self._cron_skipped:
             return
@@ -1129,6 +1170,8 @@ class HonchoMemoryProvider(MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
+        user_content = self._flatten_content(user_content)
+        assistant_content = self._flatten_content(assistant_content)
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
 
