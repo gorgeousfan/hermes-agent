@@ -1,11 +1,310 @@
 import json
+import os
+import stat
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+import plugins.memory.openviking as openviking_module
 from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
+
+
+def _clear_openviking_env(monkeypatch):
+    for key in (
+        "OPENVIKING_ENDPOINT",
+        "OPENVIKING_API_KEY",
+        "OPENVIKING_ACCOUNT",
+        "OPENVIKING_USER",
+        "OPENVIKING_AGENT",
+        "OPENVIKING_CLI_CONFIG_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_openviking_env_writer_restricts_file_permissions(tmp_path):
+    env_path = tmp_path / ".env"
+
+    openviking_module._write_env_vars(env_path, {"OPENVIKING_API_KEY": "secret"})
+
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_ovcli_config_writer_restricts_file_permissions(tmp_path):
+    config_path = tmp_path / "ovcli.conf"
+
+    openviking_module._write_ovcli_config(
+        config_path,
+        {"endpoint": "http://remote.example", "api_key": "secret"},
+    )
+
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_linked_ovcli_config_is_read_at_runtime(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking-one.local",
+            "api_key": "key-one",
+            "account": "acct-one",
+            "user": "alice",
+            "agent_id": "agent-one",
+        }),
+        encoding="utf-8",
+    )
+    provider_config = {"use_ovcli_config": True, "ovcli_config_path": str(ovcli_path)}
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings == {
+        "endpoint": "http://openviking-one.local",
+        "api_key": "key-one",
+        "account": "acct-one",
+        "user": "alice",
+        "agent": "agent-one",
+    }
+
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking-two.local",
+            "api_key": "key-two",
+            "agent_id": "agent-two",
+        }),
+        encoding="utf-8",
+    )
+
+    settings = openviking_module._resolve_connection_settings(provider_config)
+
+    assert settings == {
+        "endpoint": "http://openviking-two.local",
+        "api_key": "key-two",
+        "account": "",
+        "user": "",
+        "agent": "agent-two",
+    }
+
+
+def test_openviking_env_overrides_linked_ovcli_config(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking.local",
+            "api_key": "file-key",
+            "account": "file-account",
+            "user": "file-user",
+            "agent_id": "file-agent",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://env.local")
+    monkeypatch.setenv("OPENVIKING_API_KEY", "env-key")
+    monkeypatch.setenv("OPENVIKING_ACCOUNT", "env-account")
+    monkeypatch.setenv("OPENVIKING_USER", "env-user")
+    monkeypatch.setenv("OPENVIKING_AGENT", "env-agent")
+
+    settings = openviking_module._resolve_connection_settings({
+        "use_ovcli_config": True,
+        "ovcli_config_path": str(ovcli_path),
+    })
+
+    assert settings == {
+        "endpoint": "http://env.local",
+        "api_key": "env-key",
+        "account": "env-account",
+        "user": "env-user",
+        "agent": "env-agent",
+    }
+
+
+def test_post_setup_link_existing_ovcli_clears_hermes_env(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    env_path.write_text(
+        "OPENVIKING_ENDPOINT=http://old.local\n"
+        "OPENVIKING_ACCOUNT=old-account\n"
+        "OTHER_KEY=keep\n",
+        encoding="utf-8",
+    )
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(json.dumps({"url": "http://openviking.local"}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import memory_setup
+
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 0)
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"]["use_ovcli_config"] is True
+    assert config["memory"]["openviking"]["ovcli_config_path"] == str(ovcli_path)
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENVIKING_" not in env_text
+    assert "OTHER_KEY=keep" in env_text
+
+
+def test_post_setup_copy_existing_ovcli_writes_hermes_env(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(
+        json.dumps({
+            "url": "http://openviking.local",
+            "api_key": "test-key",
+            "account": "acct",
+            "user": "alice",
+            "agent_id": "agent",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import memory_setup
+
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 1)
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"]["use_ovcli_config"] is False
+    env_text = (hermes_home / ".env").read_text(encoding="utf-8")
+    assert "OPENVIKING_ENDPOINT=http://openviking.local" in env_text
+    assert "OPENVIKING_API_KEY=test-key" in env_text
+    assert "OPENVIKING_ACCOUNT=acct" in env_text
+    assert "OPENVIKING_USER=alice" in env_text
+    assert "OPENVIKING_AGENT=agent" in env_text
+
+
+def test_post_setup_cancel_existing_ovcli_writes_nothing(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    original_env = "OPENVIKING_ENDPOINT=http://old.local\nOTHER_KEY=keep\n"
+    env_path.write_text(original_env, encoding="utf-8")
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text(json.dumps({"url": "http://openviking.local"}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: -1)
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert env_path.read_text(encoding="utf-8") == original_env
+
+
+def test_post_setup_invalid_existing_ovcli_writes_nothing(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    env_path = hermes_home / ".env"
+    original_env = "OPENVIKING_ENDPOINT=http://old.local\nOTHER_KEY=keep\n"
+    env_path.write_text(original_env, encoding="utf-8")
+    ovcli_path = tmp_path / "ovcli.conf"
+    ovcli_path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(
+        memory_setup,
+        "_curses_select",
+        MagicMock(side_effect=AssertionError("picker should not open for invalid ovcli.conf")),
+    )
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert env_path.read_text(encoding="utf-8") == original_env
+
+
+def test_post_setup_creates_minimal_ovcli_and_links(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "missing" / "ovcli.conf"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import memory_setup
+
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        memory_setup,
+        "_prompt",
+        lambda label, default=None, secret=False: default or "",
+    )
+    config = {"memory": {}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    assert config["memory"]["provider"] == "openviking"
+    assert config["memory"]["openviking"]["use_ovcli_config"] is True
+    data = json.loads(ovcli_path.read_text(encoding="utf-8"))
+    assert data == {
+        "url": "http://127.0.0.1:1933",
+        "agent_id": "hermes",
+    }
+    env_path = hermes_home / ".env"
+    if env_path.exists():
+        assert env_path.read_text(encoding="utf-8") == ""
+
+
+def test_post_setup_cancel_missing_ovcli_does_not_prompt_or_create(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "missing" / "ovcli.conf"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: -1)
+    monkeypatch.setattr(
+        memory_setup,
+        "_prompt",
+        MagicMock(side_effect=AssertionError("prompts should not run after cancel")),
+    )
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert not ovcli_path.exists()
+    assert not (hermes_home / ".env").exists()
 
 
 def test_tool_search_sorts_by_raw_score_across_buckets():
@@ -371,9 +670,7 @@ def test_viking_client_headers_send_tenant_when_default():
     assert headers["Authorization"] == "Bearer test-key"
 
 
-def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
-    # Empty account/user strings fall back to "default" via the constructor.
-    # Headers are sent even for the default value — ROOT API keys need them.
+def test_viking_client_headers_omit_tenant_when_empty():
     client = _VikingClient(
         "https://example.com",
         api_key="",
@@ -382,8 +679,9 @@ def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
         agent="hermes",
     )
     headers = client._headers()
-    assert headers["X-OpenViking-Account"] == "default"
-    assert headers["X-OpenViking-User"] == "default"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+    assert headers["X-OpenViking-Agent"] == "hermes"
     assert "Authorization" not in headers
     assert "X-API-Key" not in headers
 
@@ -420,3 +718,439 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_tool_search_uses_openviking_limit_and_ignores_dead_mode():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {
+        "result": {
+            "memories": [],
+            "resources": [],
+            "skills": [],
+            "total": 0,
+        }
+    }
+
+    result = json.loads(provider._tool_search({
+        "query": "ranking",
+        "mode": "deep",
+        "scope": "viking://user/memories/",
+        "limit": 7,
+    }))
+
+    assert result == {"results": [], "total": 0}
+    provider._client.post.assert_called_once_with(
+        "/api/v1/search/find",
+        {
+            "query": "ranking",
+            "target_uri": "viking://user/memories/",
+            "limit": 7,
+        },
+    )
+
+
+def test_search_schema_does_not_expose_dead_mode():
+    properties = openviking_module.SEARCH_SCHEMA["parameters"]["properties"]
+
+    assert "mode" not in properties
+    assert "mode=" not in openviking_module.SEARCH_SCHEMA["description"]
+    assert "durable memory" in openviking_module.SEARCH_SCHEMA["description"]
+
+
+def test_read_schema_supports_small_uri_batches():
+    properties = openviking_module.READ_SCHEMA["parameters"]["properties"]
+
+    assert "uri" in properties
+    assert "uris" in properties
+    assert openviking_module.READ_SCHEMA["parameters"]["required"] == []
+    assert "up to three" in openviking_module.READ_SCHEMA["description"]
+
+
+def test_tool_read_batches_up_to_three_unique_uris():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.side_effect = [
+        {"result": "first"},
+        {"result": "second"},
+        {"result": "third"},
+    ]
+
+    result = json.loads(provider._tool_read({
+        "uris": [
+            "viking://user/memories/one.md",
+            "viking://user/memories/two.md",
+            "viking://user/memories/two.md",
+            "viking://user/memories/three.md",
+            "viking://user/memories/four.md",
+        ],
+        "level": "full",
+    }))
+
+    assert result["requested"] == 4
+    assert result["returned"] == 3
+    assert result["truncated"] is True
+    assert [entry["uri"] for entry in result["results"]] == [
+        "viking://user/memories/one.md",
+        "viking://user/memories/two.md",
+        "viking://user/memories/three.md",
+    ]
+    assert [entry["content"] for entry in result["results"]] == ["first", "second", "third"]
+
+
+def test_history_tools_are_not_exposed_to_the_model():
+    provider = OpenVikingMemoryProvider()
+
+    schemas = {schema["name"] for schema in provider.get_tool_schemas()}
+
+    assert "viking_history_search" not in schemas
+    assert "viking_history_read" not in schemas
+
+
+def test_system_prompt_focuses_on_openviking_search_and_read():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._endpoint = "http://ov"
+    provider._client.get.return_value = {"result": [{"uri": "viking://user/memories/"}]}
+
+    prompt = provider.system_prompt_block()
+
+    assert "durable indexed memory and knowledge" in prompt
+    assert "viking_search" in prompt
+    assert "viking_read" in prompt
+    assert "up to three URIs" in prompt
+    assert "viking_history_search" not in prompt
+    assert "viking_history_read" not in prompt
+    assert "URI diagnostics" in prompt
+    assert "Hermes local session search" not in prompt
+    assert "do not use" not in prompt.lower()
+    assert "avoid session_search" not in prompt.lower()
+
+
+def test_prefetch_fetches_current_query_when_cached_result_is_missing(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._api_key = "key"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    seen_payloads = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+            assert api_key == "key"
+            assert account == "acct"
+            assert user == "user"
+            assert agent == "agent"
+
+        def post(self, path, payload):
+            seen_payloads.append((path, payload))
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://memories/1",
+                            "score": 0.91,
+                            "abstract": "fresh memory",
+                        }
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "fresh memory"}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("where did we store it?")
+
+    assert result.startswith("## OpenViking Context\nTreat these OpenViking memories as evidence")
+    assert "Retrieval status: source=find" in result
+    assert "hits=1; merged=1" in result
+    assert "Ranked OpenViking evidence:" in result
+    assert "- [0.91] memory: viking://memories/1; sources=find" in result
+    assert "Abstract: fresh memory" in result
+    assert seen_payloads == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "where did we store it?",
+                "limit": 32,
+            },
+        ),
+    ]
+
+
+def test_prefetch_ignores_cached_result_for_different_query_and_fetches_fresh(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+    provider._prefetch_result = "- [0.80] stale result (viking://memories/stale)"
+    provider._prefetch_query = "old query"
+
+    seen_payloads = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            seen_payloads.append((path, payload))
+            return {
+                "result": {
+                    "memories": [],
+                    "resources": [
+                        {
+                            "uri": "viking://resources/2",
+                            "score": 0.95,
+                            "abstract": "fresh resource",
+                        }
+                    ],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "fresh resource"}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("new query")
+
+    assert "stale result" not in result
+    assert "Retrieval status: source=find" in result
+    assert "hits=1; merged=1" in result
+    assert "- [0.95] resource: viking://resources/2; sources=find" in result
+    assert seen_payloads == [
+        (
+            "/api/v1/search/find",
+            {
+                "query": "new query",
+                "limit": 32,
+            },
+        ),
+    ]
+
+
+def test_prefetch_detail_uses_relevant_excerpt_from_long_content(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    long_prefix = "\n".join(f"unrelated profile line {idx}" for idx in range(80))
+    focused_detail = (
+        f"{long_prefix}\n"
+        "John does kickboxing for energy.\n"
+        "John also practices taekwondo with his family.\n"
+        "He enjoys family fitness routines.\n"
+    )
+    seen_get_paths = []
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://memories/john",
+                            "score": 0.91,
+                            "abstract": "John does kickboxing for energy.",
+                        }
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            seen_get_paths.append(path)
+            return {"result": focused_detail}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("What martial arts has John done?")
+
+    assert "Detail:" in result
+    assert "kickboxing" in result
+    assert "taekwondo" in result
+    assert seen_get_paths == ["/api/v1/content/read"]
+
+
+def test_prefetch_reranks_query_overlap_without_dropping_low_scores(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/memories/generic",
+                            "score": 0.8,
+                            "abstract": "A generic planning note about errands.",
+                        },
+                        {
+                            "uri": "viking://user/memories/john-martial-arts",
+                            "score": 0.62,
+                            "level": 2,
+                            "category": "events",
+                            "abstract": "John practiced kickboxing and taekwondo with his family.",
+                        },
+                        {
+                            "uri": "viking://user/memories/weak",
+                            "score": 0.2,
+                            "abstract": "John mentioned martial arts once.",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "John practiced kickboxing and taekwondo with his family."}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("What martial arts has John done?")
+
+    assert "filtered=3" in result
+    assert "threshold=0.0" in result
+    assert "viking://user/memories/weak" in result
+    assert result.index("viking://user/memories/john-martial-arts") < result.index(
+        "viking://user/memories/generic"
+    )
+
+
+def test_prefetch_dedupes_equivalent_abstracts(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = object()
+    provider._endpoint = "http://ov"
+    provider._account = "acct"
+    provider._user = "user"
+    provider._agent = "agent"
+
+    class FakeClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://ov"
+
+        def post(self, path, payload):
+            return {
+                "result": {
+                    "memories": [
+                        {
+                            "uri": "viking://user/memories/one",
+                            "score": 0.7,
+                            "category": "profile",
+                            "abstract": "The backpack is in the closet.",
+                        },
+                        {
+                            "uri": "viking://user/memories/two",
+                            "score": 0.68,
+                            "category": "profile",
+                            "abstract": "The backpack is in the closet.",
+                        },
+                    ],
+                    "resources": [],
+                    "skills": [],
+                }
+            }
+
+        def get(self, path, **kwargs):
+            return {"result": "The backpack is in the closet."}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeClient)
+
+    result = provider.prefetch("where is the backpack?")
+
+    assert "merged=2" in result
+    assert "filtered=1" in result
+    assert "viking://user/memories/one" in result
+    assert "viking://user/memories/two" not in result
+
+
+def test_browse_is_capped_diagnostic_output():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.return_value = {
+        "result": {
+            "uri": "viking://session",
+            "type": "dir",
+            "children": [
+                {
+                    "uri": f"viking://session/session-{idx}",
+                    "name": f"session-{idx}",
+                    "type": "dir",
+                    "abstract": "x" * 500,
+                }
+                for idx in range(40)
+            ],
+        }
+    }
+
+    result = json.loads(provider._tool_browse({"action": "list", "path": "viking://session"}))
+
+    assert result["path"] == "viking://session"
+    assert result["note"] == "Diagnostic listing only. Use search/read tools for evidence content."
+    assert len(result["entries"]) == 25
+    assert result["truncated"] is True
+    assert len(result["entries"][0]["abstract"]) < 220
+
+
+def test_handle_tool_call_reconnects_after_startup_health_failure(monkeypatch):
+    instances = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+            self.posts = []
+            self.index = len(instances)
+            instances.append(self)
+
+        def health(self):
+            return self.index > 0
+
+        def post(self, path, payload=None, **kwargs):
+            self.posts.append((path, payload or {}))
+            return {}
+
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://openviking.local")
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1")
+
+    assert provider._client is None
+
+    result = json.loads(provider.handle_tool_call("viking_remember", {"content": "stable fact"}))
+
+    assert result["status"] == "stored"
+    assert len(instances) == 2
+    assert instances[1].posts == [
+        (
+            "/api/v1/sessions/session-1/messages",
+            {"role": "user", "parts": [{"type": "text", "text": "[Remember] stable fact"}]},
+        )
+    ]
