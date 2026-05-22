@@ -421,23 +421,42 @@ class TestWpsXiezuoConfig(unittest.TestCase):
 
     @patch.dict(os.environ, {"WPS_XIEZUO_ALLOW_ALL_USERS": "true"}, clear=False)
     def test_gateway_auth_uses_plugin_allow_all_env(self):
+        from gateway.platform_registry import PlatformEntry, platform_registry
         from gateway.run import GatewayRunner
 
-        platform = Platform("wps_xiezuo")
-        runner = object.__new__(GatewayRunner)
-        runner.config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True)})
-        runner.pairing_store = MagicMock()
-        runner.pairing_store.is_approved.return_value = False
+        original_entry = platform_registry.get("wps_xiezuo")
+        try:
+            platform_registry.register(
+                PlatformEntry(
+                    name="wps_xiezuo",
+                    label="WPS Xiezuo",
+                    adapter_factory=lambda config: None,
+                    check_fn=lambda: True,
+                    allowed_users_env="WPS_XIEZUO_ALLOWED_USERS",
+                    allow_all_env="WPS_XIEZUO_ALLOW_ALL_USERS",
+                )
+            )
 
-        source = SessionSource(
-            platform=platform,
-            chat_id="chat_1",
-            chat_type="dm",
-            user_id="user_1",
-            user_name="tester",
-        )
+            platform = Platform("wps_xiezuo")
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig(platforms={platform: PlatformConfig(enabled=True)})
+            runner.pairing_store = MagicMock()
+            runner.pairing_store.is_approved.return_value = False
 
-        self.assertTrue(runner._is_user_authorized(source))
+            source = SessionSource(
+                platform=platform,
+                chat_id="chat_1",
+                chat_type="dm",
+                user_id="user_1",
+                user_name="tester",
+            )
+
+            self.assertTrue(runner._is_user_authorized(source))
+        finally:
+            if original_entry is None:
+                platform_registry._entries.pop("wps_xiezuo", None)
+            else:
+                platform_registry._entries["wps_xiezuo"] = original_entry
 
     def test_redacts_identifier_for_logs(self):
         self.assertEqual(_wps._redact_identifier("APPID1234567890"), "APPI...90")
