@@ -154,8 +154,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
     CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
-               args_hint="[queue|steer|interrupt|status]",
-               subcommands=("queue", "steer", "interrupt", "status")),
+               args_hint="[queue|steer|interrupt|status|ack]",
+               subcommands=("queue", "steer", "interrupt", "status", "ack")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
