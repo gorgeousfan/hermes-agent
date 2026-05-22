@@ -171,12 +171,16 @@ VALID_HOOKS: Set[str] = {
     # to mirror the CLI experience in external surfaces (web dashboards, etc.)
     # without owning the display loop.
     #
-    # Kwargs for on_stream_delta (per token / chunk):
+    # Kwargs for on_stream_delta (per token / chunk + segment end):
     #   session_id: str, platform: str, model: str,
-    #   delta_text: str,            # the newly-arrived chunk
+    #   delta_text: str,            # the newly-arrived chunk ("" on final)
     #   content_type: "text" | "thinking",
     #   message_so_far: str,        # cumulative text for this delta type
     #   stream_id: str,             # stable id for this streaming run
+    #   final: bool                 # True == segment boundary, the open
+    #                               #   stream box for this stream_id can
+    #                               #   be sealed; no more deltas with
+    #                               #   this stream_id will follow.
     "on_stream_delta",
     # Kwargs for on_tool_progress (start / chunk / end of a tool run):
     #   session_id: str, task_id: str | None,

@@ -3055,6 +3055,41 @@ class AIAgent:
                     except Exception:
                         pass
                 self._record_streamed_assistant_text(tail)
+        # Emit boundary events before clearing stream ids so external observers
+        # (e.g. plugins mirroring the CLI) can finalize the open stream box for
+        # this segment. Visible-text and thinking are tracked separately so
+        # both get their own end signal when active.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            visible_stream_id = getattr(self, "_active_stream_id", "") or ""
+            if visible_stream_id:
+                _invoke_hook(
+                    "on_stream_delta",
+                    session_id=getattr(self, "session_id", "") or "",
+                    platform=getattr(self, "platform", "") or "",
+                    model=getattr(self, "model", "") or "",
+                    delta_text="",
+                    content_type="text",
+                    message_so_far=getattr(self, "_current_streamed_assistant_text", "") or "",
+                    stream_id=visible_stream_id,
+                    final=True,
+                )
+            thinking_stream_id = getattr(self, "_active_thinking_id", "") or ""
+            if thinking_stream_id:
+                _invoke_hook(
+                    "on_stream_delta",
+                    session_id=getattr(self, "session_id", "") or "",
+                    platform=getattr(self, "platform", "") or "",
+                    model=getattr(self, "model", "") or "",
+                    delta_text="",
+                    content_type="thinking",
+                    message_so_far="",
+                    stream_id=thinking_stream_id,
+                    final=True,
+                )
+        except Exception:
+            logger.debug("on_stream_delta (final) hook failed", exc_info=True)
         self._current_streamed_assistant_text = ""
         self._active_stream_id = ""
         self._active_thinking_id = ""
@@ -3179,6 +3214,7 @@ class AIAgent:
                     content_type="text",
                     message_so_far=getattr(self, "_current_streamed_assistant_text", "") or "",
                     stream_id=getattr(self, "_active_stream_id", "") or "",
+                    final=False,
                 )
             except Exception:
                 logger.debug("on_stream_delta hook failed", exc_info=True)
@@ -3205,6 +3241,7 @@ class AIAgent:
                 content_type="thinking",
                 message_so_far="",
                 stream_id=getattr(self, "_active_thinking_id", "") or "",
+                final=False,
             )
         except Exception:
             logger.debug("on_stream_delta (thinking) hook failed", exc_info=True)
