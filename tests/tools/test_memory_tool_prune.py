@@ -32,10 +32,10 @@ from tools.memory_tool import (
 
 class TestMemoryTags:
     def test_parse_valid_tag(self):
-        tag = _parse_tag("[c:2026-05-22][r:3][s:user] Hello world")
+        tag = _parse_tag("[260522|t] Hello world")
         assert tag is not None
-        assert tag["ref_count"] == 3
-        assert tag["source"] == "user"
+        assert tag["ref_count"] == 1
+        assert tag["source"] == "t"
         assert tag["created"].strftime("%Y-%m-%d") == "2026-05-22"
 
     def test_parse_no_tag(self):
@@ -43,22 +43,22 @@ class TestMemoryTags:
         assert _parse_tag("") is None
 
     def test_parse_partial_tag(self):
-        # Missing fields should not match
-        assert _parse_tag("[c:2026-05-22]text") is None
+        # Missing pipe should not match
+        assert _parse_tag("[260522t]text") is None
 
     def test_format_tag_defaults(self):
         tag = _format_tag()
-        assert tag.startswith("[c:")
-        assert "[s:t]" in tag  # source encoded as single char
-        assert len(tag) == 16  # compact format: [c:YYMMDD][s:X] + space
+        assert tag.startswith("[")
+        assert tag.endswith("|t] ")
+        assert len(tag) == 11  # [YYMMDD|X] + space
 
     def test_format_tag_custom(self):
         from datetime import date
         tag = _format_tag(created=date(2026, 1, 1), ref_count=5, source="user")
-        assert tag == "[c:260101][r:5][s:u] "
+        assert tag == "[260101|5|u] "
 
     def test_strip_tag_present(self):
-        content = _strip_tag("[c:2026-05-22][r:1][s:tool] Actual content")
+        content = _strip_tag("[260522|t] Actual content")
         assert content == "Actual content"
 
     def test_strip_tag_absent(self):
@@ -66,9 +66,9 @@ class TestMemoryTags:
         assert content == "Plain text"
 
     def test_bump_ref_count_increments(self):
-        bumped = _bump_ref_count("[c:260522][r:3][s:u] content")
-        assert "[r:4]" in bumped
-        assert "[s:u]" in bumped
+        bumped = _bump_ref_count("[260522|3|u] content")
+        assert "|4|" in bumped
+        assert bumped.endswith("|u] content")
 
     def test_bump_ref_count_untagged(self):
         bumped = _bump_ref_count("Plain text")
@@ -125,8 +125,8 @@ class TestMemoryStoreAdd:
         assert result["success"] is True
         # Entry should be tagged
         entry = result["entries"][0]
-        assert "[c:" in entry
-        assert "[s:" in entry
+        assert entry.startswith("[")
+        assert entry.endswith("|t] Python 3.12 project")
         assert "Python 3.12 project" in entry
 
     def test_add_to_user(self, store):
@@ -169,8 +169,8 @@ class TestMemoryStoreReplace:
         result = store.replace("memory", "3.11", "Python 3.12 project")
         assert result["success"] is True
         replaced = result["entries"][0]
-        # Tag should be preserved (same date, same ref count, same source)
-        assert "[c:" in replaced
+        # Tag should be preserved
+        assert replaced.startswith("[260522|")
         assert "Python 3.12 project" in replaced
 
     def test_replace_no_match(self, store):
@@ -282,12 +282,12 @@ class TestMemoryStorePersistence:
         store1 = MemoryStore()
         store1.load_from_disk()
         store1.add("memory", "tagged fact")
-        assert "[c:" in store1.memory_entries[0]
+        assert store1.memory_entries[0].startswith("[260522|")
 
         store2 = MemoryStore()
         store2.load_from_disk()
         assert len(store2.memory_entries) == 1
-        assert "[c:" in store2.memory_entries[0]
+        assert store2.memory_entries[0].startswith("[260522|")
 
     def test_untagged_backward_compatibility(self, tmp_path, monkeypatch):
         """Legacy entries without tags should still load and work."""

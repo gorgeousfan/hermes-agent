@@ -66,55 +66,45 @@ ENTRY_DELIMITER = "\n§\n"
 # ── Entry metadata tags ────────────────────────────────────────────────────
 #
 # Each entry can optionally begin with a tag like:
-#   [c:2026-05-22][r:3][s:user] Content text...
+#   [260522|t]             ← default: r=1, source=tool
+#   [260522|3|u]           ← ref_count=3, source=user
 #
+# Single-bracket pipe-delimited format: [YYMMDD[|count][|source]]
 # Fields:
-#   c = creation date (YYYY-MM-DD)
-#   r = reference count (how many times the entry was accessed)
-#   s = source (user | tool | auto | archive)
+#   YYMMDD  = creation date
+#   count   = reference count (omitted when 1)
+#   source  = single char: u(user), t(tool), a(auto), x(archive)
 #
 # Entries without tags are treated as untagged (score = 0) for pruning
 # purposes but otherwise work identically.
 
 TAG_RE = re.compile(
-    r"^\[c:(\d{4}(?:-\d{2}){2}|\d{6})\](?:\[r:(\d+)\])?\[s:(\w+)\]\s+"
+    r"^\[(\d{6})(?:\|(\d+))?\|(\w)\]\s+"
 )
 
 def _parse_tag(entry: str) -> dict | None:
-    """Extract metadata tag from an entry. Returns None if no tag present.
-    
-    Handles both compact (260522) and full (2026-05-22) date formats.
-    """
+    """Extract metadata tag from an entry. Returns None if no tag present."""
     m = TAG_RE.match(entry)
     if not m:
         return None
-    raw_date = m.group(1)
-    # Compact: 260522 → 2026-05-22
-    if len(raw_date) == 6:
-        parsed = datetime.strptime(raw_date, "%y%m%d").replace(tzinfo=timezone.utc)
-    else:
-        parsed = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     return {
-        "created": parsed,
+        "created": datetime.strptime(m.group(1), "%y%m%d").replace(tzinfo=timezone.utc),
         "ref_count": int(m.group(2)) if m.group(2) else 1,
         "source": m.group(3),
-        "_raw_date": raw_date,
     }
 
 def _format_tag(created: date | None = None, ref_count: int = 1,
                 source: str = "tool") -> str:
     """Build a compact metadata tag prefix string.
-
-    Compact format: [c:YYMMDD][r:N][s:src]  (16-22 chars)
-    When ref_count==1 the [r:N] segment is omitted (saves 6 chars).
-    Old format [c:YYYY-MM-DD][r:N][s:src] (28 chars) is still parsed
-    for backward compatibility.
+    
+    Format: [YYMMDD[|count][|source]]  (9-13 chars)
+    Examples: [260522|t]  [260522|3|u]
     """
     c = (created or date.today()).strftime("%y%m%d")
-    r = f"[r:{ref_count}]" if ref_count > 1 else ""
+    r = f"|{ref_count}" if ref_count > 1 else ""
     s_map = {"user": "u", "tool": "t", "auto": "a", "archive": "x"}
     s = s_map.get(source, source[:1])
-    return f"[c:{c}]{r}[s:{s}] "
+    return f"[{c}{r}|{s}] "
 
 def _strip_tag(entry: str) -> str:
     """Remove the leading tag from an entry, returning just the content."""
