@@ -2958,7 +2958,7 @@ class GatewayRunner:
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
         # never actually delivered.
-        if self._suppress_busy_ack:
+        if getattr(self, "_suppress_busy_ack", False):
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
