@@ -14,6 +14,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from pathlib import Path
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def mirror_to_session(
             "mirror_source": source_label,
         }
 
+        _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
@@ -148,6 +150,40 @@ def _find_session_id(
     best_entry = max(candidates, key=lambda entry: entry.get("updated_at", ""))
     return best_entry.get("session_id")
 
+
+def _transcript_path(session_id: str) -> Path:
+    """Get transcript path, creating subdirectory if needed."""
+    return _SESSIONS_DIR / session_id / "messages.jsonl"
+
+
+def _append_to_jsonl(session_id: str, message: dict) -> None:
+    """Append a message to the JSONL transcript file."""
+    transcript_path = _transcript_path(session_id)
+    try:
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcript_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug("Mirror JSONL write failed: %s", e)
+
+
+def _read_jsonl(session_id: str) -> list:
+    """Read JSONL transcript, checking new location first then legacy."""
+    new_path = _SESSIONS_DIR / session_id / "messages.jsonl"
+    if new_path.exists():
+        try:
+            with open(new_path, "r", encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            pass
+    legacy_path = _SESSIONS_DIR / f"{session_id}.jsonl"
+    if legacy_path.exists():
+        try:
+            with open(legacy_path, "r", encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            pass
+    return []
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:

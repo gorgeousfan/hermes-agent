@@ -763,6 +763,13 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        # Auto-append to memo.txt for ultra-long-term backup
+        try:
+            from tools.memo_append import memo_append_skill
+            memo_append_skill(action, name or "", content or "")
+        except Exception:
+            pass
+
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)

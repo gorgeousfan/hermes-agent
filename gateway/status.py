@@ -108,6 +108,11 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+import ctypes
+import ctypes.util
+import struct
+import sys
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return the kernel start time for a process when available."""
     stat_path = Path(f"/proc/{pid}/stat")
@@ -115,7 +120,21 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+
+    # macOS fallback: use libproc with PROC_PIDTASKINFO
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library("libproc"))
+        buf = ctypes.create_string_buffer(256)
+        size = lib.proc_pidinfo(pid, 0x4, 0, buf, len(buf))
+        if size > 0:
+            # struct proc_pid BSD info: pbi_start_tval (struct timeval at offset 32)
+            start_tv_sec = struct.unpack_from("q", buf, 32)[0]
+            return start_tv_sec
+    except Exception:
+        pass
+
+    return None
 
 
 def get_process_start_time(pid: int) -> Optional[int]:
@@ -612,6 +631,11 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             return True, existing
 
         stale = existing_pid is None
+        # A null start_time means the previous process died before finishing
+        # the lock write (e.g. killed between O_CREAT|O_EXCL and json.dump).
+        # Treat it as stale so a new process can reclaim the scope.
+        if not stale and existing.get("start_time") is None:
+            stale = True
         if not stale:
             if not _pid_exists(existing_pid):
                 stale = True
