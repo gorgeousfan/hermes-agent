@@ -7278,6 +7278,9 @@ class GatewayRunner:
         if canonical == "title":
             return await self._handle_title_command(event)
 
+        if canonical == "sessions":
+            return await self._handle_resume_command(event)
+
         if canonical == "resume":
             return await self._handle_resume_command(event)
 

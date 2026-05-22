@@ -5912,22 +5912,37 @@ class HermesCLI:
 
         from hermes_cli.main import _relative_time
 
-        print()
+        def _emit_session_line(text: str = "") -> None:
+            # In the active prompt_toolkit TUI, route output through _cprint so
+            # it renders above/redraws around the fixed input area. Outside the
+            # TUI (unit tests, scripts, plain stdout), keep normal print()
+            # semantics so output remains capturable and pipe-friendly.
+            try:
+                from prompt_toolkit.application import get_app_or_none
+                app = get_app_or_none()
+            except Exception:
+                app = None
+            if app is not None and getattr(app, "_is_running", False):
+                _cprint(text)
+            else:
+                print(text)
+
+        _emit_session_line()
         if reason == "history":
-            print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
+            _emit_session_line("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
         else:
-            print("  Recent sessions:")
-        print()
-        print(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+            _emit_session_line("  Recent sessions:")
+        _emit_session_line()
+        _emit_session_line(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        _emit_session_line(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for session in sessions:
             title = (session.get("title") or "—")[:30]
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")
-        print()
-        print("  Use /resume <session id or title> to continue where you left off.")
-        print()
+            _emit_session_line(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+        _emit_session_line()
+        _emit_session_line("  Use /resume <session id or title> to continue where you left off.")
+        _emit_session_line()
         return True
 
     def show_history(self):
