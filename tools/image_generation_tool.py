@@ -970,12 +970,11 @@ def _read_configured_image_model():
 
 
 def _read_configured_image_provider():
-    """Return the value of ``image_gen.provider`` from config.yaml, or None.
+    """Return ``image_gen.provider`` from config.yaml, or None.
 
-    We only consult the plugin registry when this is explicitly set — an
-    unset value keeps users on the legacy in-tree FAL path even when other
-    providers happen to be registered (e.g. a user has OPENAI_API_KEY set
-    for other features but never asked for OpenAI image gen).
+    Unset values fall through to the model-provider inference (see
+    :func:`_resolve_image_provider_from_model_provider`), then to the
+    legacy in-tree FAL path.
     """
     try:
         from hermes_cli.config import load_config
@@ -987,6 +986,39 @@ def _read_configured_image_provider():
                 return value.strip()
     except Exception as exc:
         logger.debug("Could not read image_gen.provider: %s", exc)
+    return None
+
+
+def _read_model_provider() -> Optional[str]:
+    """Return ``model.provider`` from config.yaml, or None."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model = cfg.get("model") if isinstance(cfg, dict) else None
+        if isinstance(model, dict):
+            value = model.get("provider")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    except Exception as exc:
+        logger.debug("Could not read model.provider: %s", exc)
+    return None
+
+
+def _resolve_image_provider_from_model_provider() -> Optional[str]:
+    """Return ``model.provider``'s name when it matches an available
+    image-gen plugin, else None (so the caller falls through to FAL)."""
+    name = _read_model_provider()
+    if not name:
+        return None
+    try:
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
+        provider = get_provider(name)
+        if provider is not None and provider.is_available():
+            return name
+    except Exception as exc:
+        logger.debug("image_gen auto-resolution from model.provider skipped: %s", exc)
     return None
 
 
@@ -1002,8 +1034,13 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     that matches a registered plugin provider wins.
     """
     configured = _read_configured_image_provider()
-    if not configured or configured == "fal":
-        return None
+    if configured == "fal":
+        return None  # explicit opt-in to legacy FAL
+    if not configured:
+        # Infer from model.provider; None falls through to FAL.
+        configured = _resolve_image_provider_from_model_provider()
+        if not configured:
+            return None
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
