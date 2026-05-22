@@ -75,6 +75,15 @@ def _parse_comma_list(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _is_truthy(value: Any) -> bool:
+    """Return True for common config/env truthy values."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _guess_extension(data: bytes) -> str:
     """Guess file extension from magic bytes."""
     if data[:4] == b"\x89PNG":
@@ -199,6 +208,15 @@ class SignalAdapter(BasePlatformAdapter):
             self.require_mention = bool(_rm_cfg)
         else:
             self.require_mention = os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
+        # Reaction wakeups are opt-in. When enabled, Signal reaction envelopes
+        # become lightweight MessageEvent triggers so the agent can decide
+        # whether the emoji is actionable context, a direct answer, or noise.
+        _wor_cfg = extra.get("wake_on_reactions")
+        if _wor_cfg is not None:
+            self.wake_on_reactions = _is_truthy(_wor_cfg)
+        else:
+            self.wake_on_reactions = _is_truthy(os.getenv("SIGNAL_WAKE_ON_REACTIONS", "false"))
 
         # DM allowlist — mirrors SIGNAL_ALLOWED_USERS checked by run.py.
         # Stored here so the reaction hooks can skip unauthorized senders
@@ -439,6 +457,109 @@ class SignalAdapter(BasePlatformAdapter):
     # Message Handling
     # ------------------------------------------------------------------
 
+    def _extract_reaction(self, data_message: dict) -> Optional[dict]:
+        """Extract a Signal reaction object from a dataMessage, if present.
+
+        signal-cli has used slightly different field names across releases;
+        accept the known shapes so reaction handling degrades gracefully.
+        """
+        if not isinstance(data_message, dict):
+            return None
+        reaction = data_message.get("reaction") or data_message.get("reactionMessage")
+        return reaction if isinstance(reaction, dict) else None
+
+    def _timestamp_from_envelope(self, envelope_data: dict) -> datetime:
+        """Parse Signal's millisecond envelope timestamp with a safe fallback."""
+        ts_ms = envelope_data.get("timestamp", 0)
+        if ts_ms:
+            try:
+                return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            except (ValueError, OSError, TypeError):
+                pass
+        return datetime.now(tz=timezone.utc)
+
+    def _reaction_event_text(
+        self,
+        *,
+        sender_name: str,
+        sender: str,
+        reaction: dict,
+        is_group: bool,
+    ) -> str:
+        """Render a reaction as agent-facing context, not an automatic reply request."""
+        emoji = str(reaction.get("emoji") or "").strip() or "<no emoji>"
+        target_author = reaction.get("targetAuthor") or reaction.get("target_author") or "unknown"
+        target_ts = (
+            reaction.get("targetSentTimestamp")
+            or reaction.get("targetTimestamp")
+            or reaction.get("target_sent_timestamp")
+            or "unknown"
+        )
+        removed = bool(
+            reaction.get("isRemove")
+            or reaction.get("remove")
+            or reaction.get("removed")
+        )
+        actor = sender_name or sender
+        verb = f"removed reaction {emoji} from" if removed else f"reacted {emoji} to"
+        scope = " in a group conversation" if is_group else ""
+        return (
+            f"Signal reaction event: {actor} {verb} a message{scope}. "
+            f"Target author: {target_author}. Target timestamp: {target_ts}. "
+            "Use this as lightweight conversational input: decide whether this reaction is meaningful, "
+            "actionable, or memory-relevant. Emoji such as thumbs up/down, check marks, or crosses may answer a prior question. "
+            "You do not need to respond, especially in group conversations, unless a response or action is useful."
+        )
+
+    async def _dispatch_reaction_event(
+        self,
+        *,
+        envelope_data: dict,
+        data_message: dict,
+        source,
+        sender: str,
+        sender_name: str,
+        is_group: bool,
+    ) -> bool:
+        """Dispatch an opt-in reaction wake event. Returns True if handled."""
+        reaction = self._extract_reaction(data_message)
+        if not reaction:
+            return False
+        if not self.wake_on_reactions:
+            logger.debug("Signal: skipping reaction envelope because wake_on_reactions=false")
+            return True
+
+        target_ts = (
+            reaction.get("targetSentTimestamp")
+            or reaction.get("targetTimestamp")
+            or reaction.get("target_sent_timestamp")
+        )
+        event = MessageEvent(
+            source=source,
+            text=self._reaction_event_text(
+                sender_name=sender_name,
+                sender=sender,
+                reaction=reaction,
+                is_group=is_group,
+            ),
+            message_type=MessageType.TEXT,
+            timestamp=self._timestamp_from_envelope(envelope_data),
+            raw_message={
+                "sender": sender,
+                "timestamp_ms": envelope_data.get("timestamp", 0),
+                "reaction": dict(reaction),
+                "signal_event_type": "reaction",
+            },
+            message_id=str(envelope_data.get("timestamp")) if envelope_data.get("timestamp") else None,
+            reply_to_message_id=str(target_ts) if target_ts else None,
+        )
+        logger.debug(
+            "Signal: reaction from %s in %s: %s",
+            redact_phone(sender), source.chat_id[:20], reaction.get("emoji"),
+        )
+        await self.handle_message(event)
+        return True
+
     async def _handle_envelope(self, envelope: dict) -> None:
         """Process an incoming signal-cli envelope."""
         # Unwrap nested envelope if present
@@ -530,6 +651,30 @@ class SignalAdapter(BasePlatformAdapter):
         chat_id = sender if not is_group else f"group:{group_id}"
         chat_type = "group" if is_group else "dm"
 
+        # Build session source before text handling so metadata-only reaction
+        # envelopes can still wake the agent when explicitly enabled. Reactions
+        # intentionally bypass require_mention because they cannot contain a
+        # textual @mention, but still respect group allowlisting above.
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=(group_info.get("groupName") if isinstance(group_info, dict) else None) or sender_name,
+            chat_type=chat_type,
+            user_id=sender,
+            user_name=sender_name or sender,
+            user_id_alt=sender_uuid if sender_uuid else None,
+            chat_id_alt=group_id if is_group else None,
+        )
+
+        if await self._dispatch_reaction_event(
+            envelope_data=envelope_data,
+            data_message=data_message,
+            source=source,
+            sender=sender,
+            sender_name=sender_name,
+            is_group=is_group,
+        ):
+            return
+
         # Extract text and render mentions
         text = data_message.get("message", "")
         mentions = data_message.get("mentions", [])
@@ -594,17 +739,6 @@ class SignalAdapter(BasePlatformAdapter):
             )
             return
 
-        # Build session source
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=(group_info.get("groupName") if isinstance(group_info, dict) else None) or sender_name,
-            chat_type=chat_type,
-            user_id=sender,
-            user_name=sender_name or sender,
-            user_id_alt=sender_uuid if sender_uuid else None,
-            chat_id_alt=group_id if is_group else None,
-        )
-
         # Determine message type from media
         msg_type = MessageType.TEXT
         if media_types:
@@ -615,13 +749,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
-        if ts_ms:
-            try:
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            except (ValueError, OSError):
-                timestamp = datetime.now(tz=timezone.utc)
-        else:
-            timestamp = datetime.now(tz=timezone.utc)
+        timestamp = self._timestamp_from_envelope(envelope_data)
 
         # Build and dispatch event.
         # Store raw envelope data in raw_message so on_processing_start/complete

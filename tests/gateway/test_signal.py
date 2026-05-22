@@ -2,6 +2,7 @@
 import asyncio
 import base64
 import json
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -77,6 +78,23 @@ class TestSignalConfigLoading:
         _apply_env_overrides(config)
 
         assert Platform.SIGNAL not in config.platforms
+
+    def test_apply_yaml_signal_wake_on_reactions_sets_env(self, monkeypatch, tmp_path):
+        """signal.wake_on_reactions should configure Signal reaction wakeups."""
+        (tmp_path / "config.yaml").write_text(
+            "signal:\n"
+            "  wake_on_reactions: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("SIGNAL_WAKE_ON_REACTIONS", raising=False)
+
+        from gateway.config import load_gateway_config
+        try:
+            load_gateway_config()
+            assert os.getenv("SIGNAL_WAKE_ON_REACTIONS") == "true"
+        finally:
+            os.environ.pop("SIGNAL_WAKE_ON_REACTIONS", None)
 
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
@@ -1649,6 +1667,108 @@ class TestSignalSendTimeout:
         # 32 attachments × 5s = 160s; ought to comfortably outlast a
         # serial upload of an attachment-heavy batch.
         assert _signal_send_timeout(32) == 160.0
+
+
+# ---------------------------------------------------------------------------
+# Reaction envelope handling
+# ---------------------------------------------------------------------------
+
+class TestSignalReactionEnvelope:
+    """Verify Signal reaction events can wake the agent as lightweight events."""
+
+    def _reaction_envelope(self, *, group=False, emoji="👍", remove=False):
+        data_message = {
+            "reaction": {
+                "emoji": emoji,
+                "targetAuthor": "+155****2222",
+                "targetSentTimestamp": 1777600000123,
+                "isRemove": remove,
+            }
+        }
+        if group:
+            data_message["groupV2"] = {"id": "reaction-group=="}
+        return {
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": data_message,
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_reaction_is_skipped_by_default(self, monkeypatch):
+        monkeypatch.delenv("SIGNAL_WAKE_ON_REACTIONS", raising=False)
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope(self._reaction_envelope())
+
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_reaction_wakes_agent_when_enabled(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, wake_on_reactions=True)
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope(self._reaction_envelope())
+
+        assert len(captured) == 1
+        event = captured[0]
+        assert "reacted 👍" in event.text
+        assert "decide whether this reaction is meaningful" in event.text
+        assert "You do not need to respond" in event.text
+        assert event.reply_to_message_id == "1777600000123"
+        assert event.raw_message["reaction"]["emoji"] == "👍"
+        assert event.raw_message["reaction"]["targetAuthor"] == "+155****2222"
+
+    @pytest.mark.asyncio
+    async def test_group_reaction_bypasses_require_mention_but_respects_group_allowlist(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="*",
+            require_mention=True,
+            wake_on_reactions=True,
+        )
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope(self._reaction_envelope(group=True, emoji="✅"))
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:reaction-group=="
+        assert captured[0].source.chat_type == "group"
+        assert "group conversation" in captured[0].text
+
+    @pytest.mark.asyncio
+    async def test_reaction_removal_wakes_as_context(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, wake_on_reactions=True)
+        captured = []
+
+        async def fake_handle(event):
+            captured.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope(self._reaction_envelope(emoji="❌", remove=True))
+
+        assert len(captured) == 1
+        assert "removed reaction ❌" in captured[0].text
 
 
 # ---------------------------------------------------------------------------
