@@ -10,18 +10,22 @@ Provides bounded, file-backed memory that persists across sessions. Two stores:
 
 Both are injected into the system prompt as a frozen snapshot at session start.
 Mid-session writes update files on disk immediately (durable) but do NOT change
-the system prompt -- this preserves the prefix cache for the entire session.
+the system prompt — this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
 
 Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove, read
+- Single `memory` tool with action parameter: add, replace, remove, read, prune
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
+- Entries can carry an optional metadata tag: [c:2026-05-22][r:3][s:user]
+  Auto-pruning uses tag data to score and evict low-value entries.
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -29,9 +33,10 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 from utils import atomic_replace
 
@@ -58,6 +63,102 @@ def get_memory_dir() -> Path:
 
 ENTRY_DELIMITER = "\n§\n"
 
+# ── Entry metadata tags ────────────────────────────────────────────────────
+#
+# Each entry can optionally begin with a tag like:
+#   [c:2026-05-22][r:3][s:user] Content text...
+#
+# Fields:
+#   c = creation date (YYYY-MM-DD)
+#   r = reference count (how many times the entry was accessed)
+#   s = source (user | tool | auto | archive)
+#
+# Entries without tags are treated as untagged (score = 0) for pruning
+# purposes but otherwise work identically.
+
+TAG_RE = re.compile(
+    r"^\[c:(\d{4}-\d{2}-\d{2})\]\[r:(\d+)\]\[s:(\w+)\]\s+"
+)
+
+def _parse_tag(entry: str) -> dict | None:
+    """Extract metadata tag from an entry. Returns None if no tag present."""
+    m = TAG_RE.match(entry)
+    if not m:
+        return None
+    return {
+        "created": datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc),
+        "ref_count": int(m.group(2)),
+        "source": m.group(3),
+    }
+
+def _format_tag(created: date | None = None, ref_count: int = 1,
+                source: str = "tool") -> str:
+    """Build a metadata tag prefix string."""
+    c = (created or date.today()).strftime("%Y-%m-%d")
+    return f"[c:{c}][r:{ref_count}][s:{source}] "
+
+def _strip_tag(entry: str) -> str:
+    """Remove the leading tag from an entry, returning just the content."""
+    m = TAG_RE.match(entry)
+    if m:
+        return entry[m.end():]
+    return entry
+
+def _tag_or_none(entry: str) -> str | None:
+    """Return the raw tag if present, None otherwise."""
+    m = TAG_RE.match(entry)
+    return m.group(0) if m else None
+
+# ── Scoring for auto-pruning ───────────────────────────────────────────────
+
+_SOURCE_WEIGHTS = {
+    "user": 1.0,
+    "tool": 0.8,
+    "auto": 0.5,
+    "archive": 0.2,
+}
+
+_PRUNE_PROTECT_DAYS = int(os.environ.get("HERMES_MEMORY_PRUNE_PROTECT_DAYS", "7"))
+_PRUNE_SOFT_THRESHOLD = float(os.environ.get("HERMES_MEMORY_PRUNE_THRESHOLD", "0.80"))
+_PRUNE_TARGET_USAGE = float(os.environ.get("HERMES_MEMORY_PRUNE_TARGET", "0.70"))
+_PRUNE_MIN_ENTRIES = int(os.environ.get("HERMES_MEMORY_PRUNE_MIN_ENTRIES", "1"))
+
+
+def _score_entry(
+    tag: dict | None,
+    now: datetime,
+) -> float:
+    """Score an entry's value for pruning decisions. 0 = lowest value, 1 = highest.
+
+    Uses three signals, each contributing equally:
+      - Freshness: how recently the entry was created
+      - Frequency: how often the entry has been referenced
+      - Source authority: user > tool > auto > archive
+    """
+    if tag is None:
+        return 0.0  # untagged entries are always pruned first
+
+    days_since = (now - tag["created"]).days
+    freshness = max(0.0, 1.0 - days_since / 60.0)
+    freq = min(tag["ref_count"], 10) / 10.0
+    sw = _SOURCE_WEIGHTS.get(tag["source"], 0.3)
+
+    return 0.3 * freshness + 0.4 * freq + 0.3 * sw
+
+
+def _bump_ref_count(entry: str) -> str:
+    """Increment the 'r' field in an entry's tag. Returns the entry unchanged
+    if no tag is present."""
+    tag = _parse_tag(entry)
+    if tag is None:
+        return entry
+    prefix = _format_tag(
+        created=tag["created"].date(),
+        ref_count=tag["ref_count"] + 1,
+        source=tag["source"],
+    )
+    return prefix + _strip_tag(entry)
+
 
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
@@ -78,8 +179,8 @@ _MEMORY_THREAT_PATTERNS = [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
     # Persistence via shell rc
     (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
+    (r'\$HOME/\.ssh|\~/.ssh', "ssh_access"),
+    (r'\$HOME/\.hermes/\.env|\~/.hermes/\.env', "hermes_env"),
 ]
 
 # Subset of invisible chars for injection detection
@@ -89,7 +190,7 @@ _INVISIBLE_CHARS = {
 }
 
 
-def _scan_memory_content(content: str) -> Optional[str]:
+def _scan_memory_content(content: str) -> str | None:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
     # Check invisible unicode
     for char in _INVISIBLE_CHARS:
@@ -116,12 +217,12 @@ class MemoryStore:
     """
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
-        self.memory_entries: List[str] = []
-        self.user_entries: List[str] = []
+        self.memory_entries: list[str] = []
+        self.user_entries: list[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
-        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
@@ -199,12 +300,12 @@ class MemoryStore:
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
-    def _entries_for(self, target: str) -> List[str]:
+    def _entries_for(self, target: str) -> list[str]:
         if target == "user":
             return self.user_entries
         return self.memory_entries
 
-    def _set_entries(self, target: str, entries: List[str]):
+    def _set_entries(self, target: str, entries: list[str]):
         if target == "user":
             self.user_entries = entries
         else:
@@ -221,11 +322,83 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+    # ── Pruning ────────────────────────────────────────────────────────────
+
+    def _prune_if_needed(self, target: str) -> dict | None:
+        """Check current usage and prune low-value entries if above threshold.
+
+        Returns a summary dict if pruning happened, None otherwise.
+        Called under file lock.
+        """
+        entries = self._entries_for(target)
+        limit = self._char_limit(target)
+        current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+        usage = current / limit if limit > 0 else 0
+
+        if usage < _PRUNE_SOFT_THRESHOLD:
+            return None
+
+        now = datetime.now(timezone.utc)
+        cutoff = now.replace(tzinfo=timezone.utc) - __import__("datetime").timedelta(
+            days=_PRUNE_PROTECT_DAYS
+        )
+        target_usage = current * _PRUNE_TARGET_USAGE
+
+        # Score entries; protect recent ones
+        scored: list[tuple[float, str, int]] = []
+        protected: list[tuple[float, str, int]] = []
+        for idx, entry in enumerate(entries):
+            tag = _parse_tag(entry)
+            score = _score_entry(tag, now)
+            if tag and tag["created"] >= cutoff:
+                protected.append((score, entry, idx))
+            else:
+                scored.append((score, entry, idx))
+
+        # Sort by score ascending (worst first)
+        scored.sort(key=lambda x: x[0])
+        removed: list[str] = []
+        chars_freed = 0
+
+        for score, entry, idx in scored:
+            if len(entries) - len(removed) <= _PRUNE_MIN_ENTRIES:
+                break
+            new_total = current - chars_freed - len(entry)
+            new_usage = new_total / limit if limit > 0 else 0
+            if new_usage <= target_usage:
+                break
+            removed.append(entry)
+            chars_freed += len(entry)
+
+        if not removed:
+            return None
+
+        remaining = [e for i, e in enumerate(entries) if i not in {r[2] for r in
+                      [(s, e, i) for s, e, i in scored[:len(removed)]]}]
+        # Actually, let me just do it simply:
+        remove_indices = {entry[2] for entry in scored[:len(removed)]}
+        surviving = [e for i, e in enumerate(entries) if i not in remove_indices]
+        self._set_entries(target, surviving)
+        self.save_to_disk(target)
+
+        return {
+            "pruned": len(removed),
+            "chars_freed": chars_freed,
+            "remaining": len(surviving),
+            "usage_before": f"{current:,}/{limit:,} ({usage*100:.0f}%)",
+            "usage_after": f"{(current - chars_freed):,}/{limit:,} ({(current - chars_freed)/limit*100:.0f}%)" if limit else "N/A",
+        }
+
+    # ── Mutation methods ───────────────────────────────────────────────────
+
+    def add(self, target: str, content: str) -> dict[str, Any]:
+        """Append a new entry. Auto-prunes low-value entries if space is tight."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
+
+        # Tag new entries with creation metadata
+        tagged_content = _format_tag() + content
 
         # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
@@ -240,33 +413,42 @@ class MemoryStore:
             limit = self._char_limit(target)
 
             # Reject exact duplicates
-            if content in entries:
+            if content in entries or tagged_content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
             # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+            new_total = len(ENTRY_DELIMITER.join(entries + [tagged_content])) if entries else len(tagged_content)
 
             if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+                # Instead of hard-error, try auto-pruning
+                prune_result = self._prune_if_needed(target)
+                if prune_result:
+                    # Retry after pruning - re-read entries since prune modified them
+                    entries = self._entries_for(target)
+                    new_total = len(ENTRY_DELIMITER.join(entries + [tagged_content])) if entries else len(tagged_content)
 
-            entries.append(content)
+                if new_total > limit:
+                    current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Memory at {current:,}/{limit:,} chars. "
+                            f"Adding this entry ({len(tagged_content)} chars) would exceed the limit. "
+                            f"Auto-prune freed {prune_result.get('pruned', 0) if prune_result else 0} "
+                            f"entries but space is still insufficient. "
+                            f"Replace or remove existing entries first."
+                        ),
+                        "current_entries": entries,
+                        "usage": f"{current:,}/{limit:,}",
+                    }
+
+            entries.append(tagged_content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str) -> dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
         new_content = new_content.strip()
@@ -304,9 +486,16 @@ class MemoryStore:
             idx = matches[0][0]
             limit = self._char_limit(target)
 
+            # Preserve the existing tag if present; tag the new content otherwise
+            existing_tag = _tag_or_none(entries[idx])
+            if existing_tag:
+                tagged_new = existing_tag + new_content
+            else:
+                tagged_new = _format_tag() + new_content
+
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            test_entries[idx] = tagged_new
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
@@ -318,13 +507,13 @@ class MemoryStore:
                     ),
                 }
 
-            entries[idx] = new_content
+            entries[idx] = tagged_new
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(self, target: str, old_text: str) -> dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()
         if not old_text:
@@ -358,7 +547,73 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
+    def prune(self, target: str, dry_run: bool = False) -> dict[str, Any]:
+        """Explicitly trigger pruning. Returns summary of what would be / was removed.
+
+        Args:
+            target: 'memory' or 'user'
+            dry_run: if True, only report without modifying entries.
+        """
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            entries = self._entries_for(target)
+            limit = self._char_limit(target)
+            current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+            usage = current / limit if limit > 0 else 0
+
+            now = datetime.now(timezone.utc)
+            cutoff = now - __import__("datetime").timedelta(days=_PRUNE_PROTECT_DAYS)
+
+            scored: list[tuple[float, str, int]] = []
+            protected_count = 0
+            for idx, entry in enumerate(entries):
+                tag = _parse_tag(entry)
+                score = _score_entry(tag, now)
+                if tag and tag["created"] >= cutoff:
+                    protected_count += 1
+                scored.append((score, entry, idx))
+
+            scored.sort(key=lambda x: x[0])
+
+            result = {
+                "target": target,
+                "total_entries": len(entries),
+                "usage": f"{current:,}/{limit:,} ({usage*100:.0f}%)" if limit else "N/A",
+                "protected_entries": protected_count,
+                "prune_suggested": usage >= _PRUNE_SOFT_THRESHOLD,
+            }
+
+            if usage >= _PRUNE_SOFT_THRESHOLD:
+                # Show bottom 20% scores
+                n_show = max(1, len(scored) // 5)
+                candidates = []
+                for score, entry, idx in scored[:n_show]:
+                    tag = _parse_tag(entry)
+                    preview = _strip_tag(entry)[:60].replace("\n", " ")
+                    candidates.append({
+                        "index": idx,
+                        "score": round(score, 3),
+                        "tag": {
+                            "created": tag["created"].strftime("%Y-%m-%d") if tag else None,
+                            "ref_count": tag["ref_count"] if tag else 0,
+                            "source": tag["source"] if tag else "untagged",
+                        } if tag else None,
+                        "preview": preview,
+                    })
+                result["candidates"] = candidates
+
+                if not dry_run:
+                    pruned = self._prune_if_needed(target)
+                    if pruned:
+                        result["pruned"] = pruned
+                    else:
+                        result["pruned"] = {"pruned": 0, "reason": "all entries protected or high-value"}
+
+            return result
+
+    # ── System prompt integration ───────────────────────────────────────────
+
+    def format_for_system_prompt(self, target: str) -> str | None:
         """
         Return the frozen snapshot for system prompt injection.
 
@@ -373,7 +628,7 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None) -> dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -390,7 +645,7 @@ class MemoryStore:
             resp["message"] = message
         return resp
 
-    def _render_block(self, target: str, entries: List[str]) -> str:
+    def _render_block(self, target: str, entries: list[str]) -> str:
         """Render a system prompt block with header and usage indicator."""
         if not entries:
             return ""
@@ -409,7 +664,7 @@ class MemoryStore:
         return f"{separator}\n{header}\n{separator}\n{content}"
 
     @staticmethod
-    def _read_file(path: Path) -> List[str]:
+    def _read_file(path: Path) -> list[str]:
         """Read a memory file and split into entries.
 
         No file locking needed: _write_file uses atomic rename, so readers
@@ -431,7 +686,7 @@ class MemoryStore:
         return [e for e in entries if e]
 
     @staticmethod
-    def _write_file(path: Path, entries: List[str]):
+    def _write_file(path: Path, entries: list[str]):
         """Write entries to a memory file using atomic temp-file + rename.
 
         Previous implementation used open("w") + flock, but "w" truncates the
@@ -467,13 +722,16 @@ def memory_tool(
     target: str = "memory",
     content: str = None,
     old_text: str = None,
-    store: Optional[MemoryStore] = None,
+    dry_run: bool = False,
+    store: Any = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
     Returns JSON string with results.
     """
+    from tools.registry import tool_error
+
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
@@ -497,75 +755,69 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "prune":
+        result = store.prune(target, dry_run=dry_run)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Invalid action '{action}'. Use 'add', 'replace', 'remove', or 'prune'.", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
 
+# ---- Required env vars / dependencies ----
+
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
+    """Memory is always available — no external dependencies."""
     return True
 
-
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
 
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable information to persistent memory that survives across sessions. "
-        "Memory is injected into future turns, so keep it compact and focused on facts "
-        "that will still matter later.\n\n"
-        "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
-        "- User corrects you or says 'remember this' / 'don't do that again'\n"
-        "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
-        "- You discover something about the environment (OS, installed tools, project structure)\n"
-        "- You learn a convention, API quirk, or workflow specific to this user's setup\n"
-        "- You identify a stable fact that will be useful again in future sessions\n\n"
-        "PRIORITY: User preferences and corrections > environment facts > procedural knowledge. "
-        "The most valuable memory prevents the user from having to repeat themselves.\n\n"
-        "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-        "state to memory; use session_search to recall those from past transcripts.\n"
-        "If you've discovered a new way to do something, solved a problem that could be "
-        "necessary later, save it as a skill with the skill tool.\n\n"
-        "TWO TARGETS:\n"
-        "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
-        "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
-        "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
-        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
+        "Manage persistent memory for the agent. "
+        "Entries are stored durably across sessions and injected into the system prompt. "
+        "Use 'memory' target for your own notes (preferences, environment facts, conventions). "
+        "Use 'user' target for information about the user (their preferences, habits, corrections). "
+        "Use 'prune' action to trigger automatic cleanup of low-value entries."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "enum": ["add", "replace", "remove", "prune"],
+                "description": (
+                    "The action to perform. 'add' appends a new entry (auto-tagged with metadata). "
+                    "'replace' finds an entry by substring and replaces it. "
+                    "'remove' finds an entry by substring and deletes it. "
+                    "'prune' scores all entries and removes low-value ones when usage exceeds 80%."
+                ),
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile.",
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'."
+                "description": "The entry content. Required for 'add' and 'replace'. "
+                "For 'add', a metadata tag [c:date][r:count][s:source] is prepended automatically.",
             },
             "old_text": {
                 "type": "string",
-                "description": "Short unique substring identifying the entry to replace or remove."
+                "description": "Short unique substring identifying the entry to replace or remove.",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "For 'prune' action only: if true, only report candidates without removing anything.",
             },
         },
         "required": ["action", "target"],
     },
 }
 
-
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry
 
 registry.register(
     name="memory",
@@ -576,11 +828,8 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        dry_run=args.get("dry_run", False),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-
