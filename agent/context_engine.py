@@ -64,6 +64,7 @@ class ContextEngine(ABC):
     threshold_percent: float = 0.75
     protect_first_n: int = 3
     protect_last_n: int = 6
+    min_tail_user_messages: int = 3
 
     # -- Core interface ----------------------------------------------------
 

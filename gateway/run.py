@@ -6026,6 +6026,15 @@ class GatewayRunner:
             if not check_weixin_requirements():
                 logger.warning("Weixin: aiohttp/cryptography not installed")
                 return None
+            # Multi-account: when config has accounts list with >1 entries,
+            # use MultiWeixinAdapter proxy (one WeixinAdapter per account).
+            if (
+                isinstance(getattr(config, 'extra', None), dict)
+                and isinstance(config.extra.get("accounts"), list)
+                and len(config.extra["accounts"]) > 1
+            ):
+                from gateway.platforms.weixin_multi import MultiWeixinAdapter
+                return MultiWeixinAdapter(config)
             return WeixinAdapter(config)
 
         elif platform == Platform.MATTERMOST:
@@ -14644,6 +14653,7 @@ class GatewayRunner:
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("compression", "min_tail_user_messages"),
     )
 
     @classmethod

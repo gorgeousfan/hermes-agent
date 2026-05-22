@@ -515,6 +515,7 @@ class ContextCompressor(ContextEngine):
         threshold_percent: float = 0.50,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
+        min_tail_user_messages: int = 3,
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
@@ -533,6 +534,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
+        self.min_tail_user_messages = max(1, min_tail_user_messages)
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # When True, summary-generation failure aborts compression entirely
@@ -1409,6 +1411,73 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Safety: never go back into the head region.
         return max(last_user_idx, head_end + 1)
 
+    def _ensure_last_n_user_messages_in_tail(
+        self,
+        messages: List[Dict[str, Any]],
+        cut_idx: int,
+        head_end: int,
+        n: int,
+    ) -> int:
+        """Guarantee the last N user messages are in the protected tail.
+
+        Generalizes ``_ensure_last_user_message_in_tail`` to preserve an
+        arbitrary number of recent user messages.  This prevents the token-
+        budget-based tail cut from consuming recent conversation turns
+        when large tool outputs fill the budget (COMPRESS-01).
+
+        When *n* <= 1, delegates directly to the existing single-message
+        method for byte-identical regression safety (COMPRESS-08).
+
+        If the conversation has fewer than *n* user messages, the earliest
+        available user message is used without error (COMPRESS-07).
+
+        Calls ``_align_boundary_backward`` after repositioning the boundary
+        to ensure any tool_call/result group preceding the Nth user message
+        is not split across the compression boundary (COMPRESS-02).
+        """
+        # N <= 1 gate — delegate to existing single-message protection
+        if n <= 1:
+            return self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Collect user message indices walking backward from end
+        user_indices = []
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            if messages[i].get("role") == "user":
+                user_indices.append(i)
+
+        # Fewer than N guard — use earliest user message found, if any
+        if len(user_indices) == 0:
+            # No user messages beyond head_end — nothing to anchor.
+            return cut_idx
+
+        if len(user_indices) < n:
+            # Not enough user messages for N; use the earliest found.
+            target_idx = user_indices[-1]
+        else:
+            # Nth-to-last user message (user_indices is newest-first)
+            target_idx = user_indices[n - 1]
+
+        # Already in tail — nothing to do
+        if target_idx >= cut_idx:
+            return cut_idx
+
+        # Pull boundary back to the Nth user message (clean boundary)
+        old_cut = cut_idx
+        cut_idx = target_idx
+
+        # Align backward to avoid splitting tool_call/result groups
+        cut_idx = self._align_boundary_backward(messages, cut_idx)
+
+        if not self.quiet_mode:
+            logger.debug(
+                "Anchoring tail cut to N=%d user messages: "
+                "repositioned boundary from %d to %d (target user at %d)",
+                n, old_cut, cut_idx, target_idx,
+            )
+
+        # Safety: never go back into the head region.
+        return max(cut_idx, head_end + 1)
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -1469,6 +1538,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Ensure the most recent user message is always in the tail so the
         # active task is never lost to compression (fixes #10896).
         cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Ensure the last N user messages are in the tail (COMPRESS-01).
+        # When N > 1, this applies additional repositioning beyond the
+        # single-message guarantee above; when N <= 1, it delegates to
+        # _ensure_last_user_message_in_tail internally.
+        cut_idx = self._ensure_last_n_user_messages_in_tail(
+            messages, cut_idx, head_end, self.min_tail_user_messages
+        )
 
         return max(cut_idx, head_end + 1)
 

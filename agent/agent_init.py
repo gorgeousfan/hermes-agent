@@ -1195,6 +1195,7 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    compression_min_tail_users = int(_compression_cfg.get("min_tail_user_messages", 3))
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1402,6 +1403,7 @@ def init_agent(
             threshold_percent=compression_threshold,
             protect_first_n=compression_protect_first,
             protect_last_n=compression_protect_last,
+            min_tail_user_messages=compression_min_tail_users,
             summary_target_ratio=compression_target_ratio,
             summary_model_override=None,
             quiet_mode=agent.quiet_mode,
