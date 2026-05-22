@@ -474,6 +474,14 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class ChatModelSwitch(BaseModel):
+    """Payload for POST /api/chat/model — switch the live dashboard chat."""
+    channel: str
+    provider: str
+    model: str
+    persist_global: bool = False
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -532,6 +540,319 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+@app.get("/api/harness/learning-health")
+async def get_harness_learning_health():
+    """Return sidecar harness health for the dashboard."""
+    try:
+        from agent.harness import HermesHarness
+
+        control_plane = HermesHarness().control_plane
+    except Exception as exc:
+        try:
+            from agent.harness_control_plane import learning_health_unavailable_summary
+
+            return learning_health_unavailable_summary(f"learning health unavailable: {exc}")
+        except Exception:
+            return {
+                "schema_version": 1,
+                "generated_at": None,
+                "profile": os.environ.get("HERMES_PROFILE") or "default",
+                "hermes_home": str(get_hermes_home()),
+                "degraded": True,
+                "error": f"learning health unavailable: {exc}",
+                "traces": {},
+                "events": {},
+                "memory": {},
+                "skills": {},
+                "mutations": {},
+                "evals": {},
+                "core_harness": {
+                    "name": "harness-core",
+                    "status": "unavailable",
+                    "case_count": 0,
+                    "last_run_at": None,
+                    "last_result": None,
+                },
+            }
+
+    try:
+        return control_plane.learning_health()
+    except Exception as exc:
+        return control_plane.learning_health_unavailable(str(exc))
+
+
+def _control_plane_or_unavailable():
+    from agent.harness import HermesHarness
+
+    return HermesHarness().control_plane
+
+
+@app.get("/api/harness/learning-snapshot")
+async def get_harness_learning_snapshot():
+    """Return the content-free trace/replay learning snapshot."""
+    try:
+        return _control_plane_or_unavailable().learning_snapshot()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "trace_schema": {"name": "hermes.turn_trace", "version": 1},
+            "failure_taxonomy": {},
+            "replay_corpus": {"total": 0},
+            "promotion_gates": {"total": 0},
+        }
+
+
+@app.get("/api/harness/replay-corpus")
+async def get_harness_replay_corpus():
+    """Return content-safe replay corpus status for historical failures."""
+    try:
+        return _control_plane_or_unavailable().replay_corpus()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "total": 0,
+            "by_status": {},
+            "by_failure_kind": {},
+            "candidates": [],
+        }
+
+
+@app.get("/api/harness/promotion-gates")
+async def get_harness_promotion_gates():
+    """Return promotion/offline-eval gate status for harness mutations."""
+    try:
+        return _control_plane_or_unavailable().promotion_gates()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "total": 0,
+            "passed": 0,
+            "blocked": 0,
+            "by_component": {},
+            "recent_gates": [],
+        }
+
+
+@app.get("/api/harness/context-hygiene")
+async def get_harness_context_hygiene():
+    """Return metadata-only context-layer hygiene status."""
+    try:
+        return _control_plane_or_unavailable().context_hygiene()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "layers": {},
+            "issues": [],
+            "issue_count": 0,
+        }
+
+
+@app.get("/api/harness/skill-lifecycle")
+async def get_harness_skill_lifecycle():
+    """Return metadata-only skill lifecycle audit status."""
+    try:
+        return _control_plane_or_unavailable().skill_lifecycle()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "mode": "audit_only_no_delete",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "skill_count": 0,
+            "promotion": {},
+            "issues": [],
+            "issue_count": 0,
+        }
+
+
+@app.get("/api/harness/autonomous-loops")
+async def get_harness_autonomous_loops():
+    """Return metadata-only autonomous-loop inventory status."""
+    try:
+        return _control_plane_or_unavailable().autonomous_loops()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "mode": "audit_only_no_create",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "cron": {},
+            "goals": {},
+            "guidance": [],
+            "issues": [],
+            "issue_count": 0,
+        }
+
+
+@app.get("/api/harness/route-plan")
+async def get_harness_route_plan():
+    """Return the metadata-only seven-tier route impact plan."""
+    try:
+        return getattr(_control_plane_or_unavailable(), "route_plan")(
+            _dashboard_route_proof()
+        )
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "setup_mode": "unavailable",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "recommended_baseline": {
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+                "openai_runtime": "auto",
+                "requires_external_cli": False,
+            },
+            "tier_count": 7,
+            "tiers": [
+                {
+                    "tier": tier,
+                    "name": name,
+                    "status": "unavailable",
+                    "required_action": "route plan unavailable",
+                }
+                for tier, name in [
+                    (1, "Reliability / source control"),
+                    (2, "Route invariants"),
+                    (3, "Trace / replay"),
+                    (4, "Context hygiene"),
+                    (5, "Skill lifecycle"),
+                    (6, "Autonomous loops"),
+                    (7, "Security"),
+                ]
+            ],
+        }
+
+
+@app.get("/api/harness/security-policy")
+async def get_harness_security_policy():
+    """Return metadata-only Tier 7 security policy/check status."""
+    try:
+        return _control_plane_or_unavailable().security_policy()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "content_policy": "metadata_only",
+            "mode": "audit_only_no_side_effects",
+            "degraded": True,
+            "error_type": type(exc).__name__,
+            "policy": {},
+            "checks": {},
+            "approval_matrix": [],
+            "profile_permission_matrix": [],
+            "credential_inventory": {"raw_values_returned": False},
+            "issues": [],
+            "issue_count": 0,
+            "highest_severity": "none",
+        }
+
+
+@app.get("/api/harness/core")
+async def get_core_harness_status():
+    """Return the first-class seven-case Hermes core harness status."""
+    try:
+        from agent.harness import HermesHarness
+
+        return HermesHarness().control_plane.core_status()
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "name": "harness-core",
+            "status": "unavailable",
+            "error": str(exc),
+            "case_count": 0,
+            "cases": [],
+        }
+
+
+@app.post("/api/harness/core/run")
+async def run_core_harness_endpoint(payload: dict | None = None):
+    """Run the seven-case Hermes core harness and persist the result."""
+    try:
+        from agent.harness import HermesHarness
+
+        case_ids = None
+        if isinstance(payload, dict):
+            raw_case_ids = payload.get("case_ids")
+            if isinstance(raw_case_ids, list):
+                case_ids = [str(item) for item in raw_case_ids]
+        control_plane = HermesHarness().control_plane
+        return await asyncio.to_thread(control_plane.run_core, case_ids=case_ids)
+    except Exception as exc:
+        return {
+            "schema_version": 1,
+            "name": "harness-core",
+            "status": "failed",
+            "error": str(exc),
+            "case_count": 0,
+            "cases": [],
+        }
+
+
+def _dashboard_route_proof() -> Dict[str, Any]:
+    """Return a content-safe proof for the dashboard-visible runtime route."""
+    try:
+        from hermes_cli.route_contracts import build_agent_route_proof, verify_agent_route_contract
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") or {}
+        model = ""
+        if isinstance(model_cfg, dict):
+            model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        runtime = resolve_runtime_provider(target_model=model or None)
+        agent_cfg = cfg.get("agent") or {}
+        reasoning_config = None
+        reasoning_effort = str(agent_cfg.get("reasoning_effort", "") or "").strip()
+        if reasoning_effort:
+            from hermes_constants import parse_reasoning_effort
+
+            reasoning_config = parse_reasoning_effort(reasoning_effort) or reasoning_effort
+        service_tier = str(agent_cfg.get("service_tier", "") or "").strip().lower()
+        if service_tier in {"fast", "priority", "on"}:
+            service_tier = "priority"
+        elif service_tier in {"", "normal", "default", "standard", "off", "none"}:
+            service_tier = ""
+        return verify_agent_route_contract(
+            surface="dashboard",
+            platform="dashboard",
+            provider=runtime.get("provider"),
+            model=runtime.get("model") or model,
+            api_mode=runtime.get("api_mode"),
+            base_url=runtime.get("base_url"),
+            api_key=runtime.get("api_key"),
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+            fallback_model=cfg.get("fallback_providers") or cfg.get("fallback_model"),
+            raise_on_error=False,
+        )
+    except Exception as exc:
+        try:
+            from hermes_cli.route_contracts import build_agent_route_proof
+
+            proof = build_agent_route_proof(surface="dashboard", platform="dashboard")
+        except Exception:
+            proof = {"schema_version": 1, "surface": "dashboard", "contract": {"status": "unavailable", "violations": []}}
+        proof["degraded"] = True
+        proof["error_type"] = type(exc).__name__
+        return proof
 
 
 @app.get("/api/status")
@@ -621,6 +942,12 @@ async def get_status():
     except Exception:
         pass
 
+    route_proof = _dashboard_route_proof()
+    try:
+        route_plan = getattr(_control_plane_or_unavailable(), "route_plan")(route_proof)
+    except Exception:
+        route_plan = None
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -637,6 +964,8 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+        "route_proof": route_proof,
+        "route_plan": route_plan,
     }
 
 
@@ -975,11 +1304,11 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
     "vision",
     "web_extract",
     "compression",
-    "session_search",
     "skills_hub",
     "approval",
     "mcp",
     "title_generation",
+    "goal_judge",
     "curator",
 )
 
@@ -3318,6 +3647,13 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 _event_channels: dict[str, set] = {}
 _event_lock = asyncio.Lock()
 
+# Active PTY children keyed by the same chat-tab channel.  REST endpoints use
+# this to address the visible embedded TUI session without opening a separate
+# JSON-RPC gateway process.
+_pty_channels: Dict[str, Any] = {}
+_pty_channel_write_locks: Dict[str, threading.Lock] = {}
+_pty_registry_lock = threading.Lock()
+
 
 def _resolve_chat_argv(
     resume: Optional[str] = None,
@@ -3372,7 +3708,16 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
     if not host or not port:
         return None
 
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    # 0.0.0.0 / :: are bind addresses, not useful connect targets for the
+    # PTY child. The child runs on the same machine as the dashboard server,
+    # so publish through loopback even when the operator exposed the dashboard
+    # with --insecure.
+    connect_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+    netloc = (
+        f"[{connect_host}]:{port}"
+        if ":" in connect_host and not connect_host.startswith("[")
+        else f"{connect_host}:{port}"
+    )
     qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
 
     return f"ws://{netloc}/api/pub?{qs}"
@@ -3397,6 +3742,61 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     channel = ws.query_params.get("channel", "")
 
     return channel if _VALID_CHANNEL_RE.match(channel) else None
+
+
+def _register_pty_channel(channel: Optional[str], bridge: Any) -> None:
+    if not channel:
+        return
+
+    with _pty_registry_lock:
+        _pty_channels[channel] = bridge
+        _pty_channel_write_locks.setdefault(channel, threading.Lock())
+
+
+def _unregister_pty_channel(channel: Optional[str], bridge: Any) -> None:
+    if not channel:
+        return
+
+    with _pty_registry_lock:
+        if _pty_channels.get(channel) is bridge:
+            _pty_channels.pop(channel, None)
+            _pty_channel_write_locks.pop(channel, None)
+
+
+def _write_pty_channel(channel: str, data: bytes) -> None:
+    with _pty_registry_lock:
+        bridge = _pty_channels.get(channel)
+        write_lock = _pty_channel_write_locks.get(channel)
+
+    if bridge is None or write_lock is None or not bridge.is_alive():
+        raise KeyError(channel)
+
+    with write_lock:
+        bridge.write(data)
+
+
+def _clean_chat_model_value(label: str, value: str, *, token: bool = False) -> str:
+    value = (value or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail=f"{label} is required")
+    if len(value) > 512:
+        raise HTTPException(status_code=400, detail=f"{label} is too long")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise HTTPException(status_code=400, detail=f"{label} contains invalid control characters")
+    if token and any(ch.isspace() for ch in value):
+        raise HTTPException(status_code=400, detail=f"{label} must not contain whitespace")
+    return value
+
+
+def _build_chat_model_command(body: ChatModelSwitch) -> str:
+    channel = (body.channel or "").strip()
+    if not _VALID_CHANNEL_RE.match(channel):
+        raise HTTPException(status_code=400, detail="invalid channel")
+
+    provider = _clean_chat_model_value("provider", body.provider, token=True)
+    model = _clean_chat_model_value("model", body.model, token=True)
+    scope = " --global" if body.persist_global else " --tui-session"
+    return f"/model {model} --provider {provider}{scope}"
 
 
 @app.websocket("/api/pty")
@@ -3455,6 +3855,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
+    _register_pty_channel(channel, bridge)
     loop = asyncio.get_running_loop()
 
     # --- reader task: PTY master → WebSocket ----------------------------
@@ -3506,7 +3907,35 @@ async def pty_ws(ws: WebSocket) -> None:
             await reader_task
         except (asyncio.CancelledError, Exception):
             pass
+        _unregister_pty_channel(channel, bridge)
         bridge.close()
+
+
+@app.post("/api/chat/model")
+async def set_chat_model(body: ChatModelSwitch):
+    """Apply a model switch to the live embedded TUI for one chat tab."""
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        raise HTTPException(status_code=403, detail="embedded chat is disabled")
+
+    command = _build_chat_model_command(body)
+    try:
+        await asyncio.to_thread(
+            _write_pty_channel,
+            body.channel.strip(),
+            f"{command}\r".encode("utf-8"),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="chat channel is not active")
+    except Exception:
+        _log.exception("POST /api/chat/model failed")
+        raise HTTPException(status_code=500, detail="failed to write to chat")
+
+    return {
+        "ok": True,
+        "channel": body.channel.strip(),
+        "provider": body.provider.strip(),
+        "model": body.model.strip(),
+    }
 
 
 # ---------------------------------------------------------------------------

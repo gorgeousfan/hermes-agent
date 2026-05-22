@@ -412,6 +412,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        route_surface: Optional[str] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -481,6 +482,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            route_surface=route_surface,
         )
 
     def _get_session_db_for_recall(self):
@@ -1328,9 +1330,9 @@ class AIAgent:
         return messages[:last_assistant_idx]
 
     def _format_tools_for_system_message(self) -> str:
-        """Forwarder — see ``agent.system_prompt.format_tools_for_system_message``."""
-        from agent.system_prompt import format_tools_for_system_message
-        return format_tools_for_system_message(self)
+        """Forwarder — see ``agent.harness.SystemPromptHarness.format_tools``."""
+        from agent.harness import HermesHarness
+        return HermesHarness.for_agent(self).system_prompt.format_tools()
 
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.convert_to_trajectory_format``."""
@@ -2074,6 +2076,7 @@ class AIAgent:
         - Terminal sandbox environments
         - Browser daemon sessions
         - Active child agents (subagent delegation)
+        - Codex app-server subprocesses and clarify bridge sockets
         - OpenAI/httpx client connections
 
         Safe to call multiple times (idempotent).  Each cleanup step is
@@ -2113,7 +2116,23 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Close Codex app-server subprocess / clarify bridge resources
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
+        except Exception:
+            pass
+
+        try:
+            clarify_bridge = getattr(self, "_clarify_bridge", None)
+            if clarify_bridge is not None:
+                clarify_bridge.close()
+                self._clarify_bridge = None
+        except Exception:
+            pass
+        # 6. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -2169,14 +2188,14 @@ class AIAgent:
 
 
     def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
-        """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
-        from agent.system_prompt import build_system_prompt_parts
-        return build_system_prompt_parts(self, system_message=system_message)
+        """Forwarder — see ``agent.harness.SystemPromptHarness.build_parts``."""
+        from agent.harness import HermesHarness
+        return HermesHarness.for_agent(self).system_prompt.build_parts(system_message=system_message)
 
     def _build_system_prompt(self, system_message: str = None) -> str:
-        """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
-        from agent.system_prompt import build_system_prompt
-        return build_system_prompt(self, system_message=system_message)
+        """Forwarder — see ``agent.harness.SystemPromptHarness.build``."""
+        from agent.harness import HermesHarness
+        return HermesHarness.for_agent(self).system_prompt.build(system_message=system_message)
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:
@@ -2327,9 +2346,9 @@ class AIAgent:
         return repair_tool_call(self, tool_name)
 
     def _invalidate_system_prompt(self):
-        """Forwarder — see ``agent.system_prompt.invalidate_system_prompt``."""
-        from agent.system_prompt import invalidate_system_prompt
-        invalidate_system_prompt(self)
+        """Forwarder — see ``agent.harness.SystemPromptHarness.invalidate``."""
+        from agent.harness import HermesHarness
+        HermesHarness.for_agent(self).system_prompt.invalidate()
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -3905,7 +3924,49 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+        try:
+            from agent.harness_control_plane import start_turn_trace
+            start_turn_trace(self, user_message=user_message, task_id=task_id)
+        except Exception:
+            logger.debug("harness turn trace start failed", exc_info=True)
+
+        try:
+            result = run_conversation(
+                self,
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+            )
+        except Exception as exc:
+            try:
+                from agent.harness_control_plane import record_turn_result
+                record_turn_result(
+                    self,
+                    {
+                        "messages": getattr(self, "_session_messages", []) or [],
+                        "api_calls": 0,
+                        "completed": False,
+                        "partial": True,
+                        "interrupted": bool(getattr(self, "_interrupt_requested", False)),
+                        "error": str(exc),
+                        "turn_exit_reason": "exception",
+                        "model": getattr(self, "model", None),
+                        "provider": getattr(self, "provider", None),
+                    },
+                )
+            except Exception:
+                logger.debug("harness turn trace exception record failed", exc_info=True)
+            raise
+
+        try:
+            from agent.harness_control_plane import record_turn_result
+            record_turn_result(self, result)
+        except Exception:
+            logger.debug("harness turn trace finish failed", exc_info=True)
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

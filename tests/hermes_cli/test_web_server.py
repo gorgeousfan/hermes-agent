@@ -124,6 +124,321 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+        assert "route_proof" in data
+        assert data["route_proof"]["surface"] == "dashboard"
+        assert "route_plan" in data
+        assert data["route_plan"]["tier_count"] == 7
+        assert "credential_value" not in data["route_proof"]
+
+    def test_dashboard_route_proof_parses_reasoning_and_service_tier(self, monkeypatch):
+        import hermes_cli.runtime_provider as runtime_provider
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {
+                "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+                "agent": {"reasoning_effort": "high", "service_tier": "fast"},
+            },
+        )
+        monkeypatch.setattr(
+            runtime_provider,
+            "resolve_runtime_provider",
+            lambda target_model=None: {
+                "provider": "openai-codex",
+                "model": target_model,
+                "api_mode": "codex_responses",
+                "base_url": "https://chatgpt.com/backend-api/codex?token=must-not-leak",
+                "api_key": "eyJhbGciOiJSUzI1NiJ9.oauth-token-body",
+            },
+        )
+
+        proof = web_server._dashboard_route_proof()
+
+        assert proof["surface"] == "dashboard"
+        assert proof["reasoning_effort"] == "high"
+        assert proof["service_tier"] == "priority"
+        assert proof["contract"]["status"] == "ok"
+        assert "must-not-leak" not in json.dumps(proof, sort_keys=True)
+
+    def test_harness_learning_health_endpoint(self):
+        resp = self.client.get("/api/harness/learning-health")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["profile"] == "default"
+        assert data["schema_version"] == 1
+        assert "traces" in data
+        assert "events" in data
+        assert "memory" in data
+        assert "skills" in data
+        assert "mutations" in data
+        assert data["evals"]["current_profile"] == "default"
+        assert data["evals"]["suite_count"] >= 1
+        assert data["core_harness"]["name"] == "harness-core"
+        assert data["core_harness"]["case_count"] == 7
+
+    def test_harness_learning_health_endpoint_degrades_with_core_shape(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _Harness:
+            def __init__(self):
+                raise RuntimeError("harness import failed")
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.get("/api/harness/learning-health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schema_version"] == 1
+        assert data["degraded"] is True
+        assert "harness import failed" in data["error"]
+        assert data["core_harness"] == {
+            "name": "harness-core",
+            "status": "unavailable",
+            "case_count": 0,
+            "last_run_at": None,
+            "last_result": None,
+        }
+
+    def test_harness_trace_replay_endpoints_are_content_safe(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def learning_snapshot(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "trace_schema": {"name": "hermes.turn_trace"},
+                    "failure_taxonomy": {"runtime_error": 1},
+                }
+
+            def replay_corpus(self):
+                return {
+                    "schema_version": 1,
+                    "total": 1,
+                    "by_failure_kind": {"runtime_error": 1},
+                    "candidates": [{"source_trace_id": "turn_abc", "checks_count": 1}],
+                }
+
+            def promotion_gates(self):
+                return {
+                    "schema_version": 1,
+                    "total": 1,
+                    "blocked": 1,
+                    "recent_gates": [{"target": "harness-skill", "status": "blocked"}],
+                }
+
+            def context_hygiene(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "layers": {"memory": {"task_progress_hits": 0}},
+                    "issues": [],
+                }
+
+            def skill_lifecycle(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "mode": "audit_only_no_delete",
+                    "skill_count": 2,
+                    "promotion": {"promoted_without_gate_count": 0},
+                    "issues": [],
+                }
+
+            def autonomous_loops(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "mode": "audit_only_no_create",
+                    "cron": {"job_count": 0},
+                    "goals": {"active_goal_count": 0},
+                    "guidance": [{"id": "cron_agent_prompt"}],
+                    "issues": [],
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        snapshot = self.client.get("/api/harness/learning-snapshot")
+        replay = self.client.get("/api/harness/replay-corpus")
+        gates = self.client.get("/api/harness/promotion-gates")
+        hygiene = self.client.get("/api/harness/context-hygiene")
+        lifecycle = self.client.get("/api/harness/skill-lifecycle")
+        loops = self.client.get("/api/harness/autonomous-loops")
+
+        assert snapshot.status_code == 200
+        assert replay.status_code == 200
+        assert gates.status_code == 200
+        assert hygiene.status_code == 200
+        assert lifecycle.status_code == 200
+        assert loops.status_code == 200
+        assert snapshot.json()["content_policy"] == "metadata_only"
+        assert replay.json()["by_failure_kind"] == {"runtime_error": 1}
+        assert gates.json()["blocked"] == 1
+        assert hygiene.json()["content_policy"] == "metadata_only"
+        assert lifecycle.json()["mode"] == "audit_only_no_delete"
+        assert loops.json()["mode"] == "audit_only_no_create"
+        raw = json.dumps(
+            {
+                "snapshot": snapshot.json(),
+                "replay": replay.json(),
+                "gates": gates.json(),
+                "hygiene": hygiene.json(),
+                "lifecycle": lifecycle.json(),
+                "loops": loops.json(),
+            },
+            sort_keys=True,
+        )
+        assert "token" not in raw.lower()
+        assert "sk-" not in raw
+
+    def test_harness_route_plan_endpoint_is_metadata_only_and_seven_tier(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def route_plan(self, route_proof=None):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "setup_mode": "hermes_recommended_codex_oauth",
+                    "recommended_baseline": {
+                        "provider": "openai-codex",
+                        "api_mode": "codex_responses",
+                        "openai_runtime": "auto",
+                        "requires_external_cli": False,
+                    },
+                    "tier_count": 7,
+                    "tiers": [{"tier": tier, "status": "ok"} for tier in range(1, 8)],
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.get("/api/harness/route-plan")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["schema_version"] == 1
+        assert data["content_policy"] == "metadata_only"
+        assert data["tier_count"] == 7
+        assert [item["tier"] for item in data["tiers"]] == [1, 2, 3, 4, 5, 6, 7]
+        assert data["recommended_baseline"]["provider"] == "openai-codex"
+        assert data["recommended_baseline"]["api_mode"] == "codex_responses"
+        raw = json.dumps(data, sort_keys=True)
+        assert "bearer" not in raw.lower()
+        assert "sk-proj" not in raw.lower()
+
+    def test_harness_security_policy_endpoint_is_metadata_only(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def security_policy(self):
+                return {
+                    "schema_version": 1,
+                    "content_policy": "metadata_only",
+                    "mode": "audit_only_no_side_effects",
+                    "policy": {"credential_values": "never_returned"},
+                    "checks": {"redaction": {"enabled": True}},
+                    "approval_matrix": [{"surface": "cli"}],
+                    "profile_permission_matrix": [{"profile": "active"}],
+                    "credential_inventory": {"raw_values_returned": False},
+                    "issues": [],
+                    "issue_count": 0,
+                    "highest_severity": "none",
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.get("/api/harness/security-policy")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["content_policy"] == "metadata_only"
+        assert data["mode"] == "audit_only_no_side_effects"
+        assert data["credential_inventory"]["raw_values_returned"] is False
+        raw = json.dumps(data, sort_keys=True)
+        assert "sk-" not in raw
+        assert "should-not-leak" not in raw
+
+    def test_core_harness_status_endpoint(self, monkeypatch):
+        import agent.harness as harness_module
+
+        class _ControlPlane:
+            def core_status(self):
+                return {
+                    "schema_version": 1,
+                    "name": "harness-core",
+                    "status": "defined",
+                    "case_count": 7,
+                    "cases": [{"id": "harness-event-safety"}],
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.get("/api/harness/core")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "harness-core"
+        assert data["status"] == "defined"
+        assert data["case_count"] == 7
+        assert data["cases"] == [{"id": "harness-event-safety"}]
+
+    def test_core_harness_run_endpoint_forwards_case_ids(self, monkeypatch):
+        import agent.harness as harness_module
+
+        calls = []
+
+        class _ControlPlane:
+            def run_core(self, case_ids=None):
+                calls.append(case_ids)
+                return {
+                    "schema_version": 1,
+                    "name": "harness-core",
+                    "status": "passed",
+                    "passed": 1,
+                    "failed": 0,
+                    "case_count": 1,
+                    "cases": [],
+                }
+
+        class _Harness:
+            @property
+            def control_plane(self):
+                return _ControlPlane()
+
+        monkeypatch.setattr(harness_module, "HermesHarness", _Harness)
+
+        resp = self.client.post(
+            "/api/harness/core/run",
+            json={"case_ids": ["harness-event-safety", 123]},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "passed"
+        assert calls == [["harness-event-safety", "123"]]
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -2295,6 +2610,107 @@ class TestPtyWebSocket:
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
         assert "token=" in url
+
+    def test_sidecar_url_uses_loopback_for_wildcard_binds(self, monkeypatch):
+        """The PTY-side publisher must connect to loopback, not a bind-any
+        address such as 0.0.0.0 or ::."""
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_port", 9119, raising=False
+        )
+
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "0.0.0.0", raising=False
+        )
+        assert self.ws_module._build_sidecar_url("abc-123").startswith(
+            "ws://127.0.0.1:9119/api/pub?"
+        )
+
+        monkeypatch.setattr(
+            self.ws_module.app.state, "bound_host", "::", raising=False
+        )
+        assert self.ws_module._build_sidecar_url("abc-123").startswith(
+            "ws://[::1]:9119/api/pub?"
+        )
+
+    def test_chat_model_api_writes_to_active_pty_channel(self, monkeypatch):
+        """Dashboard model picker actions go through REST, then target the
+        live PTY channel instead of a separate gateway session."""
+        import time
+
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+
+        channel = "model-api-test"
+        with self.client.websocket_connect(self._url(channel=channel)) as conn:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if self.ws_module._pty_channels.get(channel):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("PTY channel did not register within 5s")
+
+            resp = self.client.post(
+                "/api/chat/model",
+                headers={"X-Hermes-Session-Token": self.token},
+                json={
+                    "channel": channel,
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4.6",
+                    "persist_global": False,
+                },
+            )
+            assert resp.status_code == 200
+
+            buf = b""
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                frame = conn.receive_bytes()
+                if frame:
+                    buf += frame
+                if b"/model anthropic/claude-sonnet-4.6 --provider openrouter --tui-session" in buf:
+                    break
+
+        assert b"/model anthropic/claude-sonnet-4.6 --provider openrouter --tui-session" in buf
+
+    def test_chat_model_api_rejects_inactive_channel(self):
+        resp = self.client.post(
+            "/api/chat/model",
+            headers={"X-Hermes-Session-Token": self.token},
+            json={
+                "channel": "missing-channel",
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4.6",
+            },
+        )
+        assert resp.status_code == 404
+
+    def test_chat_model_api_rejects_control_characters(self):
+        resp = self.client.post(
+            "/api/chat/model",
+            headers={"X-Hermes-Session-Token": self.token},
+            json={
+                "channel": "model-api-test",
+                "provider": "openrouter",
+                "model": "good-model\n/model bad",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_chat_model_api_rejects_model_flag_injection(self):
+        resp = self.client.post(
+            "/api/chat/model",
+            headers={"X-Hermes-Session-Token": self.token},
+            json={
+                "channel": "model-api-test",
+                "provider": "openrouter",
+                "model": "good-model --global",
+            },
+        )
+        assert resp.status_code == 400
 
     def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
         """Frame written to /api/pub is rebroadcast verbatim to every

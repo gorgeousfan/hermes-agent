@@ -202,6 +202,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    route_surface: Optional[str] = None,
 ):
     """
     Initialize the AI Agent.
@@ -264,6 +265,12 @@ def init_agent(
     agent.quiet_mode = quiet_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    try:
+        from hermes_cli.route_contracts import infer_surface
+
+        agent.route_surface = infer_surface(platform=platform, explicit=route_surface)
+    except Exception:
+        agent.route_surface = route_surface or platform or "primary"
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_name = user_name
     agent._chat_id = chat_id
@@ -878,6 +885,19 @@ def init_agent(
         else:
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
+
+    # Route contract proof is content-safe and must be available before the
+    # first model turn.  Hard violations (for example a Codex app-server route
+    # backed by an OpenAI Platform API key) raise here, before work starts.
+    try:
+        from hermes_cli.route_contracts import proof_from_agent
+
+        agent._route_proof = proof_from_agent(agent, surface=getattr(agent, "route_surface", None))
+    except Exception:
+        # RouteContractError intentionally propagates; other proof-building
+        # issues should also fail closed because silently continuing on an
+        # unprovable route is exactly what Tier 2 is meant to prevent.
+        raise
 
     # Get available tools with filtering
     agent.tools = _ra().get_tool_definitions(

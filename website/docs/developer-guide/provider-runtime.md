@@ -204,5 +204,6 @@ See `tests/test_fallback_model.py` for comprehensive tests covering all supporte
 ## Related docs
 
 - [Agent Loop Internals](./agent-loop.md)
+- [Route Contracts](./route-contracts.md)
 - [ACP Internals](./acp-internals.md)
 - [Context Compression & Prompt Caching](./context-compression-and-caching.md)

@@ -1532,7 +1532,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "memory":
         target = function_args.get("target", "memory")
-        from tools.memory_tool import memory_tool as _memory_tool
+        from tools.memory_tool import (
+            memory_tool as _memory_tool,
+            should_mirror_memory_write_result as _should_mirror_memory_write_result,
+        )
         result = _memory_tool(
             action=function_args.get("action"),
             target=target,
@@ -1541,7 +1544,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             store=agent._memory_store,
         )
         # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+        if (
+            agent._memory_manager
+            and function_args.get("action") in {"add", "replace"}
+            and _should_mirror_memory_write_result(result)
+        ):
             try:
                 agent._memory_manager.on_memory_write(
                     function_args.get("action", ""),
