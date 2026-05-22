@@ -1060,3 +1060,101 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+# ---------------------------------------------------------------------------
+# Namespace prefix and tool budget warning tests
+# ---------------------------------------------------------------------------
+
+
+class TestNamespacePrefixWarning:
+    """Warnings when provider tool names don't follow naming convention."""
+
+    def test_namespace_prefix_warning_on_mismatch(self):
+        """A warning is logged when tool names don't match provider prefix."""
+        mgr = MemoryManager()
+        # Provider name "holographic" but tools use "fact_" prefix
+        p = FakeMemoryProvider("holographic", tools=[
+            {"name": "fact_store", "description": "Store", "parameters": {}},
+        ])
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p)
+            # Should have logged a namespace warning
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "naming convention" in str(c)]
+            assert len(warning_calls) >= 1
+
+    def test_namespace_prefix_no_warning_on_match(self):
+        """No namespace warning when tool names match provider prefix."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("holographic", tools=[
+            {"name": "holographic_store", "description": "Store", "parameters": {}},
+        ])
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p)
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "naming convention" in str(c)]
+            assert len(warning_calls) == 0
+
+    def test_builtin_skips_namespace_check(self):
+        """Builtin provider is exempt from namespace prefix validation."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("builtin", tools=[
+            {"name": "random_tool", "description": "Random", "parameters": {}},
+        ])
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p)
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "naming convention" in str(c)]
+            assert len(warning_calls) == 0
+
+
+class TestToolBudgetWarning:
+    """Warning when total registered memory tools exceed threshold."""
+
+    def test_tool_budget_warning_above_threshold(self):
+        """A warning is logged when total tools exceed 20."""
+        mgr = MemoryManager()
+        # Create a provider with 25 tools
+        tools = [{"name": f"ext_tool_{i}", "description": f"Tool {i}", "parameters": {}}
+                 for i in range(25)]
+        p = FakeMemoryProvider("ext", tools=tools)
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p)
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "budget" in str(c).lower()]
+            assert len(warning_calls) >= 1
+
+    def test_no_budget_warning_below_threshold(self):
+        """No budget warning when tool count is at or below threshold."""
+        mgr = MemoryManager()
+        tools = [{"name": f"ext_tool_{i}", "description": f"Tool {i}", "parameters": {}}
+                 for i in range(15)]
+        p = FakeMemoryProvider("ext", tools=tools)
+
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p)
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "budget" in str(c).lower()]
+            assert len(warning_calls) == 0
+
+    def test_budget_warning_accumulates_across_providers(self):
+        """Budget warning fires when combined tools from multiple providers exceed threshold."""
+        mgr = MemoryManager()
+        tools1 = [{"name": f"builtin_{i}", "description": f"Tool {i}", "parameters": {}}
+                  for i in range(12)]
+        tools2 = [{"name": f"ext_{i}", "description": f"Tool {i}", "parameters": {}}
+                  for i in range(12)]
+        p1 = FakeMemoryProvider("builtin", tools=tools1)
+        p2 = FakeMemoryProvider("ext", tools=tools2)
+
+        mgr.add_provider(p1)  # 12 tools, no warning
+        with patch("agent.memory_manager.logger") as mock_log:
+            mgr.add_provider(p2)  # 24 total, should warn
+            warning_calls = [c for c in mock_log.warning.call_args_list
+                             if "budget" in str(c).lower()]
+            assert len(warning_calls) >= 1

@@ -28,12 +28,18 @@ from __future__ import annotations
 import logging
 import re
 import inspect
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
+
+# When the total number of memory tools registered across all providers
+# exceeds this threshold, emit a warning -- the model's tool budget may
+# be strained, leading to degraded tool selection quality.
+TOOL_BUDGET_WARN_THRESHOLD = 20
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +258,7 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self._lock = threading.RLock()
 
     # -- Registration --------------------------------------------------------
 
@@ -262,44 +269,69 @@ class MemoryManager:
         Only **one** external (non-builtin) provider is allowed — a second
         attempt is rejected with a warning.
         """
-        is_builtin = provider.name == "builtin"
+        with self._lock:
+            is_builtin = provider.name == "builtin"
 
-        if not is_builtin:
-            if self._has_external:
-                existing = next(
-                    (p.name for p in self._providers if p.name != "builtin"), "unknown"
-                )
+            if not is_builtin:
+                if self._has_external:
+                    existing = next(
+                        (p.name for p in self._providers if p.name != "builtin"), "unknown"
+                    )
+                    logger.warning(
+                        "Rejected memory provider '%s' — external provider '%s' is "
+                        "already registered. Only one external memory provider is "
+                        "allowed at a time. Configure which one via memory.provider "
+                        "in config.yaml.",
+                        provider.name, existing,
+                    )
+                    return
+                self._has_external = True
+
+            self._providers.append(provider)
+
+            # Index tool names → provider for routing
+            schemas = provider.get_tool_schemas()
+            for schema in schemas:
+                tool_name = schema.get("name", "")
+                if tool_name and tool_name not in self._tool_to_provider:
+                    self._tool_to_provider[tool_name] = provider
+                elif tool_name in self._tool_to_provider:
+                    logger.warning(
+                        "Memory tool name conflict: '%s' already registered by %s, "
+                        "ignoring from %s",
+                        tool_name,
+                        self._tool_to_provider[tool_name].name,
+                        provider.name,
+                    )
+
+            # Namespace validation — warn if tool names don't follow convention
+            if provider.name != "builtin":
+                for schema in schemas:
+                    tool_name = schema.get("name", "")
+                    if tool_name and not tool_name.startswith(provider.name[:4]):
+                        logger.warning(
+                            "Provider '%s' tool '%s' does not follow naming "
+                            "convention '<provider>_<action>'.",
+                            provider.name, tool_name,
+                        )
+
+            total_tools = len(self._tool_to_provider)
+            logger.info(
+                "Memory provider '%s' registered (%d tools, %d total)",
+                provider.name,
+                len(schemas),
+                total_tools,
+            )
+
+            if total_tools > TOOL_BUDGET_WARN_THRESHOLD:
                 logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.",
-                    provider.name, existing,
+                    "Memory tool budget warning: %d memory tools registered "
+                    "(threshold: %d). Too many tools may degrade the model's "
+                    "ability to select the right tool. Consider disabling "
+                    "unused memory providers or reducing tool count.",
+                    total_tools,
+                    TOOL_BUDGET_WARN_THRESHOLD,
                 )
-                return
-            self._has_external = True
-
-        self._providers.append(provider)
-
-        # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
-            if tool_name and tool_name not in self._tool_to_provider:
-                self._tool_to_provider[tool_name] = provider
-            elif tool_name in self._tool_to_provider:
-                logger.warning(
-                    "Memory tool name conflict: '%s' already registered by %s, "
-                    "ignoring from %s",
-                    tool_name,
-                    self._tool_to_provider[tool_name].name,
-                    provider.name,
-                )
-
-        logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
-        )
 
     @property
     def providers(self) -> List[MemoryProvider]:
