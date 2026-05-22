@@ -688,3 +688,43 @@ class TestUnionTypeList:
         assert out["properties"]["count"]["type"] == "integer"
         assert out["properties"]["name"]["type"] == "string"
         assert out["properties"]["active"]["type"] == "boolean"
+
+    def test_repair_schema_does_not_crash_on_union_type_with_enum(self):
+        """``_repair_schema`` enum cleanup must not crash when the original
+        ``type`` is a union list.  ``_fill_missing_type`` (called first at
+        L138) normalises the list to the first concrete scalar, so the enum
+        cleanup guard at L147 sees a string and proceeds normally — it must
+        not crash on what was originally a list."""
+        from agent.moonshot_schema import _repair_schema
+
+        node = {
+            "type": ["string", "integer"],
+            "enum": ["a", "b", None, ""],
+        }
+        result = _repair_schema(node, is_schema=True)
+        # Type is normalised to first concrete scalar by _fill_missing_type
+        assert result["type"] == "string"
+        # Enum cleanup proceeds because the guard sees isinstance(str) == True;
+        # null/empty values are stripped, leaving only the valid entries
+        assert result["enum"] == ["a", "b"]
+
+    def test_end_to_end_union_type_parameter_with_enum(self):
+        """Full ``sanitize_moonshot_tool_parameters`` pipeline must not crash
+        when a union-type parameter also carries an ``enum`` — exercises both
+        the ``_repair_schema`` enum-cleanup guard and the
+        ``_fill_missing_type`` normalisation in one call."""
+        params = {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": ["string", "null"],
+                    "enum": ["asc", "desc", None],
+                    "description": "Sort direction",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        sort = out["properties"]["sort"]
+        # Union type normalised to first concrete scalar
+        assert sort["type"] == "string"
+        assert "enum" in sort
