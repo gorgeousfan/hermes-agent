@@ -3,7 +3,7 @@
 Covers:
 
 - All bundled plugins (brave-free, brave-search, ddgs, searxng, exa, parallel,
-  tavily, firecrawl) instantiate and self-report the expected
+  tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -48,6 +48,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
+        "XAI_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -100,11 +101,12 @@ class TestBundledPluginsRegister:
             ("exa", True, True, False),
             ("parallel", True, True, False),
             ("tavily", True, True, True),
-            ("xai", True, False, False),
             # firecrawl: search + extract + crawl. Crawl was originally
             # disabled in the migration (fell through to a legacy inline
             # path); the follow-up commit enabled it natively.
             ("firecrawl", True, True, True),
+            # xai: search-only via Grok's agentic web_search tool.
+            ("xai", True, False, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -125,7 +127,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "brave-search", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "brave-search", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -138,7 +140,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "brave-search", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl"],
+        ["brave-free", "brave-search", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -253,6 +255,17 @@ class TestIsAvailable:
         assert p is not None
         # Truthy or falsy, just must not raise.
         _ = bool(p.is_available())
+
+    def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("xai")
+        assert p is not None
+        assert p.is_available() is False  # no XAI_API_KEY, no auth.json
+        monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +483,7 @@ class TestErrorResponseShapes:
         if result["results"]:
             assert "error" in result["results"][0]
 
-    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self) -> None:
+    def test_firecrawl_crawl_returns_error_dict_when_unconfigured(self):
         """firecrawl crawl is async (wraps SDK in to_thread); error must be
         surfaced via the per-page result shape, not raised."""
         _ensure_plugins_loaded()
@@ -488,3 +501,15 @@ class TestErrorResponseShapes:
         assert len(result["results"]) >= 1
         assert "error" in result["results"][0]
         assert result["results"][0]["url"] == "https://example.com"
+
+    def test_xai_search_returns_error_dict_when_unconfigured(self) -> None:
+        """xAI returns a typed error dict (no XAI_API_KEY)."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("xai")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
