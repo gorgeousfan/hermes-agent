@@ -178,10 +178,15 @@ def _apply_profile_override(profile_name: str | None) -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     except Exception as exc:
-        # Profile resolution must never prevent ACP from starting; surface
-        # the issue and fall back to whatever environment the caller had.
+        # Unexpected resolver bug must never prevent ACP from starting;
+        # surface the issue and fall back to whatever HERMES_HOME /
+        # HERMES_PROFILE the caller already had (which may itself be
+        # non-default — we don't know, so don't claim "default").
+        # ValueError / FileNotFoundError above are deliberately fatal so
+        # the user notices a typoed profile name.
         print(
-            f"Warning: profile override failed ({exc}), using default",
+            f"Warning: profile override failed ({exc}), "
+            f"using existing environment",
             file=sys.stderr,
         )
         return

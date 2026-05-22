@@ -220,6 +220,18 @@ def _apply_profile_override() -> None:
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
         if Path(hermes_home_env).parent.name == "profiles":
+            # Mirror the late-path setdefault so downstream callers (kanban,
+            # gateway adapters, ACP entry) can read HERMES_PROFILE even when
+            # the caller already pointed HERMES_HOME at a profile directory.
+            try:
+                from hermes_cli.profiles import normalize_profile_name
+
+                os.environ.setdefault(
+                    "HERMES_PROFILE",
+                    normalize_profile_name(Path(hermes_home_env).name),
+                )
+            except (ValueError, ImportError):
+                pass  # malformed dir name or import-time failure — skip silently
             return
 
     # 2. If no flag, check active_profile in the hermes root

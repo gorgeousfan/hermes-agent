@@ -217,3 +217,44 @@ class TestApplyProfileOverridePublishesProfileName:
 
         assert os.environ.get("HERMES_PROFILE") is None
         assert os.environ.get("HERMES_HOME") is None
+
+    def test_inherited_profile_hermes_home_publishes_hermes_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Child-process inheritance contract: when HERMES_HOME already
+        points at ``.../profiles/<name>``, the function returns early —
+        but downstream callers still need ``HERMES_PROFILE``. Mirror the
+        late-path setdefault from the basename of HERMES_HOME."""
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_PROFILE") == "coder"
+        assert os.environ.get("HERMES_HOME") == str(profile_dir)
+
+    def test_inherited_profile_does_not_override_existing_hermes_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """``setdefault`` semantics in the inherited-HERMES_HOME early-return
+        path: a deliberate caller-set ``HERMES_PROFILE`` must win."""
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setenv("HERMES_PROFILE", "operator-set")
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_PROFILE") == "operator-set"
