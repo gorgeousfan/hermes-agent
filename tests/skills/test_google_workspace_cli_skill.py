@@ -1,4 +1,4 @@
-"""Tests for the optional google-workspace-mbm skill."""
+"""Tests for the optional google-workspace-cli skill."""
 
 from __future__ import annotations
 
@@ -14,17 +14,17 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL_MD = REPO_ROOT / "optional-skills/productivity/google-workspace-mbm/SKILL.md"
+SKILL_MD = REPO_ROOT / "optional-skills/productivity/google-workspace-cli/SKILL.md"
 WRAPPER_PATH = (
     REPO_ROOT
-    / "optional-skills/productivity/google-workspace-mbm/scripts/gws_wrapper.py"
+    / "optional-skills/productivity/google-workspace-cli/scripts/gws_wrapper.py"
 )
 
 
 @pytest.fixture
 def wrapper_module(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
-    spec = importlib.util.spec_from_file_location("gws_wrapper_mbm_test", WRAPPER_PATH)
+    spec = importlib.util.spec_from_file_location("gws_wrapper_cli_test", WRAPPER_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)

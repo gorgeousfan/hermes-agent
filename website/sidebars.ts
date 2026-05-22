@@ -555,7 +555,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-clawbus',
-                    'user-guide/skills/optional/productivity/productivity-google-workspace-mbm',
+                    'user-guide/skills/optional/productivity/productivity-google-workspace-cli',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-shop-app',
