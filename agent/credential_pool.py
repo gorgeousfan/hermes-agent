@@ -405,6 +405,15 @@ def _is_codex_usage_limit_error(reason: Any, message: Any = "") -> bool:
     )
 
 
+def _is_codex_token_invalidated_error(reason: Any, message: Any = "") -> bool:
+    reason_text = str(reason or "").lower()
+    message_text = str(message or "").lower()
+    return (
+        "token_invalidated" in reason_text
+        or "token has been invalidated" in message_text
+    )
+
+
 def _codex_usage_limit_hold_until(
     entry: PooledCredential,
     *,
@@ -1257,6 +1266,15 @@ class CredentialPool:
                     ]
                     if self._current_id == entry.id:
                         self._current_id = None
+                    if entry.source != "device_code":
+                        self._mark_exhausted(
+                            entry,
+                            401,
+                            {
+                                "reason": "token_invalidated",
+                                "message": str(exc),
+                            },
+                        )
                     self._persist()
                     return None
             # For nous: another process may have consumed the refresh token
@@ -1415,6 +1433,23 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            if (
+                self.provider == "openai-codex"
+                and entry.last_status == STATUS_EXHAUSTED
+                and _is_codex_token_invalidated_error(
+                    entry.last_error_reason,
+                    entry.last_error_message,
+                )
+            ):
+                exhausted_until = _exhausted_until(entry)
+                if refresh and (exhausted_until is None or now >= exhausted_until):
+                    refreshed = self._refresh_entry(entry, force=False)
+                    if refreshed is None:
+                        continue
+                    entry = refreshed
+                    cleared_any = True
+                else:
+                    continue
             # For xai-oauth singleton-seeded entries, identical pattern:
             # an entry frozen as exhausted may simply be holding stale
             # tokens that another process (or a fresh `hermes model` ->
@@ -1576,6 +1611,13 @@ class CredentialPool:
             entry = exhausted_entries[0]
             if entry.last_status != STATUS_EXHAUSTED:
                 continue
+            if _is_codex_token_invalidated_error(
+                entry.last_error_reason,
+                entry.last_error_message,
+            ):
+                exhausted_until = _exhausted_until(entry)
+                if exhausted_until is not None and now < exhausted_until:
+                    continue
             if self._entry_needs_refresh(entry):
                 refreshed = self._refresh_entry(entry, force=False)
                 if refreshed is None:

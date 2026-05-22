@@ -2166,6 +2166,118 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     assert available == []
 
 
+def test_codex_token_invalidated_entry_refreshes_before_selection(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    old_access = _codex_jwt("acct-refresh", "old")
+    new_access = _codex_jwt("acct-refresh", "new")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "codex-refresh",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": old_access,
+                        "refresh_token": "refresh-old",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 600,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                        "last_error_message": "Your authentication token has been invalidated.",
+                    },
+                ]
+            },
+        },
+    )
+
+    refresh_calls = []
+
+    def fake_refresh(access_token, refresh_token):
+        refresh_calls.append((access_token, refresh_token))
+        return {
+            "access_token": new_access,
+            "refresh_token": "refresh-new",
+            "last_refresh": "2026-05-22T00:00:00Z",
+        }
+
+    monkeypatch.setattr(
+        "agent.credential_pool.auth_mod.refresh_codex_oauth_pure",
+        fake_refresh,
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "cred-1"
+    assert selected.access_token == new_access
+    assert selected.refresh_token == "refresh-new"
+    assert selected.last_status == "ok"
+    assert refresh_calls == [(old_access, "refresh-old")]
+
+
+def test_codex_token_invalidated_entry_is_not_cleared_without_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    old_access = _codex_jwt("acct-invalid", "old")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "codex-invalid",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": old_access,
+                        "refresh_token": "refresh-old",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 600,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                        "last_error_message": "Your authentication token has been invalidated.",
+                    },
+                ]
+            },
+        },
+    )
+
+    refresh_calls = []
+
+    def fail_refresh(access_token, refresh_token):
+        refresh_calls.append((access_token, refresh_token))
+        raise RuntimeError("refresh failed")
+
+    monkeypatch.setattr(
+        "agent.credential_pool.auth_mod.refresh_codex_oauth_pure",
+        fail_refresh,
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    pool = load_pool("openai-codex")
+    available_without_refresh = pool._available_entries(clear_expired=True, refresh=False)
+    assert available_without_refresh == []
+    assert refresh_calls == []
+
+    selected = pool.select()
+
+    assert selected is None
+    [entry] = pool.entries()
+    assert entry.access_token == old_access
+    assert entry.last_status == STATUS_EXHAUSTED
+    assert refresh_calls == [(old_access, "refresh-old")]
+
+
 # ---------------------------------------------------------------------------
 # xAI OAuth terminal error quarantine
 # ---------------------------------------------------------------------------
@@ -2410,6 +2522,80 @@ def test_codex_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # A second try_refresh_current must not call refresh_codex_oauth_pure again.
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
+
+
+def test_codex_manual_device_code_terminal_refresh_marks_entry_exhausted(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+
+    expired_access = _jwt_with_claims(
+        {
+            "sub": "old",
+            "exp": int(time.time()) - 600,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-terminal",
+            },
+        }
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "manual-device-code",
+                        "label": "manual-codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": expired_access,
+                        "refresh_token": "old-refresh-token",
+                        "last_status": "ok",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    refresh_calls = {"count": 0}
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        refresh_calls["count"] += 1
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="openai-codex",
+            code="codex_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", _terminal_refresh_failure)
+
+    pool = load_pool("openai-codex")
+
+    assert pool.select() is None
+
+    [entry] = pool.entries()
+    assert entry.id == "manual-device-code"
+    assert entry.last_status == STATUS_EXHAUSTED
+    assert entry.last_error_code == 401
+    assert entry.last_error_reason == "token_invalidated"
+
+    assert pool.select() is None
+    assert refresh_calls["count"] == 1
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    [persisted] = auth_payload["credential_pool"]["openai-codex"]
+    assert persisted["id"] == "manual-device-code"
+    assert persisted["last_status"] == STATUS_EXHAUSTED
+    assert persisted["last_error_reason"] == "token_invalidated"
 
 
 def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):
