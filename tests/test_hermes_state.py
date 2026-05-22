@@ -153,6 +153,26 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_observed_messages_round_trip_to_conversation(self, db):
+        db.create_session(session_id="s1", source="matrix")
+        db.append_message(
+            "s1",
+            role="user",
+            content="[Alice|@alice:example.org]\nside chatter",
+            platform_message_id="$evt1",
+            observed=True,
+        )
+
+        messages = db.get_messages_as_conversation("s1")
+        assert messages == [
+            {
+                "role": "user",
+                "content": "[Alice|@alice:example.org]\nside chatter",
+                "message_id": "$evt1",
+                "observed": True,
+            }
+        ]
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
