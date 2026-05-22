@@ -11781,23 +11781,28 @@ class GatewayRunner:
             /busy steer         Inject messages mid-run without interrupting
             /busy interrupt     Interrupt the current run (default)
         """
-        text = (event.text or "").strip()
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2 or parts[1].strip().lower() == "status":
-            mode = self._busy_input_mode
-            if mode == "queue":
-                behavior = "queues for next turn"
-            elif mode == "steer":
-                behavior = "steers into current run (after next tool call)"
+        config_path = _hermes_home / "config.yaml"
+        arg = (event.get_command_args() or "").strip().lower()
+
+        # Read the current mode from the active runner instance.
+        current_mode = getattr(self, "_busy_input_mode", "interrupt")
+        if current_mode not in {"queue", "steer", "interrupt"}:
+            current_mode = "interrupt"
+
+        # Show status (bare /busy, /busy status, /busy ?)
+        if not arg or arg in {"status", "?"}:
+            if current_mode == "queue":
+                behavior = "queues your next message for the following turn"
+            elif current_mode == "steer":
+                behavior = "steers your next message into the current run after the next tool call"
             else:
-                behavior = "interrupts current run"
+                behavior = "interrupts the current run immediately"
             return EphemeralReply(
-                f"**Busy input mode: `{mode}`**\n"
-                f"Messages while busy: _{behavior}_\n"
-                f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`."
+                f"**Busy input mode: `{current_mode}`**\n"
+                f"While Hermes is busy, Enter _{behavior}_.\n"
+                f"Usage: `/busy [queue|steer|interrupt|status]`"
             )
 
-        arg = parts[1].strip().lower()
         if arg not in {"queue", "interrupt", "steer"}:
             return EphemeralReply(
                 f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
@@ -11806,28 +11811,30 @@ class GatewayRunner:
         # Persist to config FIRST, then update in-memory.
         # This prevents divergent state when the save fails.
         try:
-            from cli import save_config_value
-            if save_config_value("display.busy_input_mode", arg):
-                self._busy_input_mode = arg
-                if arg == "queue":
-                    behavior = "Messages will be queued for the next turn while Hermes is busy."
-                elif arg == "steer":
-                    behavior = "Messages will be steered into the current run (after the next tool call)."
-                else:
-                    behavior = "Messages will interrupt the current run while Hermes is busy."
-                return EphemeralReply(
-                    f"Busy input mode set to **`{arg}`** (saved).\n"
-                    f"_{behavior}_"
-                )
-            else:
-                return EphemeralReply(
-                    f"Busy input mode could not be saved to config. Mode unchanged."
-                )
+            user_config = _load_gateway_config()
+            if not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            user_config["display"]["busy_input_mode"] = arg
+            atomic_yaml_write(config_path, user_config)
         except Exception as e:
             logger.warning("Failed to save busy_input_mode: %s", e)
+            self._busy_input_mode = arg
             return EphemeralReply(
-                f"Could not save busy input mode: {e}. Mode unchanged."
+                f"Busy input mode set to **`{arg}`** for this session only.\n"
+                f"(Could not save to config: {e})"
             )
+
+        self._busy_input_mode = arg
+        if arg == "queue":
+            behavior = "Follow-up messages will be queued for the next turn."
+        elif arg == "steer":
+            behavior = "Follow-up messages will be steered into the current run (after the next tool call)."
+        else:
+            behavior = "Follow-up messages will interrupt the current run."
+        return EphemeralReply(
+            f"Busy input mode set to **`{arg}`** (saved).\n"
+            f"_{behavior}_"
+        )
 
     async def _handle_footer_command(self, event: MessageEvent) -> str:
         """Handle /footer command — toggle the runtime-metadata footer.
