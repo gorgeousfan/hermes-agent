@@ -314,12 +314,17 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
-    # VIRTUAL_ENV lets the gateway's own python detection find the venv
-    # if someone imports hermes_constants-based logic during startup.
-    venv_dir = str(Path(python_path).resolve().parent.parent)
-    lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+    # Mirror _build_gateway_argv: uv-managed venvs ship a shim pythonw.exe
+    # that respawns the base console python.exe, which surfaces as a visible
+    # cmd.exe window when launched from the Scheduled Task. Resolve to the
+    # base interpreter and inject site-packages on PYTHONPATH the same way
+    # the direct-spawn path does.
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    lines.append(f'set "VIRTUAL_ENV={venv_dir.resolve()}"')
+    if extra_pythonpath:
+        pythonpath_value = os.pathsep.join([working_dir, *extra_pythonpath])
+        lines.append(f'set "PYTHONPATH={pythonpath_value}"')
 
-    pythonw_path = _derive_venv_pythonw(python_path)
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())

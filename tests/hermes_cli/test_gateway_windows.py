@@ -67,6 +67,53 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     assert str(site_packages) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
+def test_build_gateway_cmd_script_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, tmp_path):
+    """Scheduled-Task .cmd wrapper must mirror _build_gateway_argv on uv venvs.
+
+    The venv/Scripts/pythonw.exe shipped by uv is a launcher shim that
+    respawns the base console python.exe, which renders as a visible cmd.exe
+    window when started by the Scheduled Task. The .cmd generator must
+    resolve to the base pythonw.exe and inject the venv site-packages on
+    PYTHONPATH the same way the direct-spawn path does.
+    """
+    project = tmp_path / "project"
+    scripts = project / "venv" / "Scripts"
+    site_packages = project / "venv" / "Lib" / "site-packages"
+    base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
+    scripts.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    base.mkdir(parents=True)
+
+    venv_python = scripts / "python.exe"
+    venv_pythonw = scripts / "pythonw.exe"
+    base_pythonw = base / "pythonw.exe"
+    for exe in (venv_python, venv_pythonw, base_pythonw):
+        exe.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(
+        f"home = {base}\nimplementation = CPython\nuv = 0.11.14\nversion_info = 3.11.15\n",
+        encoding="utf-8",
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        str(venv_python),
+        str(project),
+        str(tmp_path / "hermes-home"),
+        "--profile alice",
+    )
+
+    assert str(base_pythonw) in content
+    assert str(venv_pythonw) not in content
+    assert f'set "VIRTUAL_ENV={(project / "venv").resolve()}"' in content
+    pythonpath_line = next(
+        line for line in content.splitlines() if line.startswith('set "PYTHONPATH=')
+    )
+    pythonpath_value = pythonpath_line.split("=", 1)[1].rstrip('"')
+    pythonpath_entries = pythonpath_value.split(gateway_windows.os.pathsep)
+    assert str(project) in pythonpath_entries
+    assert str(site_packages) in pythonpath_entries
+    assert "gateway run" in content
+
+
 def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
     startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
