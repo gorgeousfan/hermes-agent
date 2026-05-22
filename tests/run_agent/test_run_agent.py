@@ -4359,10 +4359,15 @@ class TestSaveSessionLogTypeMetadata:
     distinguishable from the payload alone (#26952)."""
 
     def _capture_payload(self, agent, tmp_path):
-        agent.session_log_file = tmp_path / "session.json"
-        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
-            agent._save_session_log([{"role": "user", "content": "hi"}])
-        return mock_atomic_write.call_args.args[1]
+        # _save_session_log is opt-in (sessions.write_json_snapshots) and
+        # writes to logs_dir/session_{session_id}.json on main — set the
+        # flag + logs_dir and read the resulting JSON back rather than
+        # patching atomic_json_write (which can be referenced via either
+        # name depending on which helper module the writer routes through).
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent._save_session_log([{"role": "user", "content": "hi"}])
+        return json.loads((tmp_path / f"session_{agent.session_id}.json").read_text())
 
     def test_primary_session_is_labeled_primary(self, agent, tmp_path):
         payload = self._capture_payload(agent, tmp_path)
