@@ -147,6 +147,32 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
+def orchestrator_env(monkeypatch, tmp_path):
+    """Isolated orchestrator context for handoff/result contract tests."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "orchestrator_os")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    src_docs = _Path("/Users/jarren/.hermes/orchestration")
+    dst_docs = home / "orchestration"
+    if src_docs.exists():
+        dst_docs.mkdir(parents=True, exist_ok=True)
+        for name in ("claim-flow-v1.md", "handoff-contract-v1.md", "result-format-v1.md"):
+            src = src_docs / name
+            if src.exists():
+                (dst_docs / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return home
+
+
+@pytest.fixture
 def worker_env(monkeypatch, tmp_path):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
     after we've created the task."""
@@ -768,6 +794,116 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_orchestration_create_requires_handoff(orchestrator_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "route this",
+        "assignee": "architect_os",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert "# Handoff Packet" in (task.body or "")
+    finally:
+        conn.close()
+
+
+def test_orchestration_create_renders_handoff_and_context(orchestrator_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    handoff = {
+        "assigned_from": "Hermes",
+        "assigned_to": "architect_os",
+        "role_purpose": "design",
+        "objective": "Draft the role map for Hermes orchestration.",
+        "context": ["Hermes needs a minimal orchestration loop."],
+        "scope": ["role definitions", "claim flow"],
+        "non_goals": ["implementation"],
+        "constraints": ["keep v1 narrow"],
+        "expected_output": "A bounded role design.",
+        "stop_conditions": ["role draft complete"],
+        "blockers": [],
+        "expiry": "2h",
+        "confidence": "high",
+    }
+    out = kt._handle_create({
+        "title": "Define orchestration roles",
+        "assignee": "architect_os",
+        "handoff": handoff,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert "# Handoff Packet" in (task.body or "")
+        ctx = kb.build_worker_context(conn, d["task_id"])
+        assert "## Hermes orchestration contracts" in ctx
+        assert "claim-flow-v1.md" in ctx
+    finally:
+        conn.close()
+
+
+def test_orchestration_complete_requires_structured_result(orchestrator_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    handoff = {
+        "assigned_from": "Hermes",
+        "assigned_to": "dev_os",
+        "role_purpose": "implementation",
+        "objective": "Implement the orchestration wiring.",
+        "context": ["Hermes needs runtime enforcement."],
+        "scope": ["tools", "prompt builder"],
+        "non_goals": ["new product features"],
+        "constraints": ["minimal diff"],
+        "expected_output": "Working runtime wiring.",
+        "stop_conditions": ["tests pass"],
+        "blockers": [],
+        "expiry": "2h",
+        "confidence": "high",
+    }
+    create_out = kt._handle_create({
+        "title": "Wire orchestration runtime",
+        "assignee": "dev_os",
+        "handoff": handoff,
+    })
+    tid = json.loads(create_out)["task_id"]
+
+    missing = kt._handle_complete({"task_id": tid, "summary": "done"})
+    assert "structured_result is required" in json.loads(missing).get("error", "")
+
+    structured = {
+        "status": "done",
+        "summary": "Runtime wiring implemented.",
+        "decisions": ["Use structured packets for orchestration roles."],
+        "files_or_artifacts": ["tools/kanban_tools.py"],
+        "tests_or_checks": ["tool validation path"],
+        "risks": [],
+        "next_step": "Audit the new runtime enforcement.",
+        "blockers": [],
+    }
+    ok = kt._handle_complete({"task_id": tid, "structured_result": structured})
+    d = json.loads(ok)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+        assert task.result and "Runtime wiring implemented" in task.result
+    finally:
+        conn.close()
+
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``
@@ -843,9 +979,80 @@ def test_create_rejects_no_title(worker_env):
     assert json.loads(kt._handle_create({"title": "   ", "assignee": "x"})).get("error")
 
 
-def test_create_rejects_no_assignee(worker_env):
+def test_create_auto_routes_no_assignee(worker_env):
     from tools import kanban_tools as kt
-    assert json.loads(kt._handle_create({"title": "t"})).get("error")
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({"title": "design the flow", "body": "Need an architecture plan."})
+    d = json.loads(out)
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task is not None
+        assert task.assignee == "architect_os"
+    finally:
+        conn.close()
+
+
+def test_together_classifier_overrides_ambiguous_heuristic(monkeypatch):
+    from hermes_cli.orchestration_contracts import infer_orchestration_role
+
+    monkeypatch.setenv("TOGETHER_API_KEY", "together-test-key")
+    monkeypatch.setenv("TOGETHER_CLASSIFIER_MODEL", "dummy-model")
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": '{"role":"audit_os","confidence":0.93}'}}
+                ]
+            }
+
+    calls = []
+
+    def _post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Resp()
+
+    monkeypatch.setattr("hermes_cli.orchestration_contracts.httpx.post", _post)
+    assert infer_orchestration_role("Need a careful pass on this release note") == "audit_os"
+    assert calls, "Together classifier was not invoked for ambiguous text"
+
+
+def test_together_classifier_falls_back_when_unavailable(monkeypatch):
+    from hermes_cli.orchestration_contracts import infer_orchestration_role
+
+    monkeypatch.setenv("TOGETHER_API_KEY", "together-test-key")
+    monkeypatch.setenv("TOGETHER_CLASSIFIER_MODEL", "dummy-model")
+
+    def _post(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("hermes_cli.orchestration_contracts.httpx.post", _post)
+    assert infer_orchestration_role("Need a fresh coordinator decision for this misc request") == "orchestrator_os"
+
+
+def test_create_auto_routes_dev_and_audit(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    dev_out = kt._handle_create({"title": "implement the fix", "body": "Need to code and test the patch."})
+    audit_out = kt._handle_create({"title": "review the patch", "body": "Need verification and regression checks."})
+    dev_id = json.loads(dev_out)["task_id"]
+    audit_id = json.loads(audit_out)["task_id"]
+    conn = kb.connect()
+    try:
+        dev_task = kb.get_task(conn, dev_id)
+        audit_task = kb.get_task(conn, audit_id)
+        assert dev_task is not None and audit_task is not None
+        assert dev_task.assignee == "dev_os"
+        assert audit_task.assignee == "audit_os"
+    finally:
+        conn.close()
 
 
 def test_create_rejects_non_list_parents(worker_env):

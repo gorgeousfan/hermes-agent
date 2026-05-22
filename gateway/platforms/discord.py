@@ -581,6 +581,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_task_started_at: Dict[str, float] = {}
+        # Safety net for leaked typing loops: if a task outlives a normal
+        # response window by too long, the next typing tick will reset it.
+        self._typing_task_ttl_seconds = float(
+            os.getenv("HERMES_DISCORD_TYPING_TASK_TTL_SECONDS", "3600")
+        )
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
@@ -2716,9 +2722,35 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return
-        # Don't start a duplicate loop
-        if chat_id in self._typing_tasks:
-            return
+
+        # Clean up dead or stale loops first. A stale entry can happen if the
+        # response lifecycle is interrupted before stop_typing() runs; if we
+        # leave it alone, Discord keeps showing "is typing..." forever for this
+        # one channel.
+        existing_task = self._typing_tasks.get(chat_id)
+        if existing_task is not None:
+            if existing_task.done():
+                self._typing_tasks.pop(chat_id, None)
+                self._typing_task_started_at.pop(chat_id, None)
+            else:
+                started_at = self._typing_task_started_at.get(chat_id)
+                if started_at is not None:
+                    age = time.monotonic() - started_at
+                    if age >= self._typing_task_ttl_seconds:
+                        logger.warning(
+                            "[%s] Resetting stale Discord typing task for %s (age=%.0fs)",
+                            self.name,
+                            chat_id,
+                            age,
+                        )
+                        await self.stop_typing(chat_id)
+                    else:
+                        return
+                else:
+                    # No start timestamp means this task predates the watchdog.
+                    # Cancel it and start clean so we don't keep a phantom loop
+                    # around indefinitely.
+                    await self.stop_typing(chat_id)
 
         async def _typing_loop() -> None:
             try:
@@ -2752,12 +2784,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
             finally:
                 self._typing_tasks.pop(chat_id, None)
+                self._typing_task_started_at.pop(chat_id, None)
 
+        self._typing_task_started_at[chat_id] = time.monotonic()
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the persistent typing indicator for a channel."""
         task = self._typing_tasks.pop(chat_id, None)
+        self._typing_task_started_at.pop(chat_id, None)
         if task:
             task.cancel()
             try:

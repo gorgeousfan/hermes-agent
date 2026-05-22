@@ -1754,6 +1754,62 @@ def test_forward_compat_columns_writable(kanban_home):
         conn.close()
 
 
+def test_workflow_template_advances_through_arch_dev_audit(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="deliver the feature",
+            body="design, implement, and review the change",
+            assignee="architect_os",
+            workflow_template_id="architect-dev-audit-v1",
+            current_step_key="architect",
+        )
+        task = kb.get_task(conn, tid)
+        assert task.workflow_template_id == "architect-dev-audit-v1"
+        assert task.current_step_key == "architect"
+        assert task.assignee == "architect_os"
+
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.assignee == "architect_os"
+        assert claimed.current_step_key == "architect"
+        assert kb.complete_task(conn, tid, result="architect done", summary="architect done")
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.assignee == "dev_os"
+        assert task.current_step_key == "dev"
+        runs = kb.list_runs(conn, tid, include_active=False)
+        assert [r.step_key for r in runs] == ["architect"]
+
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.assignee == "dev_os"
+        assert claimed.current_step_key == "dev"
+        assert kb.complete_task(conn, tid, result="dev done", summary="dev done")
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.assignee == "audit_os"
+        assert task.current_step_key == "audit"
+        runs = kb.list_runs(conn, tid, include_active=False)
+        assert [r.step_key for r in runs] == ["architect", "dev"]
+
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.assignee == "audit_os"
+        assert claimed.current_step_key == "audit"
+        assert kb.complete_task(conn, tid, result="audit done", summary="audit done")
+        task = kb.get_task(conn, tid)
+        assert task.status == "done"
+        assert task.assignee == "audit_os"
+        assert task.current_step_key == "audit"
+        assert task.completed_at is not None
+        runs = kb.list_runs(conn, tid, include_active=False)
+        assert [r.step_key for r in runs] == ["architect", "dev", "audit"]
+    finally:
+        conn.close()
+
+
 def test_cli_runs_verb(kanban_home):
     conn = kb.connect()
     try:

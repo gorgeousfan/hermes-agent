@@ -34,6 +34,15 @@ import os
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
+from hermes_cli.orchestration_contracts import (
+    build_auto_handoff,
+    infer_orchestration_route,
+    is_orchestration_profile,
+    render_handoff_packet,
+    render_result_packet,
+    validate_handoff_packet,
+    validate_result_packet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +211,30 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
+
+
+def _requires_orchestration_packet(assignee: Optional[str]) -> bool:
+    return is_orchestration_profile(assignee)
+
+
+def _parse_object_arg(value: Any, name: str) -> tuple[Optional[dict], Optional[str]]:
+    if value is None:
+        return None, None
+    if isinstance(value, dict):
+        return value, None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None, None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None, f"{name} must be a JSON object/dict"
+        if not isinstance(parsed, dict):
+            return None, f"{name} must be a JSON object/dict"
+        return parsed, None
+    return None, f"{name} must be an object/dict"
+
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
@@ -404,6 +437,11 @@ def _handle_complete(args: dict, **kw) -> str:
     result = args.get("result")
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
+    structured_result, structured_result_error = _parse_object_arg(
+        args.get("structured_result"), "structured_result"
+    )
+    if structured_result_error:
+        return tool_error(structured_result_error)
     if created_cards is not None:
         if isinstance(created_cards, str):
             # Accept a single id as a string for convenience.
@@ -456,6 +494,24 @@ def _handle_complete(args: dict, **kw) -> str:
                 metadata["artifacts"] = merged
             else:
                 metadata["artifacts"] = artifacts
+    if structured_result is not None:
+        structured_errors = validate_result_packet(structured_result)
+        if structured_errors:
+            return tool_error(
+                "structured_result invalid: " + "; ".join(structured_errors)
+            )
+        if not summary:
+            summary = str(structured_result.get("summary") or "").strip()
+        if not result:
+            result = render_result_packet(structured_result)
+        if metadata is None:
+            metadata = {}
+        elif not isinstance(metadata, dict):
+            return tool_error(
+                f"metadata must be an object/dict, got {type(metadata).__name__}"
+            )
+        metadata = dict(metadata)
+        metadata["structured_result"] = structured_result
     if not (summary or result):
         return tool_error(
             "provide at least one of: summary (preferred), result"
@@ -469,6 +525,12 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if task and _requires_orchestration_packet(task.assignee) and structured_result is None:
+                return tool_error(
+                    "structured_result is required for orchestration role tasks; "
+                    "pass a Hermes result-format v1 packet"
+                )
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -646,12 +708,29 @@ def _handle_create(args: dict, **kw) -> str:
     if not title or not str(title).strip():
         return tool_error("title is required")
     assignee = args.get("assignee")
-    if not assignee:
-        return tool_error(
-            "assignee is required — name the profile that should execute this "
-            "task (the dispatcher will only spawn tasks with an assignee)"
-        )
     body = args.get("body")
+    handoff, handoff_error = _parse_object_arg(args.get("handoff"), "handoff")
+    if handoff_error:
+        return tool_error(handoff_error)
+    route_workflow_template_id = None
+    route_current_step_key = None
+    if not assignee or str(assignee).strip().lower() == "auto":
+        route_text = " ".join(
+            str(part or "") for part in (
+                title,
+                body,
+                handoff.get("objective") if handoff else "",
+                handoff.get("role_purpose") if handoff else "",
+                " ".join(map(str, handoff.get("context", []))) if handoff else "",
+                " ".join(map(str, handoff.get("scope", []))) if handoff else "",
+                " ".join(map(str, handoff.get("non_goals", []))) if handoff else "",
+            )
+        )
+        route = infer_orchestration_route(route_text)
+        assignee = route["assignee"]
+        route_workflow_template_id = route.get("workflow_template_id")
+        route_current_step_key = route.get("current_step_key")
+    assignee = str(assignee).strip() if assignee else ""
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
@@ -685,6 +764,25 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            if _requires_orchestration_packet(str(assignee)):
+                if not handoff:
+                    handoff = build_auto_handoff(
+                        title=str(title).strip(),
+                        body=body,
+                        assignee=str(assignee),
+                    )
+                handoff_errors = validate_handoff_packet(handoff, assignee=str(assignee))
+                if handoff_errors:
+                    return tool_error("handoff invalid: " + "; ".join(handoff_errors))
+                rendered_handoff = render_handoff_packet(
+                    handoff,
+                    title=str(title).strip(),
+                    assignee=str(assignee),
+                )
+                if not body or not str(body).strip():
+                    body = rendered_handoff
+                elif "# Handoff Packet" not in str(body):
+                    body = f"{str(body).rstrip()}\n\n{rendered_handoff}"
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -705,6 +803,8 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                workflow_template_id=route_workflow_template_id,
+                current_step_key=route_current_step_key,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -952,6 +1052,16 @@ KANBAN_COMPLETE_SCHEMA = {
                     "are silently skipped."
                 ),
             },
+            "structured_result": {
+                "type": "object",
+                "description": (
+                    "Hermes result-format v1 packet. Required for "
+                    "orchestration-role tasks (OrchestratorOS, "
+                    "ArchitectOS, DevOS, AuditOS). Must include status, "
+                    "summary, decisions, files_or_artifacts, tests_or_checks, "
+                    "risks, next_step, and blockers."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": [],
@@ -1064,10 +1174,10 @@ KANBAN_CREATE_SCHEMA = {
             "assignee": {
                 "type": "string",
                 "description": (
-                    "Profile name that should execute this task "
-                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-                    "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "Profile name that should execute this task. When "
+                    "omitted, Hermes auto-routes to orchestrator_os, "
+                    "architect_os, dev_os, or audit_os based on the task "
+                    "type."
                 ),
             },
             "body": {
@@ -1076,6 +1186,14 @@ KANBAN_CREATE_SCHEMA = {
                     "Opening post: full spec, acceptance criteria, "
                     "links. The assigned worker reads this as part of "
                     "its context."
+                ),
+            },
+            "handoff": {
+                "type": "object",
+                "description": (
+                    "Structured handoff packet for Hermes-native role "
+                    "orchestration. Required for orchestrator/architect/"
+                    "dev/audit profile tasks."
                 ),
             },
             "parents": {
@@ -1168,7 +1286,7 @@ KANBAN_CREATE_SCHEMA = {
             },
             "board": _board_schema_prop(),
         },
-        "required": ["title", "assignee"],
+        "required": ["title"],
     },
 }
 

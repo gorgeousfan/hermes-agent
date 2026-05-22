@@ -25,6 +25,11 @@ from agent.skill_utils import (
     skill_matches_platform,
 )
 from utils import atomic_json_write
+from hermes_cli.orchestration_contracts import (
+    is_orchestration_profile,
+    load_briefing_docs,
+    load_orchestration_docs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1027,6 +1032,7 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
+    _briefing_hint = get_session_env("HERMES_BRIEFING_MODE") or os.environ.get("HERMES_BRIEFING_MODE", "")
     disabled = get_disabled_skill_names()
     cache_key = (
         str(skills_dir.resolve()),
@@ -1034,6 +1040,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
+        _briefing_hint,
         tuple(sorted(disabled)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
@@ -1453,6 +1460,22 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     )
     if project_context:
         sections.append(project_context)
+
+    profile_name = os.environ.get("HERMES_PROFILE")
+    if os.environ.get("HERMES_KANBAN_TASK") or is_orchestration_profile(profile_name):
+        orchestration_docs = load_orchestration_docs()
+        if orchestration_docs:
+            sections.append(orchestration_docs)
+    briefing_mode = False
+    try:
+        from gateway.session_context import get_session_env
+        briefing_mode = get_session_env("HERMES_BRIEFING_MODE") not in {"", "0", "false", "False"}
+    except Exception:
+        briefing_mode = os.environ.get("HERMES_BRIEFING_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    if briefing_mode:
+        briefing_docs = load_briefing_docs()
+        if briefing_docs:
+            sections.append(briefing_docs)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

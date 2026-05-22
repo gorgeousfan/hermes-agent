@@ -5269,6 +5269,17 @@ class GatewayRunner:
         if auto_decompose_per_tick < 1:
             auto_decompose_per_tick = 1
 
+        try:
+            from hermes_cli.kanban_diagnostics import triage_aux_status
+        except Exception:
+            triage_aux_status = None
+        triage_aux = triage_aux_status(cfg) if triage_aux_status is not None else None
+        auto_decompose_enabled = bool(
+            auto_decompose_enabled
+            and triage_aux
+            and (triage_aux.get("decomposer_explicit") or triage_aux.get("main_model_visible"))
+        )
+
         def _auto_decompose_tick() -> int:
             """Run the auto-decomposer for up to N triage tasks across all
             boards. Returns the number of triage tasks that were
@@ -14141,6 +14152,23 @@ class GatewayRunner:
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        briefing_mode = ""
+        try:
+            briefing_cfg = self.config.get_briefing_channel(context.source.platform)
+            if briefing_cfg:
+                source_chat_id = str(context.source.chat_id or "")
+                source_thread_id = str(context.source.thread_id or "")
+                briefing_chat_id = str(briefing_cfg.chat_id or "")
+                briefing_thread_id = str(briefing_cfg.thread_id or "")
+                if (
+                    (briefing_thread_id and source_thread_id == briefing_thread_id)
+                    or (briefing_thread_id and source_chat_id == briefing_thread_id)
+                    or (briefing_chat_id and source_chat_id == briefing_chat_id and not briefing_thread_id)
+                    or (briefing_chat_id and source_thread_id == briefing_chat_id and not briefing_thread_id)
+                ):
+                    briefing_mode = "1"
+        except Exception:
+            briefing_mode = ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -14150,6 +14178,7 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            briefing_mode=briefing_mode,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
