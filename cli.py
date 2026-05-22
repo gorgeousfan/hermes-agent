@@ -1518,7 +1518,8 @@ def _osc11_probe_is_safe() -> bool:
     """Return True only when the active terminal is known to consume OSC 11
     replies internally.  Conservative default: unknown/unrecognised terminals
     are treated as unsafe so we don't pollute prompt_toolkit's input buffer."""
-    if (os.environ.get("HERMES_DISABLE_OSC11") or "").strip().lower() in {"1", "true", "on", "yes", "y"}:
+    disable = (os.environ.get("HERMES_DISABLE_OSC11") or "").strip().lower()
+    if disable and _TRUE_RE.match(disable):
         return False
     term_program = (os.environ.get("TERM_PROGRAM") or "").strip()
     if term_program in _OSC11_SAFE_TERM_PROGRAMS:
