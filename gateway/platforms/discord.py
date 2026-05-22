@@ -30,6 +30,8 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_GLOBAL_COMMAND_LIMIT = 100
+_DISCORD_ALLOWLIST_WILDCARD = "*"
 
 try:
     import discord
@@ -425,7 +427,11 @@ class VoiceReceiver:
             allowed = self._allowed_user_ids
             candidates = [
                 m.id for m in channel.members
-                if m.id != bot_id and (not allowed or str(m.id) in allowed)
+                if m.id != bot_id and (
+                    not allowed
+                    or _DISCORD_ALLOWLIST_WILDCARD in allowed
+                    or str(m.id) in allowed
+                )
             ]
             if len(candidates) == 1:
                 uid = candidates[0]
@@ -636,10 +642,15 @@ class DiscordAdapter(BasePlatformAdapter):
             # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
             if allowed_env:
-                self._allowed_user_ids = {
+                allowed_users = {
                     _clean_discord_id(uid) for uid in allowed_env.split(",")
                     if uid.strip()
                 }
+                self._allowed_user_ids = (
+                    {_DISCORD_ALLOWLIST_WILDCARD}
+                    if _DISCORD_ALLOWLIST_WILDCARD in allowed_users
+                    else allowed_users
+                )
 
             # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
             # Users with ANY of these roles can interact with the bot.
@@ -662,7 +673,10 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = (
-                any(not entry.isdigit() for entry in self._allowed_user_ids)
+                any(
+                    entry != _DISCORD_ALLOWLIST_WILDCARD and not entry.isdigit()
+                    for entry in self._allowed_user_ids
+                )
                 or bool(self._allowed_role_ids)  # Need members intent for role lookup
             )
             intents.voice_states = True
@@ -1257,6 +1271,12 @@ class DiscordAdapter(BasePlatformAdapter):
             raise RuntimeError("Discord application ID is unavailable for slash command sync")
 
         desired_payloads = [command.to_dict(tree) for command in tree.get_commands()]
+        if len(desired_payloads) > _DISCORD_GLOBAL_COMMAND_LIMIT:
+            raise RuntimeError(
+                "Discord slash command sync requested "
+                f"{len(desired_payloads)} global command(s), exceeding "
+                f"Discord's {_DISCORD_GLOBAL_COMMAND_LIMIT} command limit"
+            )
         desired_by_key = {
             (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
             for payload in desired_payloads
@@ -1286,6 +1306,16 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        stale_commands = []
+        for key, current in list(existing_by_key.items()):
+            if key not in desired_by_key:
+                stale_commands.append(current)
+                existing_by_key.pop(key, None)
+
+        for current in stale_commands:
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1308,10 +1338,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),
@@ -2224,6 +2250,8 @@ class DiscordAdapter(BasePlatformAdapter):
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
             return True
+        if _DISCORD_ALLOWLIST_WILDCARD in allowed_users:
+            return True
         # Check user ID allowlist (works for both DMs and guild messages)
         if has_users and user_id in allowed_users:
             return True
@@ -2813,6 +2841,10 @@ class DiscordAdapter(BasePlatformAdapter):
         so authorization checks work with IDs only.
         """
         if not self._allowed_user_ids or not self._client:
+            return
+        if _DISCORD_ALLOWLIST_WILDCARD in self._allowed_user_ids:
+            self._allowed_user_ids = {_DISCORD_ALLOWLIST_WILDCARD}
+            os.environ["DISCORD_ALLOWED_USERS"] = _DISCORD_ALLOWLIST_WILDCARD
             return
 
         numeric_ids = set()
@@ -4957,6 +4989,8 @@ def _component_check_auth(
     has_users = bool(user_set)
     has_roles = bool(role_set)
     if not has_users and not has_roles:
+        return True
+    if _DISCORD_ALLOWLIST_WILDCARD in user_set:
         return True
 
     user = getattr(interaction, "user", None)

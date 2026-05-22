@@ -124,6 +124,41 @@ def _validate_category_name(category: str) -> str:
     return _normalize_bundle_path(category, field_name="category", allow_nested=False)
 
 
+def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
+    """Validate an install path loaded from or saved to the skills lock file."""
+    safe_skill_name = _validate_skill_name(skill_name)
+    normalized = _normalize_bundle_path(
+        install_path,
+        field_name="install path",
+        allow_nested=True,
+    )
+    parts = normalized.split("/")
+    if len(parts) not in {1, 2} or parts[-1] != safe_skill_name:
+        raise ValueError(f"Unsafe install path: {install_path}")
+    return normalized
+
+
+def _is_path_redirect(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
+    """Resolve a lock-file install path without allowing escapes from SKILLS_DIR."""
+    normalized = _normalize_lock_install_path(install_path, skill_name)
+    skills_root = SKILLS_DIR.resolve()
+
+    target = SKILLS_DIR
+    for part in normalized.split("/"):
+        target = target / part
+        if _is_path_redirect(target):
+            raise ValueError(f"Unsafe install path: {install_path}")
+
+    target = target.resolve()
+    if target == skills_root or not target.is_relative_to(skills_root):
+        raise ValueError(f"Unsafe install path: {install_path}")
+    return target
+
+
 def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation."""
     current_url = url
@@ -2789,13 +2824,15 @@ class HubLockFile:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         data = self.load()
-        data["installed"][name] = {
+        safe_name = _validate_skill_name(name)
+        safe_install_path = _normalize_lock_install_path(install_path, safe_name)
+        data["installed"][safe_name] = {
             "source": source,
             "identifier": identifier,
             "trust_level": trust_level,
             "scan_verdict": scan_verdict,
             "content_hash": skill_hash,
-            "install_path": install_path,
+            "install_path": safe_install_path,
             "files": files,
             "metadata": metadata or {},
             "installed_at": datetime.now(timezone.utc).isoformat(),
@@ -2943,9 +2980,11 @@ def install_from_quarantine(
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
     if safe_category:
-        install_dir = SKILLS_DIR / safe_category / safe_skill_name
+        install_rel_path = f"{safe_category}/{safe_skill_name}"
     else:
-        install_dir = SKILLS_DIR / safe_skill_name
+        install_rel_path = safe_skill_name
+
+    install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
     if install_dir.exists():
         shutil.rmtree(install_dir)
@@ -2999,7 +3038,11 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    install_path = SKILLS_DIR / entry["install_path"]
+    try:
+        install_path = _resolve_lock_install_path(entry.get("install_path", ""), skill_name)
+    except ValueError as exc:
+        return False, f"Refusing to uninstall '{skill_name}': {exc}"
+
     if install_path.exists():
         shutil.rmtree(install_path)
 
