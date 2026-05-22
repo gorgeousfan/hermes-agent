@@ -341,6 +341,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "kanban.respawn_guard.active_pr": {
         "type": "boolean",
+        "label": "Active PR respawn guard",
         "description": "Skip re-spawning ready tasks that already have a recent GitHub PR comment",
     },
     "delegation.reasoning_effort": {
