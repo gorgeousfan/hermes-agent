@@ -34,7 +34,14 @@ def _run_apply_profile_override(
         (hermes_root / "active_profile").write_text(active_profile)
 
     if active_profile and active_profile != "default":
-        (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
+        # Profile directories are stored lowercase on disk (see
+        # hermes_cli.profiles.normalize_profile_name). When the test exercises
+        # the title-cased input path (e.g. ``-p Coder``), the resolver looks
+        # up ``profiles/coder``, not ``profiles/Coder`` — create the canonical
+        # directory so the fixture matches production layout.
+        (hermes_root / "profiles" / active_profile.lower()).mkdir(
+            parents=True, exist_ok=True
+        )
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if hermes_home is not None:
