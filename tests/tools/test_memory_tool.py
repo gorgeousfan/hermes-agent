@@ -119,9 +119,9 @@ class TestMemoryStoreAdd:
         assert len(store.memory_entries) == 1  # Not duplicated
 
     def test_add_exceeding_limit_rejected(self, store):
-        # Fill up to near limit (tag takes ~28 chars, leave room)
-        store.add("memory", "x" * 200)
-        store.add("memory", "y" * 200)
+        # Fill up to near limit (compact tag ~16 chars)
+        store.add("memory", "x" * 215)
+        store.add("memory", "y" * 215)
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
         assert "exceed" in result["error"].lower()

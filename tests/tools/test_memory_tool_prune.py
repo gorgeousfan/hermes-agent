@@ -49,13 +49,13 @@ class TestMemoryTags:
     def test_format_tag_defaults(self):
         tag = _format_tag()
         assert tag.startswith("[c:")
-        assert "[r:1]" in tag
-        assert "[s:tool]" in tag
+        assert "[s:t]" in tag  # source encoded as single char
+        assert len(tag) == 16  # compact format: [c:YYMMDD][s:X] + space
 
     def test_format_tag_custom(self):
         from datetime import date
         tag = _format_tag(created=date(2026, 1, 1), ref_count=5, source="user")
-        assert tag == "[c:2026-01-01][r:5][s:user] "
+        assert tag == "[c:260101][r:5][s:u] "
 
     def test_strip_tag_present(self):
         content = _strip_tag("[c:2026-05-22][r:1][s:tool] Actual content")
@@ -66,9 +66,9 @@ class TestMemoryTags:
         assert content == "Plain text"
 
     def test_bump_ref_count_increments(self):
-        bumped = _bump_ref_count("[c:2026-05-22][r:3][s:user] content")
+        bumped = _bump_ref_count("[c:260522][r:3][s:u] content")
         assert "[r:4]" in bumped
-        assert "[s:user]" in bumped
+        assert "[s:u]" in bumped
 
     def test_bump_ref_count_untagged(self):
         bumped = _bump_ref_count("Plain text")
@@ -126,8 +126,7 @@ class TestMemoryStoreAdd:
         # Entry should be tagged
         entry = result["entries"][0]
         assert "[c:" in entry
-        assert "[r:1]" in entry
-        assert "[s:tool]" in entry
+        assert "[s:" in entry
         assert "Python 3.12 project" in entry
 
     def test_add_to_user(self, store):
