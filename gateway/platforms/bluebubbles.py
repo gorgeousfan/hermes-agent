@@ -55,6 +55,12 @@ _TAPBACK_REMOVED = {
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
 
+# Grace period (seconds) after gateway startup — messages created within this
+# window after startup are still considered live. Any message whose dateCreated
+# is earlier than `_gateway_started_at - _GATEWAY_GRACE` is dropped, preventing
+# responses to stale replayed webhook events after restart / reconnect.
+_GATEWAY_GRACE = 5.0
+
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
@@ -132,7 +138,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
         self._seen_message_guids: Dict[str, float] = {}  # guid -> timestamp
-        self._DEDUP_TTL = 30.0  # seconds
+        self._DEDUP_TTL = 120.0  # seconds (was 30s — too short for late updated-message events)
+        self._gateway_started_at: Optional[float] = None  # set on connect
 
     # ------------------------------------------------------------------
     # API helpers
@@ -208,6 +215,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Register webhook with BlueBubbles server
         # This is required for the server to know where to send events
         await self._register_webhook()
+
+        # Mark startup time — any message created before this is dropped
+        self._gateway_started_at = time.time()
+        logger.info(
+            "[bluebubbles] gateway started at %s (grace period: %.0fs)",
+            self._gateway_started_at, _GATEWAY_GRACE,
+        )
 
         return True
 
@@ -953,6 +967,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_REMOVED,
         }:
             return web.Response(text="ok")
+
+        # --- Staleness check: skip messages created before gateway started ---
+        if self._gateway_started_at is not None:
+            date_created_ms = record.get("dateCreated") or record.get("date_created")
+            if isinstance(date_created_ms, (int, float)):
+                cutoff = self._gateway_started_at - _GATEWAY_GRACE
+                if (date_created_ms / 1000.0) < cutoff:
+                    logger.debug(
+                        "[bluebubbles] dropping stale message (dateCreated %.3f < cutoff %.3f)",
+                        date_created_ms / 1000.0, cutoff,
+                    )
+                    return web.Response(text="ok")
 
         # --- Dedup: BB fires multiple webhooks per message ---
         msg_guid = self._value(
