@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -432,13 +433,36 @@ async def test_typing_restartable_after_error():
 
 
 @pytest.mark.asyncio
-async def test_typing_stop_cleans_up():
-    """stop_typing should remove the task from _typing_tasks."""
+async def test_typing_stale_task_is_reset_after_ttl():
+    """A leaked typing task should be cancelled and replaced once it exceeds the TTL."""
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     adapter._client = MagicMock()
     adapter._client.http = MagicMock()
     adapter._client.http.request = AsyncMock()
     adapter._typing_tasks = {}
+    adapter._typing_task_started_at = {}
+    adapter._typing_task_ttl_seconds = 0.0
+
+    old_task = asyncio.create_task(asyncio.sleep(999))
+    adapter._typing_tasks["12345"] = old_task
+    adapter._typing_task_started_at["12345"] = time.monotonic() - 10.0
+
+    await adapter.send_typing("12345")
+    await asyncio.sleep(0.05)
+
+    assert adapter._typing_tasks["12345"] is not old_task
+    assert old_task.cancelled() or old_task.done()
+
+    await adapter.stop_typing("12345")
+
+
+@pytest.mark.asyncio
+async def test_typing_stop_cleans_up():
+    """stop_typing should remove the task from _typing_tasks."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = SimpleNamespace(http=SimpleNamespace(request=AsyncMock()))
+    adapter._typing_tasks = {}
+    adapter._typing_task_started_at = {}
 
     await adapter.send_typing("12345")
     assert "12345" in adapter._typing_tasks
