@@ -3349,14 +3349,45 @@ def run_conversation(
                 agent._invalid_json_retries = 0
 
                 # ── Post-call guardrails ──────────────────────────
+                _pre_cap_delegate_count = sum(
+                    1 for tc in (assistant_message.tool_calls or [])
+                    if tc.function.name == "delegate_task"
+                )
                 assistant_message.tool_calls = agent._cap_delegate_task_calls(
                     assistant_message.tool_calls
+                )
+                _post_cap_delegate_count = sum(
+                    1 for tc in (assistant_message.tool_calls or [])
+                    if tc.function.name == "delegate_task"
+                )
+                _delegate_truncation_dropped = (
+                    _pre_cap_delegate_count - _post_cap_delegate_count
                 )
                 assistant_message.tool_calls = agent._deduplicate_tool_calls(
                     assistant_message.tool_calls
                 )
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+
+                # Make delegate_task truncation visible to the model. Without
+                # this, ``_cap_delegate_task_calls`` silently drops excess
+                # calls and the model attributes the missing tool results to
+                # the provider rather than a Hermes guardrail (#30405).
+                if _delegate_truncation_dropped > 0:
+                    from tools.delegate_tool import _get_max_concurrent_children
+                    try:
+                        _max_children = _get_max_concurrent_children()
+                    except Exception:
+                        _max_children = _pre_cap_delegate_count - _delegate_truncation_dropped
+                    _trunc_notice = agent._compose_delegate_truncation_notice(
+                        _delegate_truncation_dropped, _max_children
+                    )
+                    _existing_content = assistant_msg.get("content") or ""
+                    assistant_msg["content"] = (
+                        f"{_existing_content}\n\n{_trunc_notice}"
+                        if _existing_content
+                        else _trunc_notice
+                    )
                 
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its

@@ -169,6 +169,49 @@ class TestCapDelegateTaskCalls:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2a.1 — _compose_delegate_truncation_notice (#30405)
+# ---------------------------------------------------------------------------
+
+class TestComposeDelegateTruncationNotice:
+    """The cap function silently drops excess delegate_task calls; without a
+    visible notice the model can't tell the dropped calls didn't run and
+    re-emits them (or worse, attributes the missing results to the provider).
+    """
+
+    def test_singular_call_word(self):
+        notice = AIAgent._compose_delegate_truncation_notice(1, 3)
+        assert "1 excess delegate_task call " in notice
+        assert "1 excess delegate_task calls" not in notice
+
+    def test_plural_call_word(self):
+        notice = AIAgent._compose_delegate_truncation_notice(2, 3)
+        assert "2 excess delegate_task calls " in notice
+
+    def test_mentions_max_children_cap(self):
+        notice = AIAgent._compose_delegate_truncation_notice(2, 5)
+        assert "max_concurrent_children=5" in notice
+
+    def test_advises_tasks_batch_alternative(self):
+        notice = AIAgent._compose_delegate_truncation_notice(4, 3)
+        # Model needs to know there's a way to actually run more in parallel
+        # without raising the cap — pointing at 'tasks' batch is the answer.
+        assert "tasks" in notice
+
+    def test_advises_config_yaml_cap_raise(self):
+        notice = AIAgent._compose_delegate_truncation_notice(4, 3)
+        # And the way to actually raise the cap.
+        assert "delegation.max_concurrent_children" in notice
+        assert "config.yaml" in notice
+
+    def test_marked_as_hermes_guardrail(self):
+        notice = AIAgent._compose_delegate_truncation_notice(2, 3)
+        # The Hermes guardrail tag distinguishes this from a provider error
+        # so the model attributes the truncation to the right layer.
+        assert notice.startswith("[Hermes guardrail:")
+        assert notice.endswith("]")
+
+
+# ---------------------------------------------------------------------------
 # Phase 2b — _deduplicate_tool_calls
 # ---------------------------------------------------------------------------
 
