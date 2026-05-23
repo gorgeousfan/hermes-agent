@@ -2739,14 +2739,14 @@ class GatewayRunner:
         """
         env_val = os.getenv("HERMES_GATEWAY_BUSY_ACK_ENABLED")
         if env_val is not None:
-            return env_val.strip().lower() == "false"
+            return not is_truthy_value(env_val)
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return bool(cfg_get(cfg, "display", "suppress_busy_ack", default=False) or False)
+                return is_truthy_value(cfg_get(cfg, "display", "suppress_busy_ack", default=False))
         except Exception:
             pass
         return False
