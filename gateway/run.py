@@ -1000,6 +1000,21 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _load_credential_pool_for_provider(provider: Optional[str]):
+    """Best-effort pool restore for persisted session runtime overrides."""
+    provider_id = str(provider or "").strip()
+    if not provider_id:
+        return None
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider_id)
+        return pool if pool.has_credentials() else None
+    except Exception as exc:
+        logger.debug("Failed to load credential pool for %s: %s", provider_id, exc)
+        return None
+
+
 def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
