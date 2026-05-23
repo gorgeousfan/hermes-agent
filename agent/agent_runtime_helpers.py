@@ -886,11 +886,10 @@ def _primary_health_check_loop(agent, base_url: str, api_key: str, *, provider: 
                     attempt, resp.status_code, base_url,
                 )
         except Exception as e:
-            if attempt <= 3 or attempt % 10 == 0:
-                logging.info(
-                    "Primary health check attempt %d failed: %s (%s)",
-                    attempt, base_url, e,
-                )
+            logging.info(
+                "Primary health check attempt %d failed: %s (%s)",
+                attempt, base_url, e,
+            )
         time.sleep(interval)
 
     logging.warning(
