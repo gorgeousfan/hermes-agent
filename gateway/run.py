@@ -6924,17 +6924,17 @@ class GatewayRunner:
                             channel_prompt=event.channel_prompt,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
-                    return "Agent still starting — /steer queued for the next turn."
+                    return t("gateway.steer_agent_starting")
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
                     except Exception as exc:
                         logger.warning("Steer failed for session %s: %s", _quick_key, exc)
-                        return f"⚠️ Steer failed: {exc}"
+                        return t("gateway.steer_failed", exc=exc)
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
-                    return "Steer rejected (empty payload)."
+                        return t("gateway.steer_queued", preview=preview)
+                    return t("gateway.steer_rejected")
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -6946,17 +6946,16 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
-                return "No active agent — /steer queued for the next turn."
+                return t("gateway.steer_no_agent")
 
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return t("gateway.agent_running_switch_model")
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
             if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+                return t("gateway.agent_running_change_runtime")
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -6995,7 +6994,7 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return t("gateway.agent_running_goal")
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7041,10 +7040,7 @@ class GatewayRunner:
             # silently discarded by the slash-command safety net,
             # producing a zero-char response. See #5057, #6252, #10370.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
-                )
+                return t("gateway.agent_running_cmd_blocked", cmd=_cmd_def_inner.name)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -10324,7 +10320,7 @@ class GatewayRunner:
         try:
             from hermes_cli.config import load_config, save_config
         except Exception as exc:
-            return f"❌ Could not load config: {exc}"
+            return t("gateway.config_read_failed", error=exc)
         cfg = load_config()
 
         result = crs.apply(
@@ -10586,7 +10582,7 @@ class GatewayRunner:
         if mgr is None:
             return t("gateway.goal.unavailable")
         if not mgr.has_goal():
-            return "No active goal. Set one with /goal <text>."
+            return t("gateway.no_active_goal_with_set")
 
         # No args → list current subgoals.
         if not args:
@@ -12538,11 +12534,11 @@ class GatewayRunner:
         source = event.source
         session_id = self._session_db.resolve_session_id(raw_session_id.strip())
         if not session_id:
-            return f"Session not found: {raw_session_id.strip()}"
+            return t("gateway.session_not_found", session_id=raw_session_id.strip())
 
         session = self._session_db.get_session(session_id)
         if not session:
-            return f"Session not found: {raw_session_id.strip()}"
+            return t("gateway.session_not_found", session_id=raw_session_id.strip())
         if str(session.get("source") or "") != "telegram":
             return "That session is not a Telegram session and cannot be restored into this topic."
         if str(session.get("user_id") or "") != str(source.user_id):
@@ -17151,7 +17147,7 @@ class GatewayRunner:
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        t("gateway.still_working", elapsed=_elapsed_mins, status=_status_detail),
                         metadata=_status_thread_metadata,
                     )
                     if (

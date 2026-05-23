@@ -23,6 +23,29 @@ gateway:
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
   config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"
 
+  # /status callback
+  still_working: "⏳ Still working... ({elapsed} min elapsed{status})"
+
+  # /steer reply
+  steer_agent_starting: "Agent still starting — /steer queued for the next turn."
+  steer_no_agent: "No active agent — /steer queued for the next turn."
+  steer_failed: "⚠️ Steer failed: {exc}"
+  steer_queued: "⏩ Steer queued — arrives after the next tool call: '{preview}'"
+  steer_rejected: "Steer rejected (empty payload)."
+
+  # Command rejected while agent is running
+  agent_running_switch_model: "Agent is running — wait or /stop first, then switch models."
+  agent_running_change_runtime: "Agent is running — wait or /stop first, then change runtime."
+  agent_running_goal: "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+  agent_running_cmd_blocked: "⏳ Agent is running — `/{cmd}` can't run mid-turn. Wait for the current response or `/stop` first."
+
+  # Session / config error messages
+  session_not_found: "Session not found: {session_id}"
+
+  # /goal when there is no goal (with set instruction)
+  no_active_goal_with_set: "No active goal. Set one with /goal <text>."
+
+
   model:
     error_prefix:           "Fehler: {error}"
     switched:               "Modell gewechselt zu `{model}`"
