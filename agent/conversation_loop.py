@@ -2486,7 +2486,8 @@ def run_conversation(
                             agent._emit_status("⚠️ Model not found — switching to fallback provider...")
                         elif classified.reason == FailoverReason.billing:
                             agent._emit_status("⚠️ Billing error — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
+                        _fb_result = agent._try_activate_fallback(reason=classified.reason)
+                        if _fb_result:
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
