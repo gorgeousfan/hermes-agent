@@ -691,3 +691,112 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesInboundDedup:
+    """Regression coverage for #30708 — exact-GUID dedup across new-message
+    and updated-message webhook events for the same iMessage."""
+
+    @pytest.mark.asyncio
+    async def test_same_guid_new_then_updated_message_dedups(self, monkeypatch):
+        import asyncio
+        import json
+
+        adapter = _make_adapter(monkeypatch)
+        delivered = []
+
+        async def fake_handle_message(event):
+            delivered.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        class _FakeRequest:
+            def __init__(self, payload, password):
+                self._payload = payload
+                self.query = {"password": password}
+                self.headers = {}
+
+            async def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+        new_msg = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID-1",
+                "text": "yes",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chatGuid": "any;-;+15551234567",
+                "chatIdentifier": "+15551234567",
+            },
+        }
+        # Same message GUID, updated-message without chatGuid. Pre-fix this
+        # was treated as a new message and normalized to a bare
+        # chatIdentifier session key, spinning up a parallel session.
+        upd_msg = {
+            "type": "updated-message",
+            "data": {
+                "guid": "MESSAGE-GUID-1",
+                "text": "yes",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chatIdentifier": "+15551234567",
+            },
+        }
+
+        r1 = await adapter._handle_webhook(_FakeRequest(new_msg, "secret"))
+        await asyncio.sleep(0)
+        r2 = await adapter._handle_webhook(_FakeRequest(upd_msg, "secret"))
+        await asyncio.sleep(0)
+
+        assert r1.status == 200
+        assert r2.status == 200
+        assert len(delivered) == 1, (
+            "duplicate inbound webhook for the same message GUID was not "
+            "suppressed; second event would have created a parallel session"
+        )
+        assert delivered[0].text == "yes"
+
+    @pytest.mark.asyncio
+    async def test_different_guids_both_delivered(self, monkeypatch):
+        """Two distinct iMessages must still both be delivered."""
+        import asyncio
+        import json
+
+        adapter = _make_adapter(monkeypatch)
+        delivered = []
+
+        async def fake_handle_message(event):
+            delivered.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        class _FakeRequest:
+            def __init__(self, payload, password):
+                self._payload = payload
+                self.query = {"password": password}
+                self.headers = {}
+
+            async def read(self):
+                return json.dumps(self._payload).encode("utf-8")
+
+        def _msg(guid, text):
+            return {
+                "type": "new-message",
+                "data": {
+                    "guid": guid,
+                    "text": text,
+                    "handle": {"address": "+15551234567"},
+                    "isFromMe": False,
+                    "chatGuid": "any;-;+15551234567",
+                },
+            }
+
+        r1 = await adapter._handle_webhook(_FakeRequest(_msg("M1", "hi"), "secret"))
+        await asyncio.sleep(0)
+        r2 = await adapter._handle_webhook(_FakeRequest(_msg("M2", "there"), "secret"))
+        await asyncio.sleep(0)
+
+        assert r1.status == 200
+        assert r2.status == 200
+        assert [e.text for e in delivered] == ["hi", "there"]
