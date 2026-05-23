@@ -1,3 +1,4 @@
+import json
 import logging
 from io import StringIO
 import subprocess
@@ -202,13 +203,33 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
     assert "/sandboxes/docker/test-persistent-auto-mount/workspace:/workspace" not in run_args_str
 
 
-def _make_persistent_mock_run(monkeypatch, inspect_result):
+def _make_persistent_mock_run(monkeypatch, inspect_result, *, inspect_labels="match"):
     """Mock subprocess.run with a configurable docker inspect response.
 
-    ``inspect_result`` is either a tuple ``(returncode, stdout)`` or None.
-    None means inspect is never called (i.e. inspect would error / not exist).
+    ``inspect_result`` is either ``(returncode, status, container_id)`` or
+    ``None``. ``None`` means inspect returns "no such object" (the fresh-create
+    path). ``inspect_labels`` controls the labels embedded in the inspect
+    JSON output:
+
+      * ``"match"`` (default) — labels that match this Hermes config. To
+        keep the helper standalone, ``_compute_config_fingerprint`` is
+        patched to a constant ``"test-fp"`` so the helper can emit a
+        matching label without recomputing it.
+      * ``"missing"`` — empty labels dict (simulates a pre-existing
+        unlabeled same-name container, e.g. created outside Hermes).
+      * ``"mismatched"`` — Hermes-shaped labels but with a different
+        config fingerprint (simulates the container being from an older
+        Hermes config with different mounts / caps / user).
+      * dict — explicit label map.
+
     Returns the list of captured ``(cmd, kwargs)`` tuples.
     """
+    # Pin the fingerprint so the helper can synthesise matching labels
+    # without recomputing across every test fixture's run-args shape.
+    monkeypatch.setattr(
+        docker_env, "_compute_config_fingerprint", lambda *a, **kw: "test-fp"
+    )
+
     calls = []
 
     def _run(cmd, **kwargs):
@@ -219,16 +240,54 @@ def _make_persistent_mock_run(monkeypatch, inspect_result):
             if cmd[1] == "inspect":
                 if inspect_result is None:
                     return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="No such object")
-                rc, stdout = inspect_result
+                rc, status, container_id = inspect_result
+                # ``cmd[-1]`` is the container name (last arg to inspect).
+                # Recover the task_id-shaped suffix from that name.
+                container_name = cmd[-1]
+                suffix = container_name.split("-", 1)[1] if "-" in container_name else ""
+                labels = _resolve_labels_for_inspect_by_suffix(suffix)
+                labels_json = json.dumps(labels) if labels is not None else "null"
+                stdout = f"{status}\t{container_id}\t{labels_json}\n"
                 return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
             if cmd[1] == "start":
+                return subprocess.CompletedProcess(cmd, 0, stdout=cmd[-1] + "\n", stderr="")
+            if cmd[1] == "rm":
+                # docker rm -f for stale-container cleanup
                 return subprocess.CompletedProcess(cmd, 0, stdout=cmd[-1] + "\n", stderr="")
             if cmd[1] == "run":
                 return subprocess.CompletedProcess(cmd, 0, stdout="fresh-container-id\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
+    def _resolve_labels_for_inspect_by_suffix(suffix: str) -> dict | None:
+        if inspect_labels == "match":
+            return {
+                docker_env._HERMES_OWNER_LABEL: "true",
+                docker_env._SANDBOX_KEY_LABEL: suffix,
+                docker_env._CONFIG_FP_LABEL: "test-fp",
+            }
+        if inspect_labels == "missing":
+            return {}
+        if inspect_labels == "mismatched":
+            return {
+                docker_env._HERMES_OWNER_LABEL: "true",
+                docker_env._SANDBOX_KEY_LABEL: suffix,
+                docker_env._CONFIG_FP_LABEL: "stale-fp-from-old-config",
+            }
+        if isinstance(inspect_labels, dict):
+            return inspect_labels
+        return None
+
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
     return calls
+
+
+def _expected_sandbox_key_suffix(task_id: str) -> str:
+    """Mirror the suffix that ``DockerEnvironment`` derives from ``task_id``."""
+    import hashlib
+    from tools.environments.base import get_sandbox_dir
+
+    sandbox_key = str(get_sandbox_dir() / "docker" / task_id)
+    return hashlib.sha1(sandbox_key.encode("utf-8")).hexdigest()[:12]
 
 
 def test_persistent_container_name_is_deterministic(monkeypatch):
@@ -261,7 +320,7 @@ def test_persistent_reuses_running_container(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _make_persistent_mock_run(
         monkeypatch,
-        inspect_result=(0, "running\texisting-container-id\n"),
+        inspect_result=(0, "running", "existing-container-id"),
     )
 
     env = _make_dummy_env(persistent_filesystem=True, task_id="docker-reuse-running")
@@ -276,7 +335,7 @@ def test_persistent_restarts_stopped_container(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _make_persistent_mock_run(
         monkeypatch,
-        inspect_result=(0, "exited\tstopped-container-id\n"),
+        inspect_result=(0, "exited", "stopped-container-id"),
     )
 
     env = _make_dummy_env(persistent_filesystem=True, task_id="docker-restart-stopped")
@@ -316,7 +375,7 @@ def test_non_persistent_uses_random_name_and_skips_inspect(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _make_persistent_mock_run(
         monkeypatch,
-        inspect_result=(0, "running\tshould-not-be-used\n"),
+        inspect_result=(0, "running", "should-not-be-used"),
     )
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="docker-ephemeral")
@@ -324,6 +383,121 @@ def test_non_persistent_uses_random_name_and_skips_inspect(monkeypatch):
     cmds = [c[0] for c in calls if isinstance(c[0], list)]
     inspect_calls = [c for c in cmds if len(c) >= 2 and c[1] == "inspect"]
     assert inspect_calls == [], "non-persistent mode must not consult docker inspect"
+    assert env._container_id == "fresh-container-id"
+
+
+def test_persistent_creates_includes_identity_labels(monkeypatch):
+    """The fresh-create path must label the container with Hermes identity.
+
+    Without these labels, a later Hermes process couldn't tell whether a
+    same-name container came from us or from outside, and the reuse gate
+    in ``_try_reuse_persistent_container`` would have nothing to check.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(monkeypatch, inspect_result=None)
+
+    env = _make_dummy_env(persistent_filesystem=True, task_id="docker-labels-test")
+
+    run_calls = [c[0] for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert len(run_calls) == 1
+    run_args = run_calls[0]
+    # Each label is passed as two adjacent argv entries: "--label" then "k=v".
+    labels = {
+        run_args[i + 1].split("=", 1)[0]: run_args[i + 1].split("=", 1)[1]
+        for i in range(len(run_args) - 1)
+        if run_args[i] == "--label" and "=" in run_args[i + 1]
+    }
+    assert labels.get(docker_env._HERMES_OWNER_LABEL) == "true"
+    assert labels.get(docker_env._SANDBOX_KEY_LABEL) == env._sandbox_key_suffix
+    assert labels.get(docker_env._CONFIG_FP_LABEL) == "test-fp"
+
+
+def test_persistent_rejects_unlabeled_same_name_container(monkeypatch):
+    """A pre-existing same-name container without Hermes labels must NOT be
+    reused. Hermes-owned identity is the only signal that the container was
+    created under the current security posture — without it, a stray
+    container could be adopted with looser caps / different mounts / a
+    different user, and then receive init-time env forwarding.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(
+        monkeypatch,
+        inspect_result=(0, "running", "preexisting-foreign-container-id"),
+        inspect_labels="missing",
+    )
+
+    env = _make_dummy_env(
+        persistent_filesystem=True, task_id="docker-unlabeled-reject"
+    )
+
+    cmds = [c[0] for c in calls if isinstance(c[0], list)]
+    rm_calls = [c for c in cmds if len(c) >= 2 and c[1] == "rm"]
+    run_calls = [c for c in cmds if len(c) >= 2 and c[1] == "run"]
+    assert len(rm_calls) == 1, (
+        "unlabeled same-name container must be force-removed before recreate"
+    )
+    assert "-f" in rm_calls[0], "docker rm must use -f to clear a running stale container"
+    assert rm_calls[0][-1] == env._container_name
+    assert len(run_calls) == 1, "a fresh container must be created after the stale one is removed"
+    assert env._container_id == "fresh-container-id", (
+        "the stale container's id must NOT be adopted"
+    )
+
+
+def test_persistent_rejects_mismatched_config_fingerprint(monkeypatch):
+    """A Hermes-labeled same-name container whose config fingerprint differs
+    from the current run's config must NOT be reused. Config drift
+    (changed mounts, caps, user, network mode, security args, env config,
+    extra args) is exactly the security-relevant case the fingerprint
+    label is designed to catch.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(
+        monkeypatch,
+        inspect_result=(0, "running", "stale-config-container-id"),
+        inspect_labels="mismatched",
+    )
+
+    env = _make_dummy_env(
+        persistent_filesystem=True, task_id="docker-fingerprint-reject"
+    )
+
+    cmds = [c[0] for c in calls if isinstance(c[0], list)]
+    rm_calls = [c for c in cmds if len(c) >= 2 and c[1] == "rm"]
+    run_calls = [c for c in cmds if len(c) >= 2 and c[1] == "run"]
+    assert len(rm_calls) == 1, (
+        "mismatched-fingerprint container must be force-removed before recreate"
+    )
+    assert len(run_calls) == 1, "a fresh container must be created after the stale one is removed"
+    assert env._container_id == "fresh-container-id"
+
+
+def test_persistent_rejects_wrong_owner_label_value(monkeypatch):
+    """A same-name container with the Hermes owner-label key but an
+    unexpected value (e.g. someone manually set ``=false``) must still be
+    rejected. Label presence alone isn't trustworthy — Hermes only writes
+    the literal value ``true``.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _make_persistent_mock_run(
+        monkeypatch,
+        inspect_result=(0, "running", "wrong-owner-value-id"),
+        inspect_labels={
+            docker_env._HERMES_OWNER_LABEL: "false",
+            docker_env._SANDBOX_KEY_LABEL: _expected_sandbox_key_suffix(
+                "docker-wrong-owner"
+            ),
+            docker_env._CONFIG_FP_LABEL: "test-fp",
+        },
+    )
+
+    env = _make_dummy_env(
+        persistent_filesystem=True, task_id="docker-wrong-owner"
+    )
+
+    cmds = [c[0] for c in calls if isinstance(c[0], list)]
+    rm_calls = [c for c in cmds if len(c) >= 2 and c[1] == "rm"]
+    assert len(rm_calls) == 1, "owner-label mismatch must trigger force-remove"
     assert env._container_id == "fresh-container-id"
 
 
