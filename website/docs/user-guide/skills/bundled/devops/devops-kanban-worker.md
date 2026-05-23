@@ -39,7 +39,7 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
 ## Tenant isolation
 
@@ -47,6 +47,12 @@ If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading
 
 - Good: `business-a: Acme is our biggest customer`
 - Bad (leaks): `Acme is our biggest customer`
+
+## Source-file reads
+
+Treat a truncated `read_file` result as incomplete source, never as a whole file. In a Kanban worker, if the default 500-line read trips the truncation guard, re-read with an explicit `limit` that covers the whole file when possible, or page through with `offset`/`limit` before editing.
+
+Do not `write_file` or commit content reconstructed from a truncated page. Use `patch` for targeted edits, and if you cannot establish the full file state safely, `kanban_block` with the exact file and range you could not verify.
 
 ## Good summary + metadata shapes
 
@@ -174,6 +180,13 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "spawn_failed"` + `error: "..."` — usually a profile config issue (missing credential, bad PATH). Ask the human via `kanban_block` instead of retrying blindly.
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
+
+## Notification routing
+
+You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
+- `notification_sources: ['*']` accepts subscriptions from all profiles.
+- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
+- Omitting the key keeps the default behavior (profile isolation).
 
 ## Do NOT
 

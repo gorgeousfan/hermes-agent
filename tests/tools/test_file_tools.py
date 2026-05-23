@@ -59,6 +59,54 @@ class TestReadFileHandler:
         mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 1)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_kanban_default_truncated_read_returns_guard_error(self, mock_get, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_kanban")
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "1|line\n"
+        result_obj.to_dict.return_value = {
+            "content": "1|line\n",
+            "total_lines": 876,
+            "truncated": True,
+            "hint": "Use offset=501 to continue reading",
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file
+        result = json.loads(_handle_read_file({"path": "/tmp/big.txt"}, task_id="t_kanban"))
+
+        assert "error" in result
+        assert "Kanban worker safety" in result["error"]
+        assert result["truncated"] is True
+        assert result["content_returned"] is False
+        assert "content" not in result
+        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 500)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_kanban_explicit_truncated_read_still_returns_page(self, mock_get, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_kanban")
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "1|line\n"
+        result_obj.to_dict.return_value = {
+            "content": "1|line\n",
+            "total_lines": 876,
+            "truncated": True,
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file
+        result = json.loads(
+            _handle_read_file({"path": "/tmp/big.txt", "limit": 500}, task_id="t_kanban")
+        )
+
+        assert "error" not in result
+        assert result["content"] == "1|line\n"
+        assert result["truncated"] is True
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
