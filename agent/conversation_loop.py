@@ -2457,15 +2457,24 @@ def run_conversation(
                     FailoverReason.model_not_found,   # model/endpoint doesn't exist there
                 }
                 if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-                    # Don't eagerly fallback if credential pool rotation may
-                    # still recover.  See _pool_may_recover_from_rate_limit
+                    # For non-rate-limit errors (timeout, auth, model_not_found),
+                    # pool rotation won't help — skip straight to fallback.
+                    # For rate-limit errors, check if credential pool rotation
+                    # may still recover. See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
-                    # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
-                    )
+                    # exceptions. Fixes #11314 and #13636.
+                    if classified.reason == FailoverReason.timeout:
+                        pool_may_recover = False
+                    elif classified.reason == FailoverReason.auth:
+                        pool_may_recover = False
+                    elif classified.reason == FailoverReason.model_not_found:
+                        pool_may_recover = False
+                    else:
+                        pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                            provider=agent.provider,
+                            base_url=getattr(agent, "base_url", None),
+                        )
                     if not pool_may_recover:
                         if classified.reason == FailoverReason.rate_limit:
                             agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
