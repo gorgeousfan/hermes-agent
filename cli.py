@@ -2334,6 +2334,24 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     return not pasted_text.strip()
 
 
+def _is_ephemeral_tool_error(msg: dict) -> bool:
+    """Detect tool error messages that should not be replayed to the LLM.
+
+    Matches on both the explicit ``_is_error`` flag (new sessions, set by
+    tool_executor.py) and content-based patterns (pre-#27033 sessions).
+    """
+    if msg.get("_is_error"):
+        return True
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    return (
+        content.startswith("Error executing tool ")
+        or content.startswith("[Tool execution cancelled")
+        or content.startswith("[Tool execution skipped")
+    )
+
+
 def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
     """Strip leaked bracketed-paste wrapper markers from user-visible text.
 
@@ -4777,7 +4795,7 @@ class HermesCLI:
                     session_meta = resolved_meta
             restored = self._session_db.get_messages_as_conversation(self.session_id)
             if restored:
-                restored = [m for m in restored if m.get("role") != "session_meta"]
+                restored = [m for m in restored if m.get("role") != "session_meta" and not _is_ephemeral_tool_error(m)]
                 self.conversation_history = restored
                 msg_count = len([m for m in restored if m.get("role") == "user"])
                 title_part = ""
@@ -5043,7 +5061,7 @@ class HermesCLI:
 
         restored = self._session_db.get_messages_as_conversation(self.session_id)
         if restored:
-            restored = [m for m in restored if m.get("role") != "session_meta"]
+            restored = [m for m in restored if m.get("role") != "session_meta" and not _is_ephemeral_tool_error(m)]
             self.conversation_history = restored
             msg_count = len([m for m in restored if m.get("role") == "user"])
             title_part = ""

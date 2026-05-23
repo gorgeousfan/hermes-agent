@@ -414,6 +414,29 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
 )
 
 
+def _looks_like_stale_tool_error(msg: Dict[str, Any]) -> bool:
+    """Detect tool error messages that must NOT be replayed to the LLM.
+
+    Two detection methods:
+    1. Explicit ``_is_error`` flag (new sessions, set by tool_executor.py)
+    2. Content-based fallback for pre-fix sessions where error tool
+       messages were persisted verbatim (#27033).
+
+    Returns True when the message should be silently dropped from
+    the replayed conversation history.
+    """
+    if msg.get("_is_error"):
+        return True
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+    return (
+        content.startswith("Error executing tool ")
+        or content.startswith("[Tool execution cancelled")
+        or content.startswith("[Tool execution skipped")
+    )
+
+
 def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving the
     assistant fields the agent's API builders rely on for multi-turn fidelity.
@@ -16489,6 +16512,11 @@ class GatewayRunner:
                 is_tool_message = role == "tool"
                 
                 if has_tool_calls or has_tool_call_id or is_tool_message:
+                    # Skip ephemeral error tool messages (#27033). New sessions
+                    # tag these with _is_error; old sessions need content-based
+                    # detection for backwards compatibility.
+                    if is_tool_message and _looks_like_stale_tool_error(msg):
+                        continue
                     clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
                     agent_history.append(clean_msg)
                 else:
