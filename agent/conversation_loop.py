@@ -3433,6 +3433,10 @@ def run_conversation(
                     agent._emit_status(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
+                    # Emit the halt explanation to the client stream so
+                    # SSE/TUI consumers see a final assistant message
+                    # instead of a silent stream close.  (#30770)
+                    agent._fire_stream_delta(final_response)
                     messages.append({"role": "assistant", "content": final_response})
                     break
 
