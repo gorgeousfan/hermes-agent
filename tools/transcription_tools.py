@@ -2,14 +2,14 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with seven providers:
+Provides speech-to-text transcription with several providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
-  - **deepgram** — Deepgram Nova STT API, requires ``DEEPGRAM_API_KEY``.
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
+  - **deepgram** — Deepgram Speech-to-Text API, requires ``DEEPGRAM_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
 
@@ -745,15 +745,20 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _deepgram_bool(value: Any) -> str:
-    return "true" if is_truthy_value(value, default=True) else "false"
+def _deepgram_bool(value: Any, default: bool = True) -> str:
+    return "true" if is_truthy_value(value, default=default) else "false"
 
 
 def _extract_deepgram_transcript(payload: Dict[str, Any]) -> str:
     try:
         channels = payload.get("results", {}).get("channels", [])
         alternatives = channels[0].get("alternatives", []) if channels else []
-        transcript = alternatives[0].get("transcript", "") if alternatives else ""
+        alt0 = alternatives[0] if alternatives else {}
+        paragraphs = alt0.get("paragraphs") or {}
+        paragraph_text = paragraphs.get("transcript")
+        if isinstance(paragraph_text, str) and paragraph_text.strip():
+            return paragraph_text.strip()
+        transcript = alt0.get("transcript", "")
         return str(transcript).strip()
     except (AttributeError, IndexError, TypeError):
         return ""
@@ -785,8 +790,12 @@ def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
     language = str(deepgram_cfg.get("language") or "").strip()
     if language:
         params["language"] = language
-    if "diarize" in deepgram_cfg:
-        params["diarize"] = _deepgram_bool(deepgram_cfg.get("diarize"))
+    for optional_bool in ("diarize", "paragraphs", "utterances", "numerals", "dictation", "detect_language"):
+        if optional_bool in deepgram_cfg:
+            params[optional_bool] = _deepgram_bool(
+                deepgram_cfg.get(optional_bool),
+                default=False,
+            )
 
     timeout = deepgram_cfg.get("timeout", 120)
     try:
@@ -809,9 +818,22 @@ def _transcribe_deepgram(file_path: str, model_name: str) -> Dict[str, Any]:
                 data=audio_file,
                 timeout=timeout,
             )
+        status_code = getattr(response, "status_code", 200)
+        if isinstance(status_code, int) and status_code != 200:
+            detail = response.text[:500]
+            try:
+                err_body = response.json()
+                detail = err_body.get("err_msg") or err_body.get("message") or detail
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Deepgram STT API error (HTTP {status_code}): {detail}",
+            }
         response.raise_for_status()
-        payload = response.json()
-        transcript_text = _extract_deepgram_transcript(payload)
+
+        transcript_text = _extract_deepgram_transcript(response.json())
         if not transcript_text:
             return {
                 "success": False,
