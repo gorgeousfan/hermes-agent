@@ -46,7 +46,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "avian",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
@@ -358,6 +358,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
+    "api.avian.io": "avian",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     # GitHub Models free tier (Azure-hosted prototyping endpoint) — same
