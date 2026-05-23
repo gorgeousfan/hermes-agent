@@ -954,6 +954,31 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
 
+class _WalSafeConnection(sqlite3.Connection):
+    """Connection subclass that checkpoints WAL before close to release
+    WAL file descriptors immediately.
+
+    Long-running processes (gateway kanban dispatcher, notifier) open a
+    new kanban connection every tick.  In WAL mode SQLite defers cleanup
+    of WAL/shm file descriptors, causing a slow FD leak that eventually
+    hits the process limit and triggers cascading failures (``too many
+    open files``, ``unable to open database file``).
+
+    Calling ``PRAGMA wal_checkpoint(TRUNCATE)`` before each close forces
+    SQLite to consolidate the WAL and release its file descriptors so
+    the FD count stays flat.  See issue #30799.
+    """
+
+    def close(self) -> None:
+        try:
+            self.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.ProgrammingError:
+            pass  # already closed
+        except sqlite3.OperationalError:
+            pass  # network FS / detached -- close without checkpoint
+        super().close()
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -1035,7 +1060,12 @@ def connect(
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_sqlite_header(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        factory=_WalSafeConnection,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
