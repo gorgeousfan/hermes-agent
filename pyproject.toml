@@ -89,6 +89,7 @@ messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", 
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.3"]
 matrix = ["mautrix[encryption]==0.21.0", "Markdown==3.10.2", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+zulip = ["zulip==0.9.0"]
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
@@ -196,6 +197,9 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
+  "hermes-agent[tts-premium]",
+  "hermes-agent[slack]",
+  "hermes-agent[zulip]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
