@@ -16955,24 +16955,19 @@ class GatewayRunner:
             # the compressed transcript, not the stale pre-compression one.
             agent = agent_holder[0]
             _session_was_split = False
-            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
+            agent_session_id = getattr(agent, "session_id", None) if agent else None
+            if agent and session_key and agent_session_id and agent_session_id != session_id:
                 _session_was_split = True
                 logger.info(
                     "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
+                    session_id, agent_session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
 
-                # If this is a Telegram DM and source.thread_id was lost during
-                # the session split (synthetic / recovered event), restore it
-                # from the binding so _thread_metadata_for_source produces the
-                # correct message_thread_id instead of routing to the General
-                # thread.  Failure here is non-fatal — we log and continue;
-                # worst case the message lands in General, which is the
-                # pre-fix behaviour.
+                # If Telegram delivered this topic-mode DM without the lane
+                # thread_id, recover it from the old session binding before
+                # rotating the binding to the compressed child. Looking up by
+                # the child session cannot work yet: the binding is precisely
+                # what we are about to update.
                 if (
                     getattr(source, "platform", None) == Platform.TELEGRAM
                     and getattr(source, "chat_type", None) == "dm"
@@ -16981,21 +16976,31 @@ class GatewayRunner:
                 ):
                     try:
                         _binding = self._session_db.get_telegram_topic_binding_by_session(
-                            session_id=agent.session_id,
+                            session_id=session_id,
                         )
                         if _binding and _binding.get("thread_id"):
                             source.thread_id = str(_binding["thread_id"])
                             logger.debug(
-                                "Restored source.thread_id=%s from binding after session split %s → %s",
+                                "Restored source.thread_id=%s from old binding before session split sync %s → %s",
                                 source.thread_id,
                                 session_id,
-                                agent.session_id,
+                                agent_session_id,
                             )
                     except Exception:
                         logger.debug(
-                            "Failed to restore thread_id from binding after session split",
+                            "Failed to restore thread_id from old binding before session split sync",
                             exc_info=True,
                         )
+
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent_session_id
+                    self.session_store._save()
+                    self._sync_telegram_topic_binding(
+                        source,
+                        entry,
+                        reason="agent-compression",
+                    )
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 
