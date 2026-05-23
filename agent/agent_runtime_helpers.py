@@ -998,6 +998,9 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+        # Clean up health check state so a subsequent failover cycle starts fresh
+        agent._primary_healthy = False
+        agent._primary_health_check_thread = None
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
@@ -1576,6 +1579,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Reset fallback state ──
     agent._fallback_activated = False
     agent._fallback_index = 0
+    agent._primary_healthy = False
+    agent._primary_health_check_thread = None
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary
