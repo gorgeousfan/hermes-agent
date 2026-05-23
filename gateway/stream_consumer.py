@@ -162,6 +162,7 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        self._draft_finalized = False
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -220,6 +221,7 @@ class GatewayStreamConsumer:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
         self._message_id = None
+        self._draft_finalized = False
         self._message_created_ts = None
         self._accumulated = ""
         self._last_sent_text = ""
@@ -386,6 +388,12 @@ class GatewayStreamConsumer:
                 "Stream consumer using native-draft transport (chat=%s draft_id=%s)",
                 self.chat_id, self._draft_id,
             )
+            stream_limit = getattr(self.adapter, "STREAM_MESSAGE_MAX_BYTES", None)
+            if stream_limit:
+                _safe_limit = max(_safe_limit, int(stream_limit) - _len_fn(self.cfg.cursor) - 100)
+
+            # Emit empty frame to trigger WeCom typing indicator animation
+            await self._send_draft_frame("")
 
         try:
             while True:
@@ -517,6 +525,9 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    if self._draft_finalized:
+                        self._final_response_sent = True
+                        return
                     # Record that the final content reached the user even
                     # if the cosmetic final edit below fails.
                     if current_update_visible and self._accumulated:
@@ -874,7 +885,7 @@ class GatewayStreamConsumer:
             return False
         return True
 
-    async def _send_draft_frame(self, text: str) -> bool:
+    async def _send_draft_frame(self, text: str, **kwargs) -> bool:
         """Emit a single animated draft frame for the current accumulated text.
 
         Returns True when the frame landed.  On any failure, permanently
@@ -894,6 +905,7 @@ class GatewayStreamConsumer:
                 draft_id=self._draft_id,
                 content=text,
                 metadata=self.metadata,
+                **kwargs,
             )
         except Exception as e:
             logger.debug(
@@ -973,6 +985,8 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return False
+        if self._use_draft_streaming:
+            return await self._send_draft_frame(text)
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -1122,16 +1136,22 @@ class GatewayStreamConsumer:
         #     that one — staying on edit-based for that segment is correct).
         if (
             self._use_draft_streaming
-            and not finalize
             and self._message_id is None
         ):
-            # No-op skip: identical to the last frame we sent.
-            if text == self._last_sent_text:
-                return True
-            ok = await self._send_draft_frame(text)
-            if ok:
-                # Drafts mark "we put something on screen" but DO NOT set
-                # _already_sent — that flag gates the gateway's fallback
+            can_finalize = getattr(self.adapter, "CAN_FINALIZE_DRAFT", False)
+            if finalize and not can_finalize:
+                pass
+            else:
+                # No-op skip: identical to the last frame we sent.
+                if text == self._last_sent_text and not finalize:
+                    return True
+                extra = {"finish": True} if finalize else {}
+                ok = await self._send_draft_frame(text, **extra)
+                if ok and finalize:
+                    self._draft_finalized = True
+                if ok:
+                    # Drafts mark...
+                    return True
                 # final-send path and we still need that to fire so the
                 # user gets a real message (drafts have no message_id).
                 return True
