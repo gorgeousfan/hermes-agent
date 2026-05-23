@@ -309,6 +309,33 @@ def codex_account_id_for_entry(entry: Any) -> Optional[str]:
     return _codex_account_id_from_token(str(getattr(entry, "access_token", "") or ""))
 
 
+def _codex_quota_identity_from_token(access_token: str) -> Optional[str]:
+    """Return the stable Codex quota identity encoded in an access token.
+
+    ``chatgpt_account_id`` identifies the ChatGPT workspace/account, not always
+    the user-level usage bucket. Team/workspace members can share that account
+    id while having separate Codex usage windows, so include JWT ``sub`` when
+    available. Exact duplicates still collapse to one identity.
+    """
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    account_id = None
+    if isinstance(auth_claims, dict):
+        raw_account_id = auth_claims.get("chatgpt_account_id")
+        if isinstance(raw_account_id, str) and raw_account_id.strip():
+            account_id = raw_account_id.strip()
+    raw_subject = claims.get("sub")
+    subject = raw_subject.strip() if isinstance(raw_subject, str) and raw_subject.strip() else None
+    if account_id and subject:
+        return f"{account_id}:{subject}"
+    return account_id or (f"sub:{subject}" if subject else None)
+
+
+def codex_quota_identity_for_entry(entry: Any) -> Optional[str]:
+    """Return the non-secret Codex quota identity for duplicate detection."""
+    return _codex_quota_identity_from_token(str(getattr(entry, "access_token", "") or ""))
+
+
 def _fetch_codex_entry_usage_status(entry: PooledCredential) -> Optional[_CodexUsageStatus]:
     access_token = str(entry.access_token or "").strip()
     if not access_token:
@@ -592,12 +619,12 @@ class CredentialPool:
                 self._entries[idx] = new
                 return
 
-    def _codex_account_entries(self, account_id: Optional[str]) -> List[PooledCredential]:
-        if self.provider != "openai-codex" or not account_id:
+    def _codex_quota_identity_entries(self, identity: Optional[str]) -> List[PooledCredential]:
+        if self.provider != "openai-codex" or not identity:
             return []
         return [
             entry for entry in self._entries
-            if codex_account_id_for_entry(entry) == account_id
+            if codex_quota_identity_for_entry(entry) == identity
         ]
 
     def _propagate_codex_usage_limit_exhaustion(self) -> int:
@@ -605,13 +632,13 @@ class CredentialPool:
             return 0
 
         changed = 0
-        seen_accounts: Set[str] = set()
+        seen_identities: Set[str] = set()
         for entry in list(self._entries):
-            account_id = codex_account_id_for_entry(entry)
-            if not account_id or account_id in seen_accounts:
+            identity = codex_quota_identity_for_entry(entry)
+            if not identity or identity in seen_identities:
                 continue
-            seen_accounts.add(account_id)
-            account_entries = self._codex_account_entries(account_id)
+            seen_identities.add(identity)
+            account_entries = self._codex_quota_identity_entries(identity)
             sources = [
                 candidate for candidate in account_entries
                 if (
@@ -671,8 +698,8 @@ class CredentialPool:
                 normalized_error.get("message"),
             )
         ):
-            account_id = codex_account_id_for_entry(updated)
-            for candidate in self._codex_account_entries(account_id):
+            identity = codex_quota_identity_for_entry(updated)
+            for candidate in self._codex_quota_identity_entries(identity):
                 if candidate.id == updated.id:
                     continue
                 duplicate = replace(
@@ -1572,16 +1599,16 @@ class CredentialPool:
         changed = 0
         now = time.time()
         changed += self._propagate_codex_usage_limit_exhaustion()
-        handled_accounts: Set[str] = set()
+        handled_identities: Set[str] = set()
         handled_entry_ids: Set[str] = set()
         for original_entry in list(self._entries):
             entry = self._entry_by_id(original_entry.id) or original_entry
-            account_id = codex_account_id_for_entry(entry)
-            if account_id:
-                if account_id in handled_accounts:
+            identity = codex_quota_identity_for_entry(entry)
+            if identity:
+                if identity in handled_identities:
                     continue
-                handled_accounts.add(account_id)
-                account_entries = self._codex_account_entries(account_id)
+                handled_identities.add(identity)
+                account_entries = self._codex_quota_identity_entries(identity)
             else:
                 if entry.id in handled_entry_ids:
                     continue
@@ -1623,8 +1650,8 @@ class CredentialPool:
                 if refreshed is None:
                     continue
                 entry = refreshed
-                account_id = codex_account_id_for_entry(entry)
-                account_entries = self._codex_account_entries(account_id) if account_id else [entry]
+                identity = codex_quota_identity_for_entry(entry)
+                account_entries = self._codex_quota_identity_entries(identity) if identity else [entry]
             status = _fetch_codex_entry_usage_status(entry)
             if status is None:
                 continue

@@ -426,7 +426,7 @@ def test_codex_duplicate_account_entries_are_exhausted_together(tmp_path, monkey
                         "auth_type": "oauth",
                         "priority": 1,
                         "source": "manual:device_code",
-                        "access_token": _codex_jwt("acct-shared", "two"),
+                        "access_token": _codex_jwt("acct-shared", "one"),
                         "refresh_token": "refresh-2",
                     },
                 ]
@@ -457,6 +457,62 @@ def test_codex_duplicate_account_entries_are_exhausted_together(tmp_path, monkey
     assert entries["cred-2"].last_status == STATUS_EXHAUSTED
     assert entries["cred-2"].last_error_reason == "usage_limit_reached"
     assert entries["cred-2"].last_error_reset_at == reset_at
+
+
+def test_codex_same_workspace_different_subjects_do_not_share_exhaustion(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    reset_at = time.time() + 3600
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "workspace-user-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": _codex_jwt("acct-shared", "user-a"),
+                        "refresh_token": "refresh-1",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "workspace-user-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": _codex_jwt("acct-shared", "user-b"),
+                        "refresh_token": "refresh-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.id == "cred-1"
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={
+            "reason": "usage_limit_reached",
+            "message": "The usage limit has been reached",
+            "reset_at": reset_at,
+        },
+        credential_id="cred-1",
+    )
+
+    assert next_entry is not None
+    assert next_entry.id == "cred-2"
+    entries = {entry.id: entry for entry in pool.entries()}
+    assert entries["cred-1"].last_status == STATUS_EXHAUSTED
+    assert entries["cred-2"].last_status != STATUS_EXHAUSTED
 
 
 def test_codex_duplicate_account_entries_are_cleared_together(tmp_path, monkeypatch):
@@ -491,7 +547,7 @@ def test_codex_duplicate_account_entries_are_cleared_together(tmp_path, monkeypa
                         "auth_type": "oauth",
                         "priority": 1,
                         "source": "manual:device_code",
-                        "access_token": _codex_jwt("acct-shared", "two"),
+                        "access_token": _codex_jwt("acct-shared", "one"),
                         "refresh_token": "refresh-2",
                         "last_status": "exhausted",
                         "last_status_at": stale_status_at,
@@ -526,6 +582,73 @@ def test_codex_duplicate_account_entries_are_cleared_together(tmp_path, monkeypa
         "cred-2": "ok",
     }
     assert all(entry.last_error_reset_at is None for entry in pool.entries())
+
+
+def test_codex_same_workspace_different_subjects_reconcile_independently(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_CODEX_USAGE_LIMIT_RECONCILE_GRACE_SECONDS", "300")
+    stale_status_at = time.time() - 600
+    future_reset = time.time() + 3600
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "workspace-user-a",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": _codex_jwt("acct-shared", "user-a"),
+                        "refresh_token": "refresh-1",
+                        "last_status": "exhausted",
+                        "last_status_at": stale_status_at,
+                        "last_error_code": 429,
+                        "last_error_reason": "usage_limit_reached",
+                        "last_error_message": "The usage limit has been reached",
+                        "last_error_reset_at": future_reset,
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "workspace-user-b",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": _codex_jwt("acct-shared", "user-b"),
+                        "refresh_token": "refresh-2",
+                        "last_status": "exhausted",
+                        "last_status_at": stale_status_at,
+                        "last_error_code": 429,
+                        "last_error_reason": "usage_limit_reached",
+                        "last_error_message": "The usage limit has been reached",
+                        "last_error_reset_at": future_reset,
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import STATUS_EXHAUSTED, _CodexUsageStatus, load_pool
+
+    probes = []
+
+    def fake_usage_status(entry):
+        probes.append(entry.id)
+        return _CodexUsageStatus(available=entry.id == "cred-2")
+
+    monkeypatch.setattr("agent.credential_pool._fetch_codex_entry_usage_status", fake_usage_status)
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+
+    assert selected is not None
+    assert selected.id == "cred-2"
+    assert probes == ["cred-1", "cred-2"]
+    entries = {entry.id: entry for entry in pool.entries()}
+    assert entries["cred-1"].last_status == STATUS_EXHAUSTED
+    assert entries["cred-2"].last_status == "ok"
 
 
 def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):

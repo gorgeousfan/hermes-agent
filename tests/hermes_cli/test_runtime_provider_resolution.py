@@ -85,12 +85,12 @@ def test_resolve_runtime_provider_pool_exhausted_raises_pool_error(monkeypatch):
     assert "No Codex credentials stored" not in str(err)
 
 
-def test_credential_pool_exhausted_error_mentions_unique_codex_accounts():
+def test_credential_pool_exhausted_error_mentions_unique_codex_quota_identities():
     class _Entry:
-        def __init__(self, idx, label, account_id):
+        def __init__(self, idx, label, account_id, sub):
             self.id = f"acct{idx}"
             self.label = label
-            self.access_token = _jwt_with_chatgpt_account(account_id, f"user-{idx}")
+            self.access_token = _jwt_with_chatgpt_account(account_id, sub)
             self.last_error_code = 429
             self.last_error_reason = "usage_limit_reached"
             self.last_error_message = "The usage limit has been reached."
@@ -100,15 +100,15 @@ def test_credential_pool_exhausted_error_mentions_unique_codex_accounts():
     class _Pool:
         def entries(self):
             return [
-                _Entry(1, "primary-a", "chatgpt-a"),
-                _Entry(2, "primary-b", "chatgpt-a"),
-                _Entry(3, "secondary", "chatgpt-b"),
+                _Entry(1, "primary-a", "chatgpt-a", "user-a"),
+                _Entry(2, "primary-b", "chatgpt-a", "user-a"),
+                _Entry(3, "secondary", "chatgpt-b", "user-b"),
             ]
 
     err = rp._credential_pool_exhausted_error("openai-codex", _Pool())
 
-    assert "2 unique ChatGPT accounts across 3 entries" in str(err)
-    assert "duplicate account entries share quota" in str(err)
+    assert "2 unique Codex quota identities across 3 entries" in str(err)
+    assert "duplicate entries share quota" in str(err)
 
 
 def test_resolve_runtime_provider_auto_pool_exhausted_skips_singleton(monkeypatch):
