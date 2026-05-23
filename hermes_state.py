@@ -56,6 +56,19 @@ _WAL_INCOMPAT_MARKERS = (
     "not authorized",         # Some FUSE mounts block WAL pragma outright
     "disk i/o error",         # Flaky network FS during WAL setup
 )
+_SQLITE_TRANSIENT_BUSY_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database is busy",
+    "database schema is locked",
+)
+_WAL_SETUP_TRANSIENT_IO_MARKERS = (
+    *_SQLITE_TRANSIENT_BUSY_MARKERS,
+    "disk i/o error",
+)
+STATE_DB_BUSY_TIMEOUT_MS = 30_000
+_WAL_SETUP_MAX_ATTEMPTS = 3
+_WAL_SETUP_RETRY_DELAY_S = 1.0
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
@@ -148,17 +161,30 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
     """
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        return "wal"
-    except sqlite3.OperationalError as exc:
-        msg = str(exc).lower()
-        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
-            raise
-        _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        return "delete"
+    last_exc: Optional[sqlite3.OperationalError] = None
+    for attempt in range(_WAL_SETUP_MAX_ATTEMPTS):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return "wal"
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            is_transient = any(
+                marker in msg for marker in _WAL_SETUP_TRANSIENT_IO_MARKERS
+            )
+            if is_transient and attempt < _WAL_SETUP_MAX_ATTEMPTS - 1:
+                time.sleep(_WAL_SETUP_RETRY_DELAY_S)
+                continue
+            if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+                # Unrelated OperationalError — don't silently swallow.
+                raise
+            _log_wal_fallback_once(db_label, exc)
+            conn.execute("PRAGMA journal_mode=DELETE")
+            return "delete"
+
+    if last_exc is not None:
+        raise last_exc
+    raise sqlite3.OperationalError("failed to initialize WAL journal mode")
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
@@ -317,13 +343,10 @@ class SessionDB:
 
     # ── Write-contention tuning ──
     # With multiple hermes processes (gateway + CLI sessions + worktree agents)
-    # all sharing one state.db, WAL write-lock contention causes visible TUI
-    # freezes.  SQLite's built-in busy handler uses a deterministic sleep
-    # schedule that causes convoy effects under high concurrency.
-    #
-    # Instead, we keep the SQLite timeout short (1s) and handle retries at the
-    # application level with random jitter, which naturally staggers competing
-    # writers and avoids the convoy.
+    # all sharing one state.db, WAL write-lock contention can briefly block
+    # writes.  SQLite's busy handler covers ordinary waits; if it still returns
+    # a busy/locked error, application-level retry with random jitter staggers
+    # competing writers and avoids convoy effects.
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
@@ -340,10 +363,7 @@ class SessionDB:
             self._conn = sqlite3.connect(
                 str(self.db_path),
                 check_same_thread=False,
-                # Short timeout — application-level retry with random jitter
-                # handles contention instead of sitting in SQLite's internal
-                # busy handler for up to 30s.
-                timeout=1.0,
+                timeout=STATE_DB_BUSY_TIMEOUT_MS / 1000,
                 # Autocommit mode: Python's default isolation_level=""
                 # auto-starts transactions on DML, which conflicts with our
                 # explicit BEGIN IMMEDIATE.  None = we manage transactions
@@ -351,6 +371,7 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
+            self._conn.execute(f"PRAGMA busy_timeout={STATE_DB_BUSY_TIMEOUT_MS}")
             apply_wal_with_fallback(self._conn, db_label="state.db")
             self._conn.execute("PRAGMA foreign_keys=ON")
 
@@ -3270,4 +3291,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

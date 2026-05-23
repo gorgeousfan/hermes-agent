@@ -4,7 +4,7 @@ import time
 import pytest
 from pathlib import Path
 
-from hermes_state import SessionDB
+from hermes_state import STATE_DB_BUSY_TIMEOUT_MS, SessionDB
 
 
 @pytest.fixture()
@@ -2618,13 +2618,9 @@ class TestConcurrentWriteSafety:
 
     def test_sqlite_timeout_is_at_least_30s(self, db):
         """Connection timeout should be >= 30s to survive CLI/gateway contention."""
-        # Access the underlying connection timeout via sqlite3 introspection.
-        # There is no public API, so we check the kwarg via the module default.
-        import sqlite3
-        import inspect
-        from hermes_state import SessionDB as _SessionDB
-        src = inspect.getsource(_SessionDB.__init__)
-        assert "30" in src, (
+        row = db._conn.execute("PRAGMA busy_timeout").fetchone()
+        assert row[0] >= STATE_DB_BUSY_TIMEOUT_MS
+        assert STATE_DB_BUSY_TIMEOUT_MS >= 30_000, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
 
@@ -2998,4 +2994,3 @@ class TestFTS5ToolCallMigration:
             assert version == SCHEMA_VERSION
         finally:
             session_db.close()
-
