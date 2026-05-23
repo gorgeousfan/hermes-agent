@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from tools.cronjob_tools import (
+    CRONJOB_SCHEMA,
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -221,6 +222,46 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["name"] == "New Name"
         assert updated["job"]["schedule"] == "every 120m"
+
+    def test_reasoning_effort_create_update_clear_and_schema(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Check", schedule="every 1h", reasoning_effort="low")
+        )
+        assert created["success"] is True
+        assert created["job"]["reasoning_effort"] == "low"
+        job_id = created["job_id"]
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, reasoning_effort="high"))
+        assert updated["success"] is True
+        assert updated["job"]["reasoning_effort"] == "high"
+
+        preserved = json.loads(cronjob(action="update", job_id=job_id, name="renamed"))
+        assert preserved["success"] is True
+        assert preserved["job"]["reasoning_effort"] == "high"
+
+        none_override = json.loads(cronjob(action="update", job_id=job_id, reasoning_effort="none"))
+        assert none_override["success"] is True
+        assert none_override["job"]["reasoning_effort"] == "none"
+
+        cleared = json.loads(cronjob(action="update", job_id=job_id, reasoning_effort=""))
+        assert cleared["success"] is True
+        assert "reasoning_effort" not in cleared["job"]
+
+        enum_values = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]["enum"]
+        assert enum_values == ["", "none", "minimal", "low", "medium", "high", "xhigh"]
+
+    def test_invalid_reasoning_effort_fails_without_writing(self):
+        created = json.loads(
+            cronjob(action="create", prompt="Check", schedule="every 1h", reasoning_effort="turbo")
+        )
+        assert created["success"] is False
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["count"] == 0
+
+        good = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        updated = json.loads(cronjob(action="update", job_id=good["job_id"], reasoning_effort="turbo"))
+        assert updated["success"] is False
 
     def test_update_runtime_overrides_can_set_and_clear(self):
         created = json.loads(

@@ -11287,6 +11287,11 @@ def main():
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
     )
+    cron_create.add_argument(
+        "--reasoning-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        help="Optional per-job reasoning effort override. Omit to use global agent.reasoning_effort; 'none' explicitly disables reasoning for this job.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -11354,6 +11359,16 @@ def main():
     cron_edit.add_argument(
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--reasoning-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        help="Optional per-job reasoning effort override. Use 'none' to explicitly disable reasoning for this job.",
+    )
+    cron_edit.add_argument(
+        "--clear-reasoning-effort",
+        action="store_true",
+        help="Clear the per-job reasoning override and restore global agent.reasoning_effort fallback.",
     )
 
     # lifecycle actions

@@ -1442,10 +1442,19 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
+        # Reasoning config: per-job override falls back to config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        global_effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        job_effort = str(job.get("reasoning_effort") or "").strip()
+        effort = job_effort or global_effort
         reasoning_config = parse_reasoning_effort(effort)
+        if job_effort and reasoning_config is None:
+            logger.warning(
+                "Job '%s': invalid reasoning_effort %r; falling back to global agent.reasoning_effort",
+                job_id,
+                job_effort,
+            )
+            reasoning_config = parse_reasoning_effort(global_effort)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None
