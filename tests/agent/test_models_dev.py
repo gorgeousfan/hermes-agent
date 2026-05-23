@@ -520,6 +520,37 @@ class TestGetModelCapabilities:
         assert caps.supports_vision is True
         assert caps.supports_multimodal_tool_results is False
 
+    def test_model_level_multimodal_tool_results_overrides_provider_default(self):
+        """Model-level supports_multimodal_tool_results must override the provider default."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:1234/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    supports_multimodal_tool_results: true\n"
+            "    context_length: 65536\n"
+            "    models:\n"
+            "      qwen36-27b-vision:\n"
+            "        supports_multimodal_tool_results: false\n"
+            "      qwen36-35b-vision:\n"
+            "        context_length: 131072\n"
+        )
+
+        # Model with explicit override to false — must win over provider true
+        caps_disabled = get_model_capabilities("custom:qwen-local", "qwen36-27b-vision")
+        assert caps_disabled is not None
+        assert caps_disabled.supports_multimodal_tool_results is False
+
+        # Model without explicit override — must inherit provider true
+        caps_inherited = get_model_capabilities("custom:qwen-local", "qwen36-35b-vision")
+        assert caps_inherited is not None
+        assert caps_inherited.supports_multimodal_tool_results is True
+
     def test_custom_provider_context_lookup_uses_config_context_length(self):
         """Context lookup should use custom provider config before models.dev fallback."""
         from hermes_constants import get_hermes_home
