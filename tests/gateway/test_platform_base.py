@@ -360,10 +360,19 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    def test_markdown_file_extraction(self):
+        """Regression: .md files delivered via MEDIA: tag must be extracted."""
+        content = "Here is your document:\nMEDIA:/tmp/report.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/report.md", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is your document" in cleaned
 
-# ---------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
 # should_send_media_as_audio
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
 
 class TestShouldSendMediaAsAudio:
     """Audio-routing policy shared by gateway + scheduler + send_message."""
