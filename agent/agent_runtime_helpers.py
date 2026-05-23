@@ -1013,12 +1013,14 @@ def restore_primary_runtime(agent) -> bool:
 
 # Which error types indicate a transient transport failure worth
 # one more attempt with a rebuilt client / connection pool.
+# APITimeoutError is included here because rebuilding the client (which
+# clears stale connection pools) can resolve timeouts caused by
+# hung sockets.  Fallback to the backup provider happens separately
+# and immediately — this recovery path runs in parallel.
 _TRANSIENT_TRANSPORT_ERRORS = frozenset({
     "ReadTimeout", "ConnectTimeout", "PoolTimeout",
     "ConnectError", "RemoteProtocolError",
-    "APIConnectionError",
-    # APITimeoutError excluded — server not responding is a real outage,
-    # not a stale connection. Don't waste time rebuilding the client.
+    "APIConnectionError", "APITimeoutError",
 })
 
 
