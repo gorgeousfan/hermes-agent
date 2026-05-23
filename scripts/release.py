@@ -72,6 +72,7 @@ AUTHOR_MAP = {
     "98262967+Bihruze@users.noreply.github.com": "Bihruze",
     "189280367+Lempkey@users.noreply.github.com": "Lempkey",
     "leovillalbajr@gmail.com": "Lempkey",
+    "loicnico96@gmail.com": "loicnico96",
     "nidhi2894@gmail.com": "nidhi-singh02",
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
