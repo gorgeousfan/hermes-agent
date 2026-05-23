@@ -634,6 +634,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/teams',
         'user-guide/messaging/teams-meetings',
         'user-guide/messaging/msgraph-webhook',
+        'user-guide/messaging/kimiclaw',
         'user-guide/messaging/line',
         'user-guide/messaging/simplex',
         'user-guide/messaging/open-webui',
