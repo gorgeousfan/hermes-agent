@@ -2445,13 +2445,16 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion).
+                # Eager fallback for errors where retries won't help.
                 # When a fallback model is configured, switch immediately instead
                 # of burning through retries with exponential backoff -- the
                 # primary provider won't recover within the retry window.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
+                    FailoverReason.timeout,           # connection/read timeout (server down)
+                    FailoverReason.auth,              # auth failure (credentials broken)
+                    FailoverReason.model_not_found,   # model/endpoint doesn't exist there
                 }
                 if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
@@ -2464,7 +2467,16 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        if classified.reason == FailoverReason.rate_limit:
+                            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.timeout:
+                            agent._emit_status("⚠️ Connection timeout — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.auth:
+                            agent._emit_status("⚠️ Auth failure — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.model_not_found:
+                            agent._emit_status("⚠️ Model not found — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.billing:
+                            agent._emit_status("⚠️ Billing error — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
