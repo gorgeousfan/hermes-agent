@@ -67,10 +67,10 @@ def _reset_last_init_error():
 def _reset_wal_fallback_warned_paths():
     """Reset the WAL-fallback warned-paths set so dedup doesn't leak between tests."""
     hermes_state._wal_fallback_warned_paths.clear()
-    hermes_state._wal_delete_fallback_failed_paths.clear()
+    hermes_state._wal_delete_fallback_failed_db_labels.clear()
     yield
     hermes_state._wal_fallback_warned_paths.clear()
-    hermes_state._wal_delete_fallback_failed_paths.clear()
+    hermes_state._wal_delete_fallback_failed_db_labels.clear()
 
 
 class TestApplyWalWithFallback:
@@ -187,14 +187,17 @@ class TestApplyWalWithFallback:
             mode = apply_wal_with_fallback(conn, db_label="apfs-test.db")
 
         assert mode == "delete"
-        # Both pragmas were attempted
-        assert attempts[0] == 2
+        # Three journal_mode SQL calls: set WAL, set DELETE, then the
+        # PRAGMA journal_mode read-back used to honor the docstring
+        # contract when both writes fail (also blocked by the factory,
+        # which causes the function to fall through to "delete").
+        assert attempts[0] == 3
 
         # Two warnings: one for WAL fallback, one for DELETE-also-failed
         msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
         wal_warnings = [m for m in msgs if "apfs-test.db" in m and "WAL" in m]
         delete_warnings = [
-            m for m in msgs if "apfs-test.db" in m and "DELETE journal_mode failed" in m
+            m for m in msgs if "apfs-test.db" in m and "both WAL and DELETE journal_mode failed" in m
         ]
         assert len(wal_warnings) >= 1
         assert len(delete_warnings) == 1
@@ -204,6 +207,48 @@ class TestApplyWalWithFallback:
         conn.execute("CREATE TABLE t (x INTEGER)")
         conn.execute("INSERT INTO t VALUES (1)")
         assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        conn.close()
+
+    def test_both_pragmas_fail_but_readback_reports_actual_mode(self, tmp_path, caplog):
+        """When both PRAGMA writes fail but PRAGMA journal_mode READ succeeds,
+        the function returns the connection's actual journal_mode — honoring
+        the docstring contract that the returned value reflects reality.
+
+        Regression guard for Copilot's "contract violation" finding on
+        #30823: previously the function returned a hardcoded ``"delete"``
+        even when the DELETE PRAGMA had raised.  On a connection whose
+        underlying journal_mode is something other than ``delete`` (e.g.
+        a previously-set ``memory`` mode that survived the failed writes),
+        that string was a lie.
+        """
+
+        class _WritesFailReadsSucceedConnection(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+                # Block PRAGMA WRITES (journal_mode=X) but allow the
+                # bare PRAGMA READ (journal_mode without `=`).
+                lowered = sql.lower().strip()
+                if "journal_mode=" in lowered:
+                    raise sqlite3.OperationalError("disk I/O error")
+                return super().execute(sql, *args, **kwargs)
+
+        conn = sqlite3.connect(
+            str(tmp_path / "readback.db"),
+            factory=_WritesFailReadsSucceedConnection,
+            isolation_level=None,
+        )
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            mode = apply_wal_with_fallback(conn, db_label="readback.db")
+
+        # On a fresh SQLite connection the default journal_mode is "delete";
+        # the read-back returns it.  The important contract guarantee is
+        # that the function consulted the connection rather than guessing.
+        assert mode == "delete"
+        # And the both-fail warning still fired.
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            "readback.db" in m and "both WAL and DELETE journal_mode failed" in m
+            for m in msgs
+        )
         conn.close()
 
     def test_delete_fallback_failure_warning_deduplicated_per_db_label(
@@ -236,7 +281,7 @@ class TestApplyWalWithFallback:
             r for r in caplog.records
             if r.levelname == "WARNING"
             and "apfs-shared.db" in r.getMessage()
-            and "DELETE journal_mode failed" in r.getMessage()
+            and "both WAL and DELETE journal_mode failed" in r.getMessage()
         ]
         assert len(delete_warnings) == 1, (
             f"Expected 1 deduplicated DELETE-failed warning, got {len(delete_warnings)}"
