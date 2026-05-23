@@ -102,7 +102,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
-    if "memory" in agent.valid_tool_names:
+    # Only inject memory usage guidance when target='memory' writes will
+    # actually be visible in future sessions (i.e. memory_enabled is True).
+    if "memory" in agent.valid_tool_names and getattr(agent, "_memory_enabled", False):
         tool_guidance.append(MEMORY_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)

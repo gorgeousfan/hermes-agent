@@ -1548,28 +1548,37 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "memory":
         target = function_args.get("target", "memory")
-        from tools.memory_tool import memory_tool as _memory_tool
-        result = _memory_tool(
-            action=function_args.get("action"),
-            target=target,
-            content=function_args.get("content"),
-            old_text=function_args.get("old_text"),
-            store=agent._memory_store,
-        )
-        # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-            try:
-                agent._memory_manager.on_memory_write(
-                    function_args.get("action", ""),
-                    target,
-                    function_args.get("content", ""),
-                    metadata=agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            except Exception:
-                pass
+        # Guard: prevent dead writes when memory injection is disabled.
+        # Mirror guard: agent/tool_executor.py execute_tool_calls_sequential()
+        if target == "memory" and not agent._memory_enabled:
+            result = json.dumps({
+                "success": False,
+                "error": ("memory(target='memory') is disabled (memory_enabled: false). "
+                          "Data written here would never appear in future sessions."),
+            })
+        else:
+            from tools.memory_tool import memory_tool as _memory_tool
+            result = _memory_tool(
+                action=function_args.get("action"),
+                target=target,
+                content=function_args.get("content"),
+                old_text=function_args.get("old_text"),
+                store=agent._memory_store,
+            )
+            # Bridge: notify external memory provider of built-in memory writes
+            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+                try:
+                    agent._memory_manager.on_memory_write(
+                        function_args.get("action", ""),
+                        target,
+                        function_args.get("content", ""),
+                        metadata=agent._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=tool_call_id,
+                        ),
+                    )
+                except Exception:
+                    pass
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         return agent._memory_manager.handle_tool_call(function_name, function_args)
