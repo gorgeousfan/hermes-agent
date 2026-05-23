@@ -187,6 +187,49 @@ class TestWeComReplyMode:
         assert args[1]["markdown"]["content"] == "hello from reply"
 
     @pytest.mark.asyncio
+    async def test_send_uses_stream_only_for_current_native_stream_context(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._current_reply_req_id = "req-1"
+        adapter._thinking_stream_id = "stream-1"
+        adapter._send_final_reply = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+        adapter._send_reply_request = AsyncMock()
+
+        result = await adapter.send("chat-123", "hello from stream", reply_to="msg-1")
+
+        assert result.success is True
+        adapter._send_final_reply.assert_awaited_once_with("req-1", "hello from stream")
+        adapter._send_reply_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_uses_markdown_when_only_stale_thinking_state_exists(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._current_reply_req_id = "different-req"
+        adapter._thinking_stream_id = "stream-1"
+        adapter._thinking_accumulated_lines = ["一些旧的 thinking"]
+        adapter._send_final_reply = AsyncMock()
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send("chat-123", "hello from reply", reply_to="msg-1")
+
+        assert result.success is True
+        adapter._send_final_reply.assert_not_awaited()
+        adapter._send_reply_request.assert_awaited_once()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "req-1"
+        assert args[1]["msgtype"] == "markdown"
+        assert args[1]["markdown"]["content"] == "hello from reply"
+
+    @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
         from gateway.platforms.wecom import WeComAdapter
 
