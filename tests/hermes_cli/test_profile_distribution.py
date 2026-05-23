@@ -582,3 +582,76 @@ class TestErrorSurfaces:
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
 
+
+# ===========================================================================
+# USER_OWNED_EXCLUDE is root-scoped, not basename-at-all-depths
+# ===========================================================================
+
+
+class TestUserOwnedExcludeRootScope:
+    """Regression tests for https://github.com/NousResearch/hermes-agent/issues/31033.
+
+    ``USER_OWNED_EXCLUDE`` protects user-owned root entries on update; it must
+    not silently drop distribution-owned nested paths that happen to share a
+    basename with a root-level protected entry.
+    """
+
+    def test_nested_distribution_path_with_protected_basename_preserved(
+        self, profile_env
+    ):
+        """A distribution-owned ``skills/<category>/hermes-agent/SKILL.md`` must
+        land in the target profile even though ``hermes-agent`` is a root-level
+        protected basename.
+        """
+        staged = _make_staging_dir(profile_env, "src")
+        nested = staged / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: nested\n---\n# Nested\n"
+        )
+
+        plan = install_distribution(str(staged), name="nested-dist")
+
+        copied = (
+            plan.target_dir
+            / "skills"
+            / "autonomous-ai-agents"
+            / "hermes-agent"
+            / "SKILL.md"
+        )
+        assert copied.exists(), (
+            "Distribution-owned nested skill directory was dropped — "
+            "USER_OWNED_EXCLUDE is matching by basename at descendant depths "
+            "instead of root-scoped."
+        )
+        assert "Nested" in copied.read_text()
+
+    def test_root_protected_basename_still_excluded(self, profile_env):
+        """The fix must not weaken the root-scoped protection: a root-level
+        ``hermes-agent/`` directory in the staging payload must still be
+        skipped, even if it ships alongside a nested same-basename path.
+        """
+        staged = _make_staging_dir(profile_env, "src")
+        # Root-level user-owned marker (should NOT be copied)
+        (staged / "hermes-agent").mkdir(exist_ok=True)
+        (staged / "hermes-agent" / "marker.txt").write_text("root leaked")
+        # Nested distribution-owned same-basename path (should be copied)
+        nested = staged / "skills" / "autonomous-ai-agents" / "hermes-agent"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "SKILL.md").write_text(
+            "---\nname: hermes-agent\ndescription: nested\n---\n# Nested\n"
+        )
+
+        plan = install_distribution(str(staged), name="root-protected")
+
+        assert not (plan.target_dir / "hermes-agent").exists(), (
+            "Root-level hermes-agent/ leaked into the target profile."
+        )
+        assert (
+            plan.target_dir
+            / "skills"
+            / "autonomous-ai-agents"
+            / "hermes-agent"
+            / "SKILL.md"
+        ).exists(), "Nested distribution-owned hermes-agent/ was dropped."
+

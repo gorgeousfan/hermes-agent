@@ -558,11 +558,13 @@ def _copy_dist_payload(
         if entry.is_dir():
             if dest.exists():
                 shutil.rmtree(dest)
-            shutil.copytree(
-                entry,
-                dest,
-                ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
-            )
+            # ``USER_OWNED_EXCLUDE`` is root-scoped: the loop above already
+            # filters protected root entries. Filtering by basename at every
+            # descendant depth (the prior ``ignore=`` lambda) silently dropped
+            # distribution-owned nested paths that happened to share a name
+            # with a root-level protected entry, e.g.
+            # ``skills/<category>/hermes-agent/SKILL.md``.
+            shutil.copytree(entry, dest)
         else:
             shutil.copy2(entry, dest)
 
