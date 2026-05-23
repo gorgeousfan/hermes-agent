@@ -5452,7 +5452,7 @@ def _hermes_path_argv(path: str) -> list[str]:
 
 
 def _running_in_venv() -> bool:
-    """Return true when the current interpreter is inside a virtualenv.
+    """Return ``True`` when the current interpreter is inside a virtualenv.
 
     Checks both ``$VIRTUAL_ENV`` (set by venv/virtualenv activation) and the
     ``sys.prefix != sys.base_prefix`` invariant — the latter catches venvs
