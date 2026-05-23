@@ -870,8 +870,7 @@ def _primary_health_check_loop(agent, base_url: str, api_key: str, *, provider: 
                         "Primary health check passed after %d attempts (%ds): %s",
                         attempt, attempt * interval, base_url,
                     )
-                    # Keep probing to detect if primary goes down again
-                    continue
+                    return
                 if resp.status_code == 503:
                     # Server is up but loading model — healthy enough to restore
                     agent._primary_healthy = True
@@ -879,8 +878,7 @@ def _primary_health_check_loop(agent, base_url: str, api_key: str, *, provider: 
                         "Primary responding (HTTP 503 - loading model) after %d attempts: %s",
                         attempt, base_url,
                     )
-                    # Keep probing to detect if primary goes down again
-                    continue
+                    return
                 logging.debug(
                     "Primary health check attempt %d: HTTP %d from %s",
                     attempt, resp.status_code, base_url,
