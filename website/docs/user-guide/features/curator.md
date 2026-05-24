@@ -130,28 +130,26 @@ The same subcommands are available as the `/curator` slash command inside a runn
 
 ## What "agent-created" means
 
-A skill is considered agent-created if its name is **not** in:
+A skill is considered agent-created when **all three** of the following hold:
 
-- `~/.hermes/skills/.bundled_manifest` (skills copied from the repo on install), and
-- `~/.hermes/skills/.hub/lock.json` (skills installed via `hermes skills install`).
+- its name is **not** in `~/.hermes/skills/.bundled_manifest` (skills copied from the repo on install),
+- its name is **not** in `~/.hermes/skills/.hub/lock.json` (skills installed via `hermes skills install`), and
+- its `.usage.json` carries the marker `"created_by": "agent"` (or the equivalent legacy `"agent_created": true`).
 
-Everything else in `~/.hermes/skills/` is fair game for the curator. This includes:
+The marker is set by the **background self-improvement review fork** when it sediments a skill through `skill_manage`. Skills you ask a foreground agent to write via `skill_manage(action="create")` during a normal conversation do **not** receive the marker and stay invisible to the curator.
 
-- Skills the agent saved via `skill_manage(action="create")` during a conversation.
-- Skills you created manually with a hand-written `SKILL.md`.
-- Skills added via external skill directories you've pointed Hermes at.
+In short:
 
-:::warning Your hand-written skills look the same as agent-saved ones
-Provenance here is **binary** (bundled/hub vs. everything else). The curator cannot tell a hand-authored skill you rely on for private workflows apart from a skill the self-improvement loop saved mid-session. Both land in the "agent-created" bucket.
+| How the skill was created | Marker set? | Visible to curator |
+|---|---|---|
+| Bundled / installed from Hub | No | No (excluded by manifest/lock) |
+| Hand-written `SKILL.md` | No | No |
+| Foreground `skill_manage(action="create")` | No | No |
+| Background self-improvement review | Yes | Yes |
 
-Before the first real pass (7 days after installation by default), take a moment to:
+So the curator only manages skills produced by the background review loop. If `hermes curator status` reports zero agent-created skills despite skills you saved in foreground sessions, that is expected — those skills don't carry the `created_by=agent` marker.
 
-1. Run `hermes curator run --dry-run` to see exactly what the curator would propose.
-2. Use `hermes curator pin <name>` to fence off anything you don't want touched.
-3. Or set `curator.enabled: false` in `config.yaml` if you'd rather manage the library yourself.
-
-Archives are always recoverable via `hermes curator restore <name>`, but it's easier to pin up-front than to chase down a consolidation after the fact.
-:::
+When there are no eligible candidates, the curator's run summary shows `Model: (not resolved) via (not resolved)` and `Duration: 0s`. That isn't a configuration error; it means the LLM pass was skipped because the candidate set was empty.
 
 If you want to protect a specific skill from ever being touched — for example a hand-authored skill you rely on — use `hermes curator pin <name>`. See the next section.
 
