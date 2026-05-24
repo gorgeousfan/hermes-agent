@@ -847,7 +847,12 @@ def test_skill_installs_cleanly_under_skills_guard():
     #
     # Accept "caution" or "safe" — just not "dangerous" from a *real* threat.
     assert result.verdict in {"safe", "caution", "dangerous"}, f"Unexpected verdict: {result.verdict}"
-    KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "hermes_config_mod"}
+    KNOWN_FALSE_POSITIVES = {
+        "agent_config_mod", "python_os_environ", "hermes_config_mod",
+        # File operations in the migration script are legitimate — the
+        # script copies config/memory files to the Hermes home directory
+        "pathlib_file_write", "shutil_file_copy",
+    }
     for f in result.findings:
         assert f.pattern_id in KNOWN_FALSE_POSITIVES, f"Unexpected finding: {f}"
 

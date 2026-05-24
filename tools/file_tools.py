@@ -16,6 +16,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.path_security import has_traversal_component
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -460,6 +461,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
+        # ── Path traversal guard ───────────────────────────────────────
+        # Block obvious directory traversal attempts before resolution.
+        # The terminal tool can still read these paths via `cat`, but
+        # read_file_tool should not silently follow `..` components to
+        # locations the model didn't intend to reference.
+        if has_traversal_component(path):
+            return json.dumps({
+                "error": (
+                    f"Cannot read '{path}': path contains '..' traversal "
+                    "components. Use the absolute path or the terminal tool "
+                    "to access files outside the current directory."
+                ),
+            })
+
         _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Binary file guard ─────────────────────────────────────────
@@ -797,6 +812,13 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    # ── Path traversal guard ───────────────────────────────────────
+    if has_traversal_component(path):
+        return tool_error(
+            f"Path contains '..' traversal component: {path}. "
+            "Use the terminal tool with absolute paths to write files "
+            "outside the current directory."
+        )
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -859,12 +881,26 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
+        # ── Path traversal guard ───────────────────────────────────
+        if has_traversal_component(path):
+            return tool_error(
+                f"Path contains '..' traversal component: {path}. "
+                "Use the terminal tool with absolute paths to patch files "
+                "outside the current directory."
+            )
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
             _paths_to_check.append(_m.group(1).strip())
     for _p in _paths_to_check:
+        # ── Traversal guard for ALL paths (including V4A-extracted) ──
+        if has_traversal_component(_p):
+            return tool_error(
+                f"Path contains '..' traversal component: {_p}. "
+                "Use the terminal tool with absolute paths to patch files "
+                "outside the current directory."
+            )
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
@@ -953,6 +989,18 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 output_mode: str = "content", context: int = 0,
                 task_id: str = "default") -> str:
     """Search for content or files."""
+    # ── Path traversal guard ──────────────────────────────────────────
+    # Inconsistent with read/write/patch tools but lower risk (read-only).
+    # Still block obvious traversal to stay consistent with the hardened
+    # file tool family.
+    if has_traversal_component(path):
+        return json.dumps({
+            "error": (
+                f"Cannot search '{path}': path contains '..' traversal "
+                "components. Use the absolute path or the terminal tool "
+                "to access files outside the current directory."
+            ),
+        })
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
