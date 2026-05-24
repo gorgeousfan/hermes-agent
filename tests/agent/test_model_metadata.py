@@ -288,11 +288,11 @@ class TestDefaultContextLengths:
 # =========================================================================
 
 class TestCodexOAuthContextLength:
-    """ChatGPT Codex OAuth imposes lower context limits than the direct
-    OpenAI API for the same slugs. Verified Apr 2026 via live probe of
-    chatgpt.com/backend-api/codex/models: most models return 272k, while
-    models.dev reports 1.05M for gpt-5.5/gpt-5.4 and 400k for the rest.
-    (Known exception: gpt-5.3-codex-spark is 128k.)
+    """ChatGPT Codex OAuth may expose both a conservative context_window
+    and a larger max_context_window.  By default Hermes uses context_window
+    so direct-API limits do not leak into Codex, with a narrow opt-in for
+    gpt-5.4 to use Codex's advertised 1M max_context_window.  Known exception:
+    gpt-5.3-codex-spark is 128k.
     """
 
     def setup_method(self):
@@ -302,13 +302,14 @@ class TestCodexOAuthContextLength:
 
     def test_fallback_table_used_without_token(self):
         """With no access token, the hardcoded Codex fallback table wins
-        over models.dev (which reports 1.05M for gpt-5.5 but Codex is 272k).
+        over models.dev.  gpt-5.4 is the narrow opt-in to 1M; other Codex
+        GPT-5 slugs keep their conservative Codex context_window defaults.
         """
         from agent.model_metadata import get_model_context_length
 
         expected = {
             "gpt-5.5": 272_000,
-            "gpt-5.4": 272_000,
+            "gpt-5.4": 1_000_000,
             "gpt-5.4-mini": 272_000,
             "gpt-5.3-codex": 272_000,
             "gpt-5.3-codex-spark": 128_000,
@@ -332,16 +333,19 @@ class TestCodexOAuthContextLength:
                 )
 
     def test_live_probe_overrides_fallback(self):
-        """When a token is provided, the live /models probe is preferred
-        and its context_window drives the result."""
+        """When a token is provided, the live /models probe is preferred.
+        gpt-5.4 uses max_context_window by explicit allowlist; non-allowlisted
+        Codex slugs keep context_window even if a max field is present.
+        """
         from agent.model_metadata import get_model_context_length
 
         fake_response = MagicMock()
         fake_response.status_code = 200
         fake_response.json.return_value = {
             "models": [
-                {"slug": "gpt-5.5", "context_window": 300_000},
-                {"slug": "gpt-5.4", "context_window": 400_000},
+                {"slug": "gpt-5.5", "context_window": 300_000, "max_context_window": 1_000_000},
+                {"slug": "gpt-5.4", "context_window": 400_000, "max_context_window": 1_000_000},
+                {"slug": "gpt-5.4-mini", "context_window": 272_000, "max_context_window": 1_000_000},
             ]
         }
 
@@ -360,8 +364,15 @@ class TestCodexOAuthContextLength:
                 api_key="fake-token",
                 provider="openai-codex",
             )
+            ctx_54_mini = get_model_context_length(
+                model="gpt-5.4-mini",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="fake-token",
+                provider="openai-codex",
+            )
         assert ctx_55 == 300_000
-        assert ctx_54 == 400_000
+        assert ctx_54 == 1_000_000
+        assert ctx_54_mini == 272_000
 
     def test_probe_failure_falls_back_to_hardcoded(self):
         """If the probe fails (non-200 / network error), we still return
@@ -454,8 +465,9 @@ class TestCodexOAuthContextLength:
         assert remaining.get(other_key) == 128_000, "Unrelated cache entries must not be touched"
 
     def test_fresh_codex_cache_under_400k_is_respected(self, tmp_path, monkeypatch):
-        """Codex entries at the correct 272k must NOT be invalidated —
-        only stale pre-fix values (>= 400k) get dropped."""
+        """Codex entries at the correct 272k must NOT be invalidated for
+        non-max-window slugs — only stale pre-fix values (>= 400k) get dropped.
+        """
         from agent import model_metadata as mm
 
         cache_file = tmp_path / "context_length_cache.yaml"
@@ -477,6 +489,47 @@ class TestCodexOAuthContextLength:
             )
         assert ctx == 272_000
         mock_get.assert_not_called()
+
+    def test_gpt54_codex_cache_under_400k_is_invalidated(self, tmp_path, monkeypatch):
+        """gpt-5.4 now opts into max_context_window=1M, so older 272k cache
+        entries from the conservative context_window policy must be refreshed.
+        """
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://chatgpt.com/backend-api/codex/"
+        import yaml as _yaml
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            f"gpt-5.4@{base_url}": 272_000,
+        }}))
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{
+                "slug": "gpt-5.4",
+                "context_window": 272_000,
+                "max_context_window": 1_000_000,
+            }]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            ctx = mm.get_model_context_length(
+                model="gpt-5.4",
+                base_url=base_url,
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+
+        assert ctx == 1_000_000
+        mock_save.assert_called_with("gpt-5.4", base_url, 1_000_000)
+        remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert f"gpt-5.4@{base_url}" not in remaining, (
+            "Old 272k gpt-5.4 cache entry should be invalidated before saving refreshed value"
+        )
 
     def test_stale_invalidation_scoped_to_codex_provider(self, tmp_path, monkeypatch):
         """A cached 1M entry for a non-Codex provider (e.g. Anthropic opus on

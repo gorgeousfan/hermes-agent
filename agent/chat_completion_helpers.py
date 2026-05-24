@@ -64,6 +64,14 @@ from utils import base_url_host_matches, base_url_hostname
 logger = logging.getLogger(__name__)
 
 
+AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER = "[Continuing after max-iteration exhaustion]"
+DEFAULT_AUTO_CONTINUE_ON_MAX_ITERATIONS_PROMPT = (
+    "Continue autonomously from the current state. Do not repeat completed work. "
+    "Stop and summarize if blocked, if approval is required, or before "
+    "destructive/externally visible actions."
+)
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -73,6 +81,89 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+
+def maybe_auto_continue_on_max_iterations(agent, messages: list, api_call_count: int) -> bool:
+    """Inject a synthetic continuation turn when iteration budget is exhausted.
+
+    Returns ``True`` when the caller should reset its per-turn counters and keep
+    working instead of falling through to the normal summary request.
+    """
+    try:
+        from agent.iteration_budget import IterationBudget
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+        auto_cfg = (
+            agent_cfg.get("auto_continue_on_max_iterations", {})
+            if isinstance(agent_cfg, dict)
+            else {}
+        )
+        if not isinstance(auto_cfg, dict):
+            return False
+        if not bool(auto_cfg.get("enabled", False)):
+            return False
+
+        try:
+            max_auto_continues = int(auto_cfg.get("max_auto_continues", 0) or 0)
+        except (TypeError, ValueError):
+            max_auto_continues = 0
+        if max_auto_continues <= 0:
+            return False
+
+        used = int(getattr(agent, "_auto_continue_on_max_iterations_used", 0) or 0)
+        if used >= max_auto_continues:
+            return False
+
+        prompt = str(
+            auto_cfg.get("prompt") or DEFAULT_AUTO_CONTINUE_ON_MAX_ITERATIONS_PROMPT
+        ).strip()
+        if not prompt:
+            prompt = DEFAULT_AUTO_CONTINUE_ON_MAX_ITERATIONS_PROMPT
+
+        synthetic_prompt = f"{AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER}\n{prompt}"
+        messages.append({"role": "user", "content": synthetic_prompt})
+        agent.iteration_budget = IterationBudget(agent.max_iterations)
+        agent._budget_exhausted_injected = False
+        agent._budget_grace_call = False
+        agent._auto_continue_on_max_iterations_used = used + 1
+        agent._touch_activity(
+            f"auto-continue after iteration budget exhaustion "
+            f"({agent._auto_continue_on_max_iterations_used}/{max_auto_continues})"
+        )
+        try:
+            agent._emit_status(
+                f"🔁 Auto-continuing after iteration budget exhaustion "
+                f"({agent._auto_continue_on_max_iterations_used}/{max_auto_continues})"
+            )
+        except Exception:
+            pass
+
+        logger.info(
+            "Auto-continue on max iterations triggered (%d/%d used, api_calls=%d, model=%s, session=%s)",
+            agent._auto_continue_on_max_iterations_used,
+            max_auto_continues,
+            api_call_count,
+            getattr(agent, "model", ""),
+            getattr(agent, "session_id", None) or "none",
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "Failed to auto-continue after iteration exhaustion",
+            exc_info=True,
+        )
+        return False
+
+
+def is_auto_continue_on_max_iterations_prompt(content: Any) -> bool:
+    """Return True when transcript content is the synthetic auto-continue prompt."""
+    if isinstance(content, list):
+        return False
+    text = "" if content is None else str(content)
+    return text.startswith(AUTO_CONTINUE_ON_MAX_ITERATIONS_MARKER)
 
 
 

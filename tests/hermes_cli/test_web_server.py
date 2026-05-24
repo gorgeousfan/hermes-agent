@@ -972,6 +972,98 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_analytics_usage_accounts_for_cache_token_buckets(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="cache-analytics-test",
+                source="cli",
+                model="gpt-cache-test",
+            )
+            db.update_token_counts(
+                "cache-analytics-test",
+                input_tokens=100,
+                output_tokens=25,
+                cache_read_tokens=40,
+                cache_write_tokens=5,
+                reasoning_tokens=7,
+                api_call_count=2,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["totals"]["total_input"] == 100
+        assert data["totals"]["total_output"] == 25
+        assert data["totals"]["total_cache_read"] == 40
+        assert data["totals"]["total_cache_write"] == 5
+        assert data["totals"]["total_reasoning"] == 7
+        assert data["totals"]["total_tokens"] == 170
+
+        assert len(data["daily"]) == 1
+        day = data["daily"][0]
+        assert day["input_tokens"] == 100
+        assert day["output_tokens"] == 25
+        assert day["cache_read_tokens"] == 40
+        assert day["cache_write_tokens"] == 5
+        assert day["reasoning_tokens"] == 7
+        assert day["total_tokens"] == 170
+
+        model = next(row for row in data["by_model"] if row["model"] == "gpt-cache-test")
+        assert model["input_tokens"] == 100
+        assert model["output_tokens"] == 25
+        assert model["cache_read_tokens"] == 40
+        assert model["cache_write_tokens"] == 5
+        assert model["reasoning_tokens"] == 7
+        assert model["total_tokens"] == 170
+
+    def test_analytics_models_accounts_for_cache_token_buckets(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="cache-models-analytics-test",
+                source="cli",
+                model="gpt-cache-test",
+            )
+            db.update_token_counts(
+                "cache-models-analytics-test",
+                input_tokens=100,
+                output_tokens=25,
+                cache_read_tokens=40,
+                cache_write_tokens=5,
+                reasoning_tokens=7,
+                api_call_count=2,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["totals"]["total_input"] == 100
+        assert data["totals"]["total_output"] == 25
+        assert data["totals"]["total_cache_read"] == 40
+        assert data["totals"]["total_cache_write"] == 5
+        assert data["totals"]["total_reasoning"] == 7
+        assert data["totals"]["total_tokens"] == 170
+
+        model = next(row for row in data["models"] if row["model"] == "gpt-cache-test")
+        assert model["input_tokens"] == 100
+        assert model["output_tokens"] == 25
+        assert model["cache_read_tokens"] == 40
+        assert model["cache_write_tokens"] == 5
+        assert model["reasoning_tokens"] == 7
+        assert model["total_tokens"] == 170
+        assert model["avg_tokens_per_session"] == 170
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

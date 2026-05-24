@@ -4817,12 +4817,25 @@ def _(rid, params: dict) -> dict:
         history = session.get("history", [])
         if not history:
             return _err(rid, 4018, "no previous user message to retry")
-        # Walk backwards to find the last user message
+        # Walk backwards to find the last real user message
         last_user_idx = None
+        try:
+            from agent.chat_completion_helpers import is_auto_continue_on_max_iterations_prompt as _is_auto_continue_prompt
+        except Exception:
+            def _is_auto_continue_prompt(content: object) -> bool:
+                return False
         for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_idx = i
-                break
+            msg = history[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            text = "" if isinstance(content, list) else ("" if content is None else str(content))
+            if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+                continue
+            if _is_auto_continue_prompt(content):
+                continue
+            last_user_idx = i
+            break
         if last_user_idx is None:
             return _err(rid, 4018, "no previous user message to retry")
         content = history[last_user_idx].get("content", "")

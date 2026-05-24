@@ -565,6 +565,17 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Optional: after a turn hits max_turns, automatically inject a continuation
+  # prompt and keep working instead of stopping immediately for a summary.
+  # Useful for long autonomous workflows where the likely next user message is
+  # just "continue". Keep disabled by default to avoid surprising chat loops.
+  # auto_continue_on_max_iterations:
+  #   enabled: false
+  #   max_auto_continues: 3
+  #   prompt: Continue autonomously from the current state. Do not repeat completed work.
+  #     Stop and summarize if blocked, if approval is required, or before
+  #     destructive/externally visible actions.
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

@@ -2430,6 +2430,39 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_auto_continue_helper_injects_prompt_and_resets_budget(self, agent):
+        from agent.chat_completion_helpers import maybe_auto_continue_on_max_iterations
+
+        agent.max_iterations = 5
+        agent.iteration_budget = run_agent.IterationBudget(2)
+        agent.iteration_budget.consume()
+        agent.iteration_budget.consume()
+        agent._auto_continue_on_max_iterations_used = 0
+
+        messages = [{"role": "user", "content": "do stuff"}]
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "agent": {
+                    "auto_continue_on_max_iterations": {
+                        "enabled": True,
+                        "max_auto_continues": 2,
+                        "prompt": "Continue from the current state.",
+                    }
+                }
+            },
+        ):
+            assert maybe_auto_continue_on_max_iterations(agent, messages, 2) is True
+
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"].startswith(
+            "[Continuing after max-iteration exhaustion]"
+        )
+        assert "Continue from the current state." in messages[-1]["content"]
+        assert agent.iteration_budget.max_total == 5
+        assert agent.iteration_budget.used == 0
+        assert agent._auto_continue_on_max_iterations_used == 1
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp
@@ -3610,6 +3643,51 @@ class TestRunConversation:
         ]
         assert len(kanban_block_calls) == 0, (
             "kanban_block should not be called outside kanban mode"
+        )
+
+    def test_auto_continue_on_iteration_exhaustion_resumes_without_summary(self, agent):
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        final_resp = _mock_response(content="Finished after continuing.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            tool_resp,
+            tool_resp,
+            final_resp,
+        ]
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "agent": {
+                        "auto_continue_on_max_iterations": {
+                            "enabled": True,
+                            "max_auto_continues": 1,
+                            "prompt": "Continue autonomously.",
+                        }
+                    }
+                },
+            ),
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the work")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Finished after continuing."
+        assert result["api_calls"] == 3
+        assert agent.client.chat.completions.create.call_count == 3
+        assert any(
+            m.get("role") == "user"
+            and str(m.get("content", "")).startswith("[Continuing after max-iteration exhaustion]")
+            for m in result["messages"]
         )
 
 

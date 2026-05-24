@@ -2529,6 +2529,23 @@ class GatewayRunner:
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
 
+    @staticmethod
+    def _is_auto_continue_on_max_iterations_event(event_or_text: Any) -> bool:
+        """Return True for synthetic max-iteration continuation turns."""
+        try:
+            from agent.chat_completion_helpers import is_auto_continue_on_max_iterations_prompt
+            text = getattr(event_or_text, "text", event_or_text)
+            return is_auto_continue_on_max_iterations_prompt(text)
+        except Exception:
+            return False
+
+    def _is_synthetic_continuation_event(self, event_or_text: Any) -> bool:
+        """Return True for any synthetic continuation turn Hermes may queue."""
+        return (
+            self._is_goal_continuation_event(event_or_text)
+            or self._is_auto_continue_on_max_iterations_event(event_or_text)
+        )
+
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session.
 
@@ -10454,14 +10471,18 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
         
-        # Find the last user message
+        # Find the last real user message
         last_user_msg = None
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_msg = history[i].get("content", "")
-                last_user_idx = i
-                break
+            if history[i].get("role") != "user":
+                continue
+            content = history[i].get("content", "")
+            if self._is_synthetic_continuation_event(content):
+                continue
+            last_user_msg = content
+            last_user_idx = i
+            break
         
         if not last_user_msg:
             return t("gateway.retry.no_previous")

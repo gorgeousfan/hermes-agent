@@ -6820,19 +6820,35 @@ class HermesCLI:
         """Retry the last user message by removing the last exchange and re-sending.
         
         Removes the last assistant response (and any tool-call messages) and
-        the last user message, then re-sends that user message to the agent.
+        the last real user message, then re-sends that user message to the agent.
         Returns the message to re-send, or None if there's nothing to retry.
         """
         if not self.conversation_history:
             print("(._.) No messages to retry.")
             return None
+
+        try:
+            from agent.chat_completion_helpers import (
+                is_auto_continue_on_max_iterations_prompt as _is_auto_continue_prompt,
+            )
+        except Exception:
+            def _is_auto_continue_prompt(content: object) -> bool:
+                return False
         
-        # Walk backwards to find the last user message
+        # Walk backwards to find the last real user message
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
+            msg = self.conversation_history[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            text = "" if isinstance(content, list) else ("" if content is None else str(content))
+            if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+                continue
+            if _is_auto_continue_prompt(content):
+                continue
+            last_user_idx = i
+            break
         
         if last_user_idx is None:
             print("(._.) No user message found to retry.")
@@ -6848,19 +6864,35 @@ class HermesCLI:
     def undo_last(self):
         """Remove the last user/assistant exchange from conversation history.
         
-        Walks backwards and removes all messages from the last user message
+        Walks backwards and removes all messages from the last real user message
         onward (including assistant responses, tool calls, etc.).
         """
         if not self.conversation_history:
             print("(._.) No messages to undo.")
             return
+
+        try:
+            from agent.chat_completion_helpers import (
+                is_auto_continue_on_max_iterations_prompt as _is_auto_continue_prompt,
+            )
+        except Exception:
+            def _is_auto_continue_prompt(content: object) -> bool:
+                return False
         
-        # Walk backwards to find the last user message
+        # Walk backwards to find the last real user message
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
+            msg = self.conversation_history[i]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content", "")
+            text = "" if isinstance(content, list) else ("" if content is None else str(content))
+            if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+                continue
+            if _is_auto_continue_prompt(content):
+                continue
+            last_user_idx = i
+            break
         
         if last_user_idx is None:
             print("(._.) No user message found to undo.")

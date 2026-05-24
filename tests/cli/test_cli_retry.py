@@ -29,6 +29,24 @@ def test_retry_last_truncates_history_before_requeueing_message():
     ]
 
 
+def test_retry_last_skips_synthetic_auto_continue_prompt():
+    cli = _make_cli()
+    cli.conversation_history = [
+        {"role": "user", "content": "real task"},
+        {"role": "assistant", "content": "partial answer"},
+        {
+            "role": "user",
+            "content": "[Continuing after max-iteration exhaustion]\nContinue autonomously.",
+        },
+        {"role": "assistant", "content": "finished after continue"},
+    ]
+
+    retry_msg = cli.retry_last()
+
+    assert retry_msg == "real task"
+    assert cli.conversation_history == []
+
+
 def test_process_command_retry_requeues_original_message_not_retry_command():
     cli = _make_cli()
     queued = []

@@ -571,6 +571,19 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Optional: when a single turn exhausts agent.max_turns, inject a
+        # synthetic continuation prompt and keep working instead of stopping
+        # immediately for a summary. Useful for long autonomous workflows
+        # where the usual next user message would just be "continue".
+        "auto_continue_on_max_iterations": {
+            "enabled": False,
+            "max_auto_continues": 3,
+            "prompt": (
+                "Continue autonomously from the current state. Do not repeat completed work. "
+                "Stop and summarize if blocked, if approval is required, or before "
+                "destructive/externally visible actions."
+            ),
+        },
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

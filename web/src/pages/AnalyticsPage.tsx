@@ -34,6 +34,22 @@ const PERIODS = [
 
 const CHART_HEIGHT_PX = 160;
 
+type TokenBuckets = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  total_tokens?: number;
+};
+
+function cacheTokens(d: TokenBuckets): number {
+  return (d.cache_read_tokens ?? 0) + (d.cache_write_tokens ?? 0);
+}
+
+function totalTrackedTokens(d: TokenBuckets): number {
+  return d.total_tokens ?? d.input_tokens + d.output_tokens + cacheTokens(d);
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -133,7 +149,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   if (daily.length === 0) return null;
 
   const maxTokens = Math.max(
-    ...daily.map((d) => d.input_tokens + d.output_tokens),
+    ...daily.map((d) => totalTrackedTokens(d)),
     1,
   );
 
@@ -152,6 +168,10 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
             {t.analytics.input}
           </div>
           <div className="flex items-center gap-1.5">
+            <div className="h-2.5 w-2.5 bg-blue-400" />
+            Cache
+          </div>
+          <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 bg-emerald-500" />
             {t.analytics.output}
           </div>
@@ -163,9 +183,13 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           style={{ height: CHART_HEIGHT_PX }}
         >
           {daily.map((d) => {
-            const total = d.input_tokens + d.output_tokens;
+            const cache = cacheTokens(d);
+            const total = totalTrackedTokens(d);
             const inputH = Math.round(
               (d.input_tokens / maxTokens) * CHART_HEIGHT_PX,
+            );
+            const cacheH = Math.round(
+              (cache / maxTokens) * CHART_HEIGHT_PX,
             );
             const outputH = Math.round(
               (d.output_tokens / maxTokens) * CHART_HEIGHT_PX,
@@ -183,6 +207,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                       {t.analytics.input}: {formatTokens(d.input_tokens)}
                     </div>
                     <div>
+                      Cache: {formatTokens(cache)}
+                    </div>
+                    <div>
                       {t.analytics.output}: {formatTokens(d.output_tokens)}
                     </div>
                     <div>
@@ -194,6 +221,11 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <div
                   className="w-full bg-[#ffe6cb]/70"
                   style={{ height: Math.max(inputH, total > 0 ? 1 : 0) }}
+                />
+
+                <div
+                  className="w-full bg-blue-400/70"
+                  style={{ height: Math.max(cacheH, cache > 0 ? 1 : 0) }}
                 />
 
                 <div
@@ -223,7 +255,16 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
 
 function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(daily, "day", "desc");
+  const sortableDaily = useMemo(
+    () =>
+      daily.map((entry) => ({
+        ...entry,
+        cache_tokens: cacheTokens(entry),
+        total_tokens: totalTrackedTokens(entry),
+      })),
+    [daily],
+  );
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(sortableDaily, "day", "desc");
 
   if (daily.length === 0) return null;
 
@@ -245,7 +286,9 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label="Cache" col="cache_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.total} col="total_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -265,10 +308,18 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                         {formatTokens(d.input_tokens)}
                       </span>
                   </td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-right py-2 px-4">
+                    <span className="text-blue-400">
+                        {formatTokens(cacheTokens(d))}
+                      </span>
+                  </td>
+                  <td className="text-right py-2 px-4">
                     <span className="text-emerald-400">
                         {formatTokens(d.output_tokens)}
                       </span>
+                  </td>
+                  <td className="text-right py-2 pl-4 font-medium">
+                    {formatTokens(totalTrackedTokens(d))}
                   </td>
                 </tr>
               ))}
@@ -282,7 +333,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
 
 function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "input_tokens", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "total_tokens", "desc");
 
   if (models.length === 0) return null;
 
@@ -303,7 +354,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.tokens} col="total_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -319,13 +370,22 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                     {m.sessions}
                   </td>
                   <td className="text-right py-2 pl-4">
-                    <span className="text-[#ffe6cb]">
-                      {formatTokens(m.input_tokens)}
+                    <span className="font-medium">
+                      {formatTokens(totalTrackedTokens(m))}
                     </span>
-                    {" / "}
-                    <span className="text-emerald-400">
-                      {formatTokens(m.output_tokens)}
-                    </span>
+                    <div className="text-[10px] text-muted-foreground">
+                      <span className="text-[#ffe6cb]">
+                        {formatTokens(m.input_tokens)}
+                      </span>
+                      {" / "}
+                      <span className="text-blue-400">
+                        {formatTokens(cacheTokens(m))}
+                      </span>
+                      {" / "}
+                      <span className="text-emerald-400">
+                        {formatTokens(m.output_tokens)}
+                      </span>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -495,9 +555,8 @@ export default function AnalyticsPage() {
                 responses with a usable <span className="font-mono">usage</span>{" "}
                 block, and silently exclude auxiliary calls (context
                 compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                extract, smart approvals, MCP routing, plugin LLM access),
+                plus provider-side retries and fallback attempts.
               </p>
               <p>
                 On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
@@ -543,12 +602,23 @@ export default function AnalyticsPage() {
                     {
                       label: t.analytics.totalTokens,
                       value: formatTokens(
-                        data.totals.total_input + data.totals.total_output,
+                        data.totals.total_tokens ??
+                          data.totals.total_input +
+                            data.totals.total_output +
+                            data.totals.total_cache_read +
+                            (data.totals.total_cache_write ?? 0),
                       ),
                     },
                     {
                       label: t.analytics.input,
                       value: formatTokens(data.totals.total_input),
+                    },
+                    {
+                      label: "Cache",
+                      value: formatTokens(
+                        data.totals.total_cache_read +
+                          (data.totals.total_cache_write ?? 0),
+                      ),
                     },
                     {
                       label: t.analytics.output,

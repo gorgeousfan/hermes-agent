@@ -581,7 +581,7 @@ def test_command_dispatch_steer_fallback_sends_message(server):
 
 
 def test_command_dispatch_retry_finds_last_user_message(server):
-    """command.dispatch /retry walks session['history'] to find the last user message."""
+    """command.dispatch /retry walks session['history'] to find the last real user message."""
     sid = "test-session"
     history = [
         {"role": "user", "content": "first question"},
@@ -610,6 +610,39 @@ def test_command_dispatch_retry_finds_last_user_message(server):
     # Verify history was truncated: everything from last user message onward removed
     assert len(server._sessions[sid]["history"]) == 2
     assert server._sessions[sid]["history"][-1]["role"] == "assistant"
+    assert server._sessions[sid]["history_version"] == 1
+
+
+def test_command_dispatch_retry_skips_synthetic_auto_continue_prompt(server):
+    sid = "test-session"
+    history = [
+        {"role": "user", "content": "real task"},
+        {"role": "assistant", "content": "partial answer"},
+        {
+            "role": "user",
+            "content": "[Continuing after max-iteration exhaustion]\nContinue autonomously.",
+        },
+        {"role": "assistant", "content": "finished after continue"},
+    ]
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+    }
+
+    resp = server.handle_request({
+        "id": "r4b",
+        "method": "command.dispatch",
+        "params": {"name": "retry", "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "real task"
+    assert server._sessions[sid]["history"] == []
     assert server._sessions[sid]["history_version"] == 1
 
 
