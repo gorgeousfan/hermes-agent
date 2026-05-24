@@ -77,6 +77,20 @@ hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
 ```
 
+Playwright toolset (optional):
+
+```bash
+pip install playwright
+playwright install
+```
+
+Translation Master toolset (optional):
+
+```bash
+npm i -g @translation-master/chrome
+# requires Chrome 138+
+```
+
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
 ---

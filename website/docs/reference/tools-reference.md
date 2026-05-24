@@ -44,6 +44,49 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 |------|-------------|----------------------|
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Supports two modes: 1. **Multiple choice** — provide up to 4 choices. The user picks one or types their own answer via a 5th 'Other' option. 2.… | — |
 
+## `playwright` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `pw_start` | Start a Playwright session (per task). | playwright (pip) |
+| `pw_navigate` | Navigate to a URL. | playwright (pip) |
+| `pw_click` | Click an element by CSS selector. | playwright (pip) |
+| `pw_type` | Type text into an element. | playwright (pip) |
+| `pw_fill` | Fill an input element (clears then types). | playwright (pip) |
+| `pw_press` | Press a keyboard key (optionally on selector). | playwright (pip) |
+| `pw_wait_for_selector` | Wait for selector to appear. | playwright (pip) |
+| `pw_eval` | Evaluate JS in page context. | playwright (pip) |
+| `pw_screenshot` | Take a screenshot. | playwright (pip) |
+| `pw_pdf` | Save page as PDF (chromium only). | playwright (pip) |
+| `pw_content` | Get HTML content. | playwright (pip) |
+| `pw_text` | Get visible text (default: body). | playwright (pip) |
+| `pw_set_cookies` | Set cookies in context. | playwright (pip) |
+| `pw_get_cookies` | Get cookies from context. | playwright (pip) |
+| `pw_set_viewport` | Set viewport size. | playwright (pip) |
+| `pw_route_block` | Block network requests by URL pattern (string or glob). | playwright (pip) |
+| `pw_info` | Get current page info. | playwright (pip) |
+| `pw_close` | Close current session (or all). | playwright (pip) |
+
+## `translation_master` toolset
+
+Chrome's built-in Translator API via `@translation-master/chrome`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `tm_translate` | Translate text via Chrome's Translator API. | node, npm, Chrome 138+, @translation-master/chrome |
+
+Install:
+- npm i -g @translation-master/chrome
+- Chrome 138+
+
+Example:
+```
+Translate these texts to English:
+texts: ["Guten Morgen", "Wie geht's?"]
+source_locale: "de"
+target_locale: "en"
+```
+
 ## `code_execution` toolset
 
 | Tool | Description | Requires environment |
