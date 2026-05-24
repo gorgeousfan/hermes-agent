@@ -54,7 +54,16 @@ SCHEMA_VERSION = 13
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # Flaky network FS during WAL setup
+    # NOTE: "disk i/o error" deliberately NOT included.
+    # A disk I/O error is not a signal of WAL incompatibility — it signals
+    # genuine storage failure (failing SSD, FS corruption, etc.).  Falling
+    # back to DELETE journal mode and continuing to write to a malfunctioning
+    # disk compounds the damage: DELETE writes directly to the main DB file,
+    # where a partial write can corrupt B-tree pages beyond recovery.
+    # WAL mode is safer during I/O errors because writes land in the WAL
+    # sidecar first.  The correct response to disk I/O errors is to fail
+    # fast and let the caller (kanban dispatcher, session DB, etc.) retry
+    # or alert — not to silently switch to a more fragile journal mode.
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
