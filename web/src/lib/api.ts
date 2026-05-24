@@ -472,6 +472,18 @@ export interface AnalyticsModelEntry {
   api_calls: number;
 }
 
+export interface AnalyticsProviderEntry {
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  estimated_cost: number;
+  actual_cost: number;
+  sessions: number;
+  api_calls: number;
+}
+
 export interface AnalyticsSkillEntry {
   skill: string;
   view_count: number;
@@ -491,6 +503,7 @@ export interface AnalyticsSkillsSummary {
 export interface AnalyticsResponse {
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
+  by_provider: AnalyticsProviderEntry[];
   totals: {
     total_input: number;
     total_output: number;
