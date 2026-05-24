@@ -8,6 +8,8 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- POST /v1/approvals               — resolve pending chat-completions approvals
+- POST /v1/commands                — execute API-client slash commands
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -697,6 +699,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._api_command_gateway: Optional[Any] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1028,6 +1031,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "chat_completion_approval_response": True,
+                "api_client_commands": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1039,6 +1044,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+                "chat_completion_approval": {"method": "POST", "path": "/v1/approvals"},
+                "commands": {"method": "POST", "path": "/v1/commands"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
@@ -1162,6 +1169,8 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id = _derive_chat_session_id(system_prompt, first_user)
             # history already set from request body above
 
+        approval_session_key = gateway_session_key or session_id
+
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -1229,6 +1238,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_approval_request(approval_data: Dict[str, Any]) -> None:
+                payload = dict(approval_data or {})
+                pattern_keys = payload.get("pattern_keys")
+                if isinstance(pattern_keys, set):
+                    payload["pattern_keys"] = sorted(pattern_keys)
+                payload.update({
+                    "sessionId": session_id,
+                    "approvalSessionKey": approval_session_key,
+                    "timestamp": time.time(),
+                    "choices": ["once", "session", "always", "deny"],
+                })
+                _stream_q.put(("__approval_request__", payload))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -1246,6 +1268,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                approval_event_callback=_on_approval_request,
+                approval_session_key=approval_session_key,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -1369,6 +1393,348 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response(response_data, headers=response_headers)
 
+    async def _handle_chat_approval(self, request: "web.Request") -> "web.Response":
+        """POST /v1/approvals — resolve a pending chat-completions approval."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_choice = str(body.get("choice", "")).strip().lower()
+        aliases = {"approve": "once", "approved": "once", "allow": "once"}
+        choice = aliases.get(raw_choice, raw_choice)
+        allowed = {"once", "session", "always", "deny"}
+        if choice not in allowed:
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval choice; expected one of: once, session, always, deny",
+                    code="invalid_approval_choice",
+                ),
+                status=400,
+            )
+
+        approval_session_key = (
+            str(body.get("approval_session_key") or "").strip()
+            or str(body.get("approvalSessionKey") or "").strip()
+            or str(body.get("session_key") or "").strip()
+            or str(body.get("session_id") or "").strip()
+            or request.headers.get("X-Hermes-Session-Key", "").strip()
+            or request.headers.get("X-Hermes-Session-Id", "").strip()
+        )
+        if not approval_session_key:
+            return web.json_response(
+                _openai_error(
+                    "Missing approval session key",
+                    code="missing_approval_session_key",
+                ),
+                status=400,
+            )
+
+        resolve_all = (
+            _coerce_request_bool(body.get("all"), default=False)
+            or _coerce_request_bool(body.get("resolve_all"), default=False)
+        )
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            resolved = resolve_gateway_approval(
+                approval_session_key,
+                choice,
+                resolve_all=resolve_all,
+            )
+        except Exception as exc:
+            logger.exception("[api_server] chat approval resolution failed")
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        if resolved <= 0:
+            return web.json_response(
+                _openai_error(
+                    "No pending approval for this session",
+                    code="approval_not_pending",
+                ),
+                status=409,
+            )
+
+        return web.json_response({
+            "object": "hermes.chat_completion.approval_response",
+            "choice": choice,
+            "resolved": resolved,
+        })
+
+    def _get_api_command_gateway(self):
+        """Lazily create a gateway dispatcher for API slash commands.
+
+        The API server is an API client surface, not a messaging platform
+        adapter.  Still, slash-command semantics live in ``GatewayRunner``.
+        Reusing that dispatcher keeps /title, /usage, /model, plugin commands,
+        and future registry commands from diverging here.
+        """
+        if self._api_command_gateway is None:
+            from gateway.run import GatewayRunner
+
+            self._api_command_gateway = GatewayRunner()
+        return self._api_command_gateway
+
+    def _make_api_command_event(self, command: str, session_id: str):
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id=session_id or "default",
+            chat_name="Chrome Extension",
+            chat_type="dm",
+            user_id="chrome-extension",
+            user_name="Chrome Extension",
+        )
+        return MessageEvent(
+            text=command,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"api-command-{uuid.uuid4().hex[:12]}",
+            internal=True,
+        )
+
+    def _bind_api_command_session(self, runner: Any, event: Any, session_id: str) -> None:
+        """Map the synthetic API source to the chat-completions session id."""
+        if not session_id:
+            return
+        try:
+            from datetime import datetime
+            from gateway.session import SessionEntry
+
+            source = event.source
+            session_key = runner._session_key_for_source(source)
+            store = runner.session_store
+            now = datetime.now()
+            with store._lock:
+                store._ensure_loaded_locked()
+                entry = store._entries.get(session_key)
+                if entry is None:
+                    entry = SessionEntry(
+                        session_key=session_key,
+                        session_id=session_id,
+                        created_at=now,
+                        updated_at=now,
+                        origin=source,
+                        display_name=source.chat_name,
+                        platform=source.platform,
+                        chat_type=source.chat_type,
+                    )
+                    store._entries[session_key] = entry
+                else:
+                    entry.session_id = session_id
+                    entry.updated_at = now
+                    entry.origin = source
+                    entry.display_name = source.chat_name
+                    entry.platform = source.platform
+                    entry.chat_type = source.chat_type
+                store._save()
+        except Exception as exc:
+            logger.debug("[api_server] failed to bind API command session: %s", exc)
+
+    async def _dispatch_api_gateway_command(self, command: str, session_id: str) -> str:
+        runner = self._get_api_command_gateway()
+        event = self._make_api_command_event(command, session_id)
+        self._bind_api_command_session(runner, event, session_id)
+        result = await runner._handle_message(event)
+        return str(result) if result is not None else ""
+
+    async def _handle_api_command(self, request: "web.Request") -> "web.Response":
+        """POST /v1/commands — execute slash commands for API clients."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        raw_command = str(body.get("command") or "").strip()
+        if not raw_command.startswith("/"):
+            return web.json_response(
+                _openai_error("Command must start with '/'", code="invalid_command"),
+                status=400,
+            )
+
+        command_text = raw_command[1:].strip()
+        command_name, _, arg_text = command_text.partition(" ")
+        command_name = command_name.strip()
+        args = arg_text.strip()
+        if not command_name:
+            return web.json_response(
+                _openai_error("Missing command name", code="invalid_command"),
+                status=400,
+            )
+
+        approval_session_key = (
+            str(body.get("approval_session_key") or "").strip()
+            or str(body.get("approvalSessionKey") or "").strip()
+            or str(body.get("session_key") or "").strip()
+            or str(body.get("session_id") or "").strip()
+            or request.headers.get("X-Hermes-Session-Key", "").strip()
+            or request.headers.get("X-Hermes-Session-Id", "").strip()
+        )
+
+        from hermes_cli.commands import gateway_command_entries, gateway_help_lines, resolve_command
+
+        command_def = resolve_command(command_name)
+        canonical = command_def.name if command_def is not None else command_name
+
+        if canonical in {"help", "commands"}:
+            text = "Hermes commands available through API clients:\n\n" + "\n".join(gateway_help_lines())
+            return web.json_response({
+                "object": "hermes.api_command.result",
+                "command": canonical,
+                "content": text,
+                "commands": gateway_command_entries(),
+            })
+
+        if canonical == "status":
+            pending_approval = False
+            yolo_enabled = False
+            approval_mode = "manual"
+            env_yolo = str(os.getenv("HERMES_YOLO_MODE", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+            if approval_session_key:
+                try:
+                    from tools.approval import has_blocking_approval, is_session_yolo_enabled
+
+                    pending_approval = has_blocking_approval(approval_session_key)
+                    yolo_enabled = is_session_yolo_enabled(approval_session_key)
+                except Exception:
+                    pass
+            try:
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+                approvals_cfg = cfg.get("approvals", {}) if isinstance(cfg, dict) else {}
+                if isinstance(approvals_cfg, dict):
+                    raw_mode = approvals_cfg.get("mode", "manual")
+                    approval_mode = "off" if raw_mode is False else str(raw_mode or "manual")
+            except Exception:
+                pass
+            text = "\n".join([
+                "Hermes API server is running.",
+                f"Session: {approval_session_key or 'not provided'}",
+                f"Active runs: {len(self._active_run_agents)}",
+                f"Pending approval: {'yes' if pending_approval else 'no'}",
+                f"Approval mode: {approval_mode}",
+                f"Session YOLO mode: {'enabled' if yolo_enabled else 'disabled'}",
+                f"Global HERMES_YOLO_MODE: {'enabled' if env_yolo else 'disabled'}",
+            ])
+            return web.json_response({
+                "object": "hermes.api_command.result",
+                "command": canonical,
+                "content": text,
+                "commands": gateway_command_entries(),
+            })
+
+        if canonical in {"approve", "deny"}:
+            if not approval_session_key:
+                return web.json_response(
+                    _openai_error("Missing session ID for approval command", code="missing_session_id"),
+                    status=400,
+                )
+            words = args.lower().split()
+            resolve_all = "all" in words
+            if canonical == "deny":
+                choice = "deny"
+            elif any(word in {"always", "permanent", "permanently"} for word in words):
+                choice = "always"
+            elif any(word in {"session", "ses"} for word in words):
+                choice = "session"
+            else:
+                choice = "once"
+            try:
+                from tools.approval import resolve_gateway_approval
+
+                resolved = resolve_gateway_approval(
+                    approval_session_key,
+                    choice,
+                    resolve_all=resolve_all,
+                )
+            except Exception as exc:
+                logger.exception("[api_server] command approval resolution failed")
+                return web.json_response(_openai_error(str(exc)), status=500)
+            if resolved <= 0:
+                content = "No pending approval for this session."
+            elif choice == "deny":
+                content = f"Denied {resolved} pending approval{'s' if resolved != 1 else ''}."
+            else:
+                content = f"Approved {resolved} pending approval{'s' if resolved != 1 else ''} ({choice})."
+            return web.json_response({
+                "object": "hermes.api_command.result",
+                "command": canonical,
+                "content": content,
+                "resolved": resolved,
+            })
+
+        if canonical == "yolo":
+            if not approval_session_key:
+                return web.json_response(
+                    _openai_error("Missing session ID for /yolo", code="missing_session_id"),
+                    status=400,
+                )
+            from tools.approval import (
+                disable_session_yolo,
+                enable_session_yolo,
+                is_session_yolo_enabled,
+            )
+
+            arg = args.lower()
+            if arg in {"off", "disable", "disabled", "false", "0"}:
+                disable_session_yolo(approval_session_key)
+                enabled = False
+            elif arg in {"on", "enable", "enabled", "true", "1"}:
+                enable_session_yolo(approval_session_key)
+                enabled = True
+            else:
+                enabled = not is_session_yolo_enabled(approval_session_key)
+                if enabled:
+                    enable_session_yolo(approval_session_key)
+                else:
+                    disable_session_yolo(approval_session_key)
+            return web.json_response({
+                "object": "hermes.api_command.result",
+                "command": canonical,
+                "content": f"YOLO mode {'enabled' if enabled else 'disabled'} for this session.",
+            })
+
+        if canonical == "new":
+            return web.json_response({
+                "object": "hermes.api_command.result",
+                "command": canonical,
+                "content": "Start a new conversation from the extension to reset the API session.",
+            })
+
+        if command_def is not None:
+            try:
+                content = await self._dispatch_api_gateway_command(
+                    raw_command,
+                    approval_session_key,
+                )
+            except Exception as exc:
+                logger.exception("[api_server] API slash command dispatch failed for /%s", canonical)
+                return web.json_response(_openai_error(str(exc)), status=500)
+            return web.json_response({
+                "object": "hermes.api_command.result",
+                "command": canonical,
+                "content": content,
+            })
+
+        return web.json_response({
+            "object": "hermes.api_command.result",
+            "command": command_name,
+            "content": f"Unknown command `/{command_name}`. Type `/commands` to see available commands.",
+        })
+
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
@@ -1417,16 +1783,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples are sent as custom Hermes SSE events so
+                frontends can display structured agent state without storing
+                those markers in conversation history.  Tool progress uses
+                ``hermes.tool.progress``; dangerous-command approvals use
+                ``hermes.approval.request``.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__approval_request__":
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: hermes.approval.request\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -2769,6 +3140,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        approval_event_callback=None,
+        approval_session_key: Optional[str] = None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
@@ -2798,11 +3171,49 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_ref is not None:
                 agent_ref[0] = agent
             effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
+            approval_token = None
+            session_tokens = []
+            if approval_event_callback is not None:
+                from gateway.session_context import clear_session_vars, set_session_vars
+                from tools.approval import (
+                    register_gateway_notify,
+                    reset_current_session_key,
+                    set_current_session_key,
+                    unregister_gateway_notify,
+                )
+                key = approval_session_key or gateway_session_key or session_id or effective_task_id
+                try:
+                    approval_token = set_current_session_key(key)
+                    session_tokens = set_session_vars(
+                        platform="api_server",
+                        session_key=key,
+                    )
+                    register_gateway_notify(key, approval_event_callback)
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                    )
+                finally:
+                    try:
+                        unregister_gateway_notify(key)
+                    finally:
+                        if approval_token is not None:
+                            try:
+                                reset_current_session_key(approval_token)
+                            except Exception:
+                                pass
+                        if session_tokens:
+                            try:
+                                clear_session_vars(session_tokens)
+                            except Exception:
+                                pass
+            else:
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -3431,6 +3842,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            self._app.router.add_post("/v1/approvals", self._handle_chat_approval)
+            self._app.router.add_post("/v1/commands", self._handle_api_command)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
