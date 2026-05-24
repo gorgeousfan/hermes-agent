@@ -913,6 +913,37 @@ def _load_service_tier() -> str | None:
     return None
 
 
+def _coerce_int_config(value, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_checkpoint_config() -> dict:
+    """Return checkpoint settings for TUI-created agents.
+
+    Match classic CLI semantics: launch flag/env enables checkpoints, otherwise
+    use the `checkpoints:` config section; scalar booleans are legacy shorthand.
+    """
+    cfg = _load_cfg()
+    cp_cfg = cfg.get("checkpoints", {}) if isinstance(cfg, dict) else {}
+    if isinstance(cp_cfg, bool):
+        cp_cfg = {"enabled": cp_cfg}
+    elif not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+
+    return {
+        "enabled": is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS"))
+        or is_truthy_value(cp_cfg.get("enabled"), default=False),
+        "max_snapshots": _coerce_int_config(cp_cfg.get("max_snapshots"), 20),
+        "max_total_size_mb": _coerce_int_config(cp_cfg.get("max_total_size_mb"), 500),
+        "max_file_size_mb": _coerce_int_config(cp_cfg.get("max_file_size_mb"), 10),
+    }
+
+
 def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
 
@@ -2022,6 +2053,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
+    checkpoint_cfg = _load_checkpoint_config()
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -2041,7 +2073,10 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         session_id=session_id or key,
         session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=checkpoint_cfg["enabled"],
+        checkpoint_max_snapshots=checkpoint_cfg["max_snapshots"],
+        checkpoint_max_total_size_mb=checkpoint_cfg["max_total_size_mb"],
+        checkpoint_max_file_size_mb=checkpoint_cfg["max_file_size_mb"],
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
