@@ -547,3 +547,79 @@ class TestEdgeCases:
         assert "just now" in output
         assert "2h ago" in output
         assert "3d ago" in output
+
+
+# ─── Cron/tool source exclusion (default hide, explicit --source opt-in) ─────
+
+
+class TestCmdSessionsSourceExclusion:
+    """Regression guards: cron and tool sessions are hidden by default in
+    ``hermes sessions list`` and ``hermes sessions browse``, but remain
+    visible when the user passes an explicit ``--source`` filter.
+    """
+
+    def test_list_hides_cron_and_tool_by_default(self, monkeypatch):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "list"])
+
+        from hermes_cli.main import main as hermes_main
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool", "cron"],
+            limit=20,
+        )
+
+    def test_list_source_filter_disables_default_exclusions(self, monkeypatch):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "list", "--source", "cron"])
+
+        from hermes_cli.main import main as hermes_main
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source="cron",
+            exclude_sources=None,
+            limit=20,
+        )
+
+    def test_browse_hides_cron_and_tool_by_default(self, monkeypatch):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "browse"])
+
+        from hermes_cli.main import main as hermes_main
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source=None,
+            exclude_sources=["tool", "cron"],
+            limit=500,
+        )
+        mock_db.close.assert_called_once()
+
+    def test_browse_source_filter_disables_default_exclusions(self, monkeypatch):
+        mock_db = MagicMock()
+        mock_db.list_sessions_rich.return_value = []
+
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: mock_db)
+        monkeypatch.setattr("sys.argv", ["hermes", "sessions", "browse", "--source", "cron"])
+
+        from hermes_cli.main import main as hermes_main
+        hermes_main()
+
+        mock_db.list_sessions_rich.assert_called_once_with(
+            source="cron",
+            exclude_sources=None,
+            limit=500,
+        )
+        mock_db.close.assert_called_once()
