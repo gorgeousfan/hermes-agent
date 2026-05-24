@@ -748,6 +748,48 @@ class TestGetModelContextLength:
         assert get_model_context_length("test/model") == 32000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_stale_openrouter_underreport_yields_curated_default(self, mock_fetch):
+        """OpenRouter can report 32K output-token caps as full context for
+        new large-context models. If a curated family fallback exists above
+        Hermes' 64K floor, the stale metadata must not brick startup.
+        """
+        mock_fetch.return_value = {
+            "nvidia/nemotron-3-120b": {"context_length": 32768}
+        }
+
+        assert get_model_context_length("nvidia/nemotron-3-120b") == 131072
+
+    def test_stale_low_cache_for_curated_model_is_invalidated(self, tmp_path, monkeypatch):
+        """Persisted 32K cache values from bad metadata must be dropped for
+        curated large-context families such as Nemotron.
+        """
+        from agent import model_metadata as mm
+        import yaml as _yaml
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://openrouter.ai/api/v1"
+        stale_key = f"nvidia/nemotron-3-120b@{base_url}"
+        other_key = f"some/model@{base_url}"
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            stale_key: 32768,
+            other_key: 32768,
+        }}))
+
+        with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            ctx = get_model_context_length(
+                "nvidia/nemotron-3-120b",
+                base_url=base_url,
+            )
+
+        assert ctx == 131072
+        remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert stale_key not in remaining
+        assert remaining.get(other_key) == 32768
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_fallback_to_defaults(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("anthropic/claude-sonnet-4") == 200000

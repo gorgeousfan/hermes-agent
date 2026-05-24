@@ -1102,6 +1102,38 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+def _lookup_hardcoded_default_context(model: str) -> Optional[int]:
+    """Return the broad-family fallback context for *model*, if any.
+
+    ``DEFAULT_CONTEXT_LENGTHS`` intentionally uses longest-first substring
+    matching. Keep that logic in one place so early metadata/cache guards can
+    ask, "do we already have a curated fallback that proves this 32K value is
+    stale?" without duplicating the matching rules.
+    """
+    model_lower = model.lower()
+    for default_model, length in sorted(
+        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if default_model in model_lower:
+            return length
+    return None
+
+
+def _metadata_underreports_curated_model(model: str, context_length: int | None) -> bool:
+    """Return True when metadata/cache is below the floor but curated defaults are usable.
+
+    This generalizes the Kimi 32K guard: provider metadata and persisted cache
+    entries sometimes report a 32K-ish output-token limit as the full context
+    window for newly-added large-context models. When Hermes has a curated
+    family fallback at or above the minimum, prefer that over taking the bot
+    down with the 64K pre-flight guard.
+    """
+    if not isinstance(context_length, int) or context_length >= MINIMUM_CONTEXT_LENGTH:
+        return False
+    fallback = _lookup_hardcoded_default_context(model)
+    return bool(fallback and fallback >= MINIMUM_CONTEXT_LENGTH)
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1505,12 +1537,16 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
-            # Invalidate stale 32k cache entries for Kimi-family models.
-            elif cached <= 32768 and _model_name_suggests_kimi(model):
+            # Invalidate stale low cache entries for curated large-context families.
+            elif _metadata_underreports_curated_model(model, cached):
                 logger.info(
-                    "Dropping stale Kimi cache entry %s@%s -> %s (OpenRouter underreport); "
-                    "re-resolving via hardcoded defaults",
-                    model, base_url, f"{cached:,}",
+                    "Dropping stale context cache entry %s@%s -> %s "
+                    "(below %s but curated fallback is %s); re-resolving",
+                    model,
+                    base_url,
+                    f"{cached:,}",
+                    f"{MINIMUM_CONTEXT_LENGTH:,}",
+                    f"{_lookup_hardcoded_default_context(model):,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Nous Portal: the portal /v1/models endpoint is authoritative.
@@ -1681,12 +1717,17 @@ def get_model_context_length(
         metadata = fetch_model_metadata()
         if model in metadata:
             or_ctx = metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
-            # Guard against stale OpenRouter metadata for Kimi-family models.
-            if or_ctx == 32768 and _model_name_suggests_kimi(model):
+            # Guard against stale OpenRouter metadata for curated large-context
+            # families (e.g. Kimi or Nemotron) where OpenRouter can report a
+            # 32K-ish output-token cap as the full context window.
+            if _metadata_underreports_curated_model(model, or_ctx):
                 logger.info(
                     "Rejecting OpenRouter metadata context=%s for %r "
-                    "(Kimi-family underreport); falling through to hardcoded defaults",
-                    or_ctx, model,
+                    "(below %s but curated fallback is %s); falling through",
+                    or_ctx,
+                    model,
+                    f"{MINIMUM_CONTEXT_LENGTH:,}",
+                    f"{_lookup_hardcoded_default_context(model):,}",
                 )
             else:
                 return or_ctx
@@ -1697,12 +1738,9 @@ def get_model_context_length(
     # Only check `default_model in model` (is the key a substring of the input).
     # The reverse (`model in default_model`) causes shorter names like
     # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
-    model_lower = model.lower()
-    for default_model, length in sorted(
-        DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
-    ):
-        if default_model in model_lower:
-            return length
+    hardcoded_ctx = _lookup_hardcoded_default_context(model)
+    if hardcoded_ctx is not None:
+        return hardcoded_ctx
 
     # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
