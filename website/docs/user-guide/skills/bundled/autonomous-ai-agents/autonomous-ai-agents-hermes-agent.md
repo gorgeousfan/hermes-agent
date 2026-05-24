@@ -353,7 +353,8 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 ~/.hermes/config.yaml       Main configuration
 ~/.hermes/.env              API keys and secrets
 $HERMES_HOME/skills/        Installed skills
-~/.hermes/sessions/         Session transcripts
+~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts (and optional per-session JSON snapshots when sessions.write_json_snapshots: true)
+~/.hermes/state.db          Canonical session store (SQLite + FTS5)
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
 ~/.hermes/hermes-agent/     Source code (if git-installed)
@@ -713,8 +714,9 @@ sessions still have zero `kanban_*` schema footprint unless configured.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after the configured `kanban.failure_limit`
-  consecutive non-success attempts (default: 2).
+  Auto-blocks a task after `failure_limit` consecutive spawn failures
+  (default 2; configurable via `kanban.failure_limit` or per-task
+  `max_retries`).
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
@@ -858,7 +860,7 @@ Common gateway problems:
 - **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, test suite, line endings): see the dedicated **Windows-Specific Quirks** section above.
 
 ### Auxiliary models not working
-If `auxiliary` tasks (vision, compression) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
+If `auxiliary` tasks (vision, compression, session_search) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
 ```bash
 hermes config set auxiliary.vision.provider <your_provider>
 hermes config set auxiliary.vision.model <model_name>
@@ -883,7 +885,7 @@ hermes config set auxiliary.vision.model <model_name>
 | Env variables | `hermes config env-path` or [Env vars reference](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) |
 | CLI commands | `hermes --help` or [CLI reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) |
 | Gateway logs | `~/.hermes/logs/gateway.log` |
-| Session files | `~/.hermes/sessions/` or `hermes sessions browse` |
+| Session files | `hermes sessions browse` (reads state.db) |
 | Source code | `~/.hermes/hermes-agent/` |
 
 ---

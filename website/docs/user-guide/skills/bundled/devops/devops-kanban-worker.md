@@ -39,7 +39,7 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
 ## Tenant isolation
 
@@ -47,6 +47,31 @@ If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading
 
 - Good: `business-a: Acme is our biggest customer`
 - Bad (leaks): `Acme is our biggest customer`
+
+## Repository code-change workflow
+
+For repository code or documentation changes, the implementation worker owns the
+branch and PR, not the merge:
+
+1. Work in `$HERMES_KANBAN_WORKSPACE` on the assigned branch.
+2. Commit, push, and open a PR against the correct base branch.
+3. Do **not** merge, squash, rebase-merge, delete the branch, or enable
+   auto-merge.
+4. After the PR exists, create a separate reviewer Kanban task assigned to the
+   reviewer profile. Include the PR URL/number, implementation task id, changed
+   files, and verification performed. If this task is the implementation parent,
+   pass `parents=[os.environ["HERMES_KANBAN_TASK"]]` so review cannot start
+   before the implementation handoff exists.
+5. Complete the implementation task with structured PR handoff metadata
+   containing `pr_url`, `pr_number`, `changed_files`, and `verification`. Do
+   **not** block it with `review-required` after creating a parent-gated reviewer
+   task; a blocked parent keeps the reviewer task in `todo`.
+6. The reviewer completes with a verdict or blocks with required changes.
+   Required changes become a new implementation task linked from the reviewer
+   task.
+7. The final merge decision belongs to the user. A reviewer may approve or
+   request changes, but neither reviewer nor implementer should merge without an
+   explicit user merge instruction.
 
 ## Good summary + metadata shapes
 
@@ -65,28 +90,33 @@ kanban_complete(
 )
 ```
 
-**Coding task that needs human review (review-required):**
+**Repository code-change task with PR review gate:**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+When you open a PR and create a reviewer task with `parents=[your-task-id]`, complete the implementation task instead of blocking it. The completion row is the handoff that promotes the parent-gated reviewer task. Blocking the implementation task with `review-required` leaves the reviewer in `todo` forever because Kanban dependencies only promote when parents are `done`.
 
 ```python
-import json
-
-kanban_comment(
-    body="review-required handoff:\n" + json.dumps({
-        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
-        "tests_run": 14,
-        "tests_passed": 14,
-        "diff_path": "/path/to/worktree",  # or PR url if pushed
-        "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
-    }, indent=2),
+review = kanban_create(
+    title="review PR #123",
+    assignee="reviewer-profile",
+    body="Review PR #123: https://github.com/org/repo/pull/123. Check changed files, tests, and merge safety. Do not merge.",
+    parents=[os.environ["HERMES_KANBAN_TASK"]],
 )
-kanban_block(
-    reason="review-required: rate limiter shipped, 14/14 tests pass — needs eyes on the user_id/IP fallback choice before merging",
+kanban_complete(
+    summary="PR #123 opened and reviewer task created; no merge/auto-merge performed.",
+    metadata={
+        "pr_number": 123,
+        "pr_url": "https://github.com/org/repo/pull/123",
+        "review_task_id": review["task_id"],
+        "changed_files": ["rate_limiter.py", "tests/test_rate_limiter.py"],
+        "verification": ["pytest tests/test_rate_limiter.py -q"],
+        "merge_performed": False,
+        "auto_merge_enabled": False,
+    },
+    created_cards=[review["task_id"]],
 )
 ```
 
-Use `kanban_complete` only when the task is genuinely terminal — e.g. a one-line typo fix, a docs change with no functional consequences, or a research task where the artifact IS the writeup itself.
+Use `kanban_block` only for genuine ambiguity or external input you need before you can produce the handoff. For reviewer-discovered required changes, the reviewer blocks with findings and a new implementation task is linked from that reviewer task.
 
 **Research task:**
 ```python
@@ -174,6 +204,13 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "spawn_failed"` + `error: "..."` — usually a profile config issue (missing credential, bad PATH). Ask the human via `kanban_block` instead of retrying blindly.
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
+
+## Notification routing
+
+You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
+- `notification_sources: ['*']` accepts subscriptions from all profiles.
+- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
+- Omitting the key keeps the default behavior (profile isolation).
 
 ## Do NOT
 
