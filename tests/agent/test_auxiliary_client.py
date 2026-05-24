@@ -359,6 +359,104 @@ class TestAnthropicOAuthFlag:
 
 
 class TestBuildCodexClient:
+    def test_codex_backend_omits_unsupported_sampling_kwargs(self):
+        kwargs = _build_call_kwargs(
+            "auto",
+            "gpt-5.5",
+            [{"role": "user", "content": "remember this"}],
+            temperature=0.3,
+            max_tokens=5120,
+            timeout=30,
+            base_url="https://chatgpt.com/backend-api/codex/",
+        )
+
+        assert "temperature" not in kwargs
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_codex_adapter_converts_tool_messages_to_responses_items(self):
+        from types import SimpleNamespace
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        captured = {}
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter([])
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        content=[SimpleNamespace(type="output_text", text="ok")],
+                    )],
+                    usage=None,
+                )
+
+        class _FakeResponses:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return _FakeStream()
+
+        fake_client = SimpleNamespace(responses=_FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.2-codex")
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "You are Hermes."},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": "call_abc123", "content": "file contents"},
+                {"role": "user", "content": "remember this"},
+            ],
+        )
+
+        assert captured["instructions"] == "You are Hermes."
+        assert all(item.get("role") != "tool" for item in captured["input"])
+        assert any(item.get("type") == "function_call" for item in captured["input"])
+        function_output = next(
+            item for item in captured["input"] if item.get("type") == "function_call_output"
+        )
+        assert function_output["call_id"] == "call_abc123"
+        assert function_output["output"] == "file contents"
+
+    def test_codex_adapter_converts_object_tool_calls_to_responses_items(self):
+        from types import SimpleNamespace
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [SimpleNamespace(
+                    id="call_obj123",
+                    type="function",
+                    function=SimpleNamespace(name="read_file", arguments="{}"),
+                )],
+            },
+            {"role": "tool", "tool_call_id": "call_obj123", "content": "file contents"},
+        ]
+
+        items = _chat_messages_to_responses_input(messages)
+
+        function_call = next(item for item in items if item.get("type") == "function_call")
+        assert function_call["call_id"] == "call_obj123"
+        assert function_call["name"] == "read_file"
+        function_output = next(
+            item for item in items if item.get("type") == "function_call_output"
+        )
+        assert function_output["call_id"] == "call_obj123"
+        assert function_output["output"] == "file contents"
+
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
