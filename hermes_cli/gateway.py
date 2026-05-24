@@ -2437,6 +2437,30 @@ def _get_restart_drain_timeout() -> float:
     return parse_restart_drain_timeout(raw)
 
 
+def _schedule_vault_runtime_smoke(delay_seconds: float = 8.0) -> None:
+    """Run the vault-backed runtime smoke test shortly after a restart.
+
+    The smoke script never prints secret values. It writes a local log and
+    exits non-zero on failure so watchdog/cron can alert separately.
+    """
+    script = get_hermes_home() / "scripts" / "hermes_vault_runtime_smoke.py"
+    if not script.exists():
+        return
+    log_path = get_hermes_home() / "logs" / "vault_runtime_smoke.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log = open(log_path, "ab")
+        subprocess.Popen(
+            [sys.executable, str(script), "--delay", str(delay_seconds)],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        print(f"↻ Scheduled post-restart vault smoke test → {log_path}")
+    except Exception as exc:
+        print(f"⚠ Could not schedule post-restart vault smoke test: {exc.__class__.__name__}")
+
+
 def systemd_install(
     force: bool = False,
     system: bool = False,
@@ -2636,6 +2660,7 @@ def systemd_restart(system: bool = False):
             )
             return
         _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+        _schedule_vault_runtime_smoke()
         return
 
     if _recover_pending_systemd_restart(system=system, previous_pid=pid):
@@ -2662,6 +2687,7 @@ def systemd_restart(system: bool = False):
         )
         return
     _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+    _schedule_vault_runtime_smoke()
 
 
 
@@ -3036,6 +3062,7 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
+            _schedule_vault_runtime_smoke(delay_seconds=15.0)
             return
         if pid is not None:
             try:
@@ -3048,6 +3075,7 @@ def launchd_restart():
                     print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
+        _schedule_vault_runtime_smoke()
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
             raise
@@ -3057,6 +3085,7 @@ def launchd_restart():
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
+        _schedule_vault_runtime_smoke()
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
