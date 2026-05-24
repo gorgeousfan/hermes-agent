@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `pentest-ops` | standalone tools + skills | Evidence-first authorised pentest operating layer backed by Recon Graph |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -65,7 +66,22 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 
-Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
+Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for selected bundled plugins follows.
+
+### pentest-ops
+
+Adds a Hermes-native authorised pentest operating layer without changing the core agent loop. The plugin registers a `recon_graph` toolset, a `pentest_ops_status` diagnostic tool, and a namespaced skill pack (`pentest-ops:*`) for engagement orchestration, evidence discipline, data-flow modelling, web/API testing, infrastructure exposure, and finding validation.
+
+When the Recon Graph backend package is installed, the plugin also exposes the backend tools (`rga_status`, `rga_ingest_artifact`, `rga_policy_check`, `rga_report_promote`, and friends) through Hermes. If the backend is missing, the plugin still loads and the status tool reports the dependency problem instead of breaking startup.
+
+**Enabling:**
+
+```bash
+hermes plugins enable pentest-ops
+hermes tools enable recon_graph
+```
+
+**Usage:** load `pentest-ops:pentest-engagement-orchestrator` for the operating loop. See [Pentest Ops Layer](/docs/guides/pentest-ops-layer) for the full workflow.
 
 ### disk-cleanup
 
