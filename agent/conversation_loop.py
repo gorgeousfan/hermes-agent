@@ -484,7 +484,8 @@ def run_conversation(
             tools=agent.tools or None,
         )
 
-        if _preflight_tokens >= agent.context_compressor.threshold_tokens:
+        if _preflight_tokens >= agent.context_compressor.threshold_tokens \
+           and agent.context_compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
@@ -4090,6 +4091,7 @@ def run_conversation(
 
     # Build result with interrupt info if applicable
     result = {
+        "session_id": agent.session_id,
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
