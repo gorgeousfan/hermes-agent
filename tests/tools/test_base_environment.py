@@ -5,9 +5,13 @@ init_session() failure handling, and the CWD marker contract.
 """
 
 import uuid
+import os
+import subprocess
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _cwd_marker
+import pytest
+
+from tools.environments.base import BaseEnvironment, _cwd_marker, _virtualenv_path_guard
 
 
 class _TestableEnv(BaseEnvironment):
@@ -89,6 +93,68 @@ class TestWrapCommand:
         wrapped = env._wrap_command("ls", "/nonexistent")
 
         assert "exit 126" in wrapped
+
+    def test_virtualenv_path_guard_runs_before_snapshot_update(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo hello", "/tmp")
+
+        guard_pos = wrapped.index('if [ -n "${VIRTUAL_ENV:-}" ]')
+        export_pos = wrapped.index("export -p >")
+        assert guard_pos < export_pos
+
+
+@pytest.mark.skipif(not os.path.isfile("/bin/bash"), reason="Requires /bin/bash")
+class TestVirtualenvPathGuard:
+    def _run_guard(self, env):
+        proc = subprocess.run(
+            ["/bin/bash", "-c", f"{_virtualenv_path_guard()}\nprintf '%s' \"$PATH\""],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        return proc.stdout
+
+    def test_prepends_virtualenv_bin_when_directory_exists(self, tmp_path):
+        venv = tmp_path / ".venv"
+        (venv / "bin").mkdir(parents=True)
+
+        path = self._run_guard({
+            "VIRTUAL_ENV": str(venv),
+            "PATH": "/usr/bin:/bin",
+        })
+
+        assert path == f"{venv / 'bin'}:/usr/bin:/bin"
+
+    def test_leaves_path_unchanged_when_virtualenv_unset(self):
+        path = self._run_guard({"PATH": "/usr/bin:/bin"})
+
+        assert path == "/usr/bin:/bin"
+
+    def test_leaves_path_unchanged_when_virtualenv_bin_missing(self, tmp_path):
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+
+        path = self._run_guard({
+            "VIRTUAL_ENV": str(venv),
+            "PATH": "/usr/bin:/bin",
+        })
+
+        assert path == "/usr/bin:/bin"
+
+    def test_does_not_duplicate_virtualenv_bin(self, tmp_path):
+        venv = tmp_path / ".venv"
+        bin_dir = venv / "bin"
+        bin_dir.mkdir(parents=True)
+
+        path = self._run_guard({
+            "VIRTUAL_ENV": str(venv),
+            "PATH": f"/usr/local/bin:{bin_dir}:/usr/bin:/bin",
+        })
+
+        assert path == f"/usr/local/bin:{bin_dir}:/usr/bin:/bin"
 
 
 class TestExtractCwdFromOutput:

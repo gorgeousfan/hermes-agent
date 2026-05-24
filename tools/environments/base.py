@@ -280,6 +280,24 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+def _virtualenv_path_guard() -> str:
+    """Return a shell snippet that keeps ``$VIRTUAL_ENV/bin`` on PATH.
+
+    Login shell profile scripts can reset PATH after the subprocess inherits
+    VIRTUAL_ENV from the gateway.  Preserve the active virtualenv's console
+    scripts in terminal snapshots without changing PATH when VIRTUAL_ENV is
+    unset or points at a non-existent venv.
+    """
+    return (
+        'if [ -n "${VIRTUAL_ENV:-}" ] && [ -d "$VIRTUAL_ENV/bin" ]; then\n'
+        '  case ":$PATH:" in\n'
+        '    *":$VIRTUAL_ENV/bin:"*) ;;\n'
+        '    *) export PATH="$VIRTUAL_ENV/bin${PATH:+:$PATH}" ;;\n'
+        "  esac\n"
+        "fi"
+    )
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -369,7 +387,9 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        path_guard = _virtualenv_path_guard()
         bootstrap = (
+            f"{path_guard}\n"
             f"export -p > {_quoted_snap}\n"
             f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
             f"alias -p >> {_quoted_snap}\n"
@@ -451,6 +471,7 @@ class BaseEnvironment(ABC):
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:
+            parts.append(_virtualenv_path_guard())
             parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
@@ -851,4 +872,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-
