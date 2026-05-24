@@ -944,6 +944,87 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+# Character budget for the compact <pinned_skills> block. Keeps the system
+# prompt bounded regardless of how many skills get pinned.
+_PINNED_SKILLS_CHAR_BUDGET = 1200
+
+
+def _get_pinned_candidates(
+    skills_by_category: "dict[str, list[tuple[str, str]]]",
+) -> "list[tuple[str, str]]":
+    """Return skills to surface in the compact ``<pinned_skills>`` block.
+
+    Source of truth is the skill_usage sidecar (``~/.hermes/skills/.usage.json``),
+    reached via ``tools/skill_usage.agent_created_report()`` which merges the
+    on-disk skill list with sidecar fields (``pinned``, ``view_count``,
+    ``use_count``, ``state``, ...). Honours explicit user/agent pin choices
+    and avoids duplicating the canonical usage-tracking system.
+
+    Only skills with ``pinned=True`` and ``state != archived`` are returned,
+    ordered by ``activity_count`` descending and trimmed to
+    ``_PINNED_SKILLS_CHAR_BUDGET`` so the prompt stays bounded.
+
+    When nothing qualifies, returns ``[]``: the caller must omit the
+    ``<pinned_skills>`` block entirely. The block is named "pinned" and
+    must contain only genuinely pinned skills — never alphabetical
+    placeholders. The agent reaches everything else through
+    ``<skill_categories>`` + ``skills_list(category=...)``.
+    """
+    # name → (name, desc) lookup from the currently visible skill set.
+    all_skills: dict[str, tuple[str, str]] = {}
+    for entries in skills_by_category.values():
+        for name, desc in entries:
+            all_skills.setdefault(name, (name, desc))
+    if not all_skills:
+        return []
+
+    try:
+        from tools.skill_usage import agent_created_report
+
+        rows = agent_created_report()
+    except Exception:
+        logger.debug("skill_usage unavailable; no pinned skills will be surfaced", exc_info=True)
+        return []
+
+    pinned_rows = [
+        r for r in rows
+        if r.get("pinned") and r.get("state") != "archived"
+    ]
+    if not pinned_rows:
+        return []
+
+    pinned_rows.sort(key=lambda r: -int(r.get("activity_count") or 0))
+    result: list[tuple[str, str]] = []
+    chars = 0
+    for row in pinned_rows:
+        entry = all_skills.get(row.get("name") or "")
+        if entry is None:
+            # Pinned in sidecar but skill no longer installed/visible.
+            continue
+        cost = len(entry[0]) + len(entry[1]) + 6  # "  - name: desc\n"
+        if chars + cost > _PINNED_SKILLS_CHAR_BUDGET:
+            break
+        result.append(entry)
+        chars += cost
+    return result
+
+
+def _skill_usage_epoch() -> int:
+    """Coarse cache-key component reflecting sidecar mutation time.
+
+    Bumped whenever ``~/.hermes/skills/.usage.json`` is rewritten (which
+    happens on every ``set_pinned``, ``bump_view``, ``bump_use``, etc.).
+    Including this in the prompt cache key ensures pin-state changes are
+    reflected on the next prompt build without manual cache invalidation.
+    Returns 0 when the sidecar does not yet exist.
+    """
+    try:
+        sidecar = get_hermes_home() / "skills" / ".usage.json"
+        return int(sidecar.stat().st_mtime_ns)
+    except OSError:
+        return 0
+
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -1035,6 +1116,9 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        # Reflect sidecar mutations (pin state, archived, etc.) so the
+        # rendered prompt updates without explicit cache invalidation.
+        _skill_usage_epoch(),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1171,26 +1255,54 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
+        # ── Compact format: pinned skills + category summary ──────────────
+        # Replaces the previous full <available_skills> dump (which grows
+        # linearly with install size) with a fixed-budget block: pinned
+        # skills upfront, the rest exposed via skills_list(category=...).
+        # All existing framing (MUST-load, hermes-agent auto-load) is kept
+        # verbatim — only the inner index is compacted.
+
+        # Per-top-level-category counts + descriptions for <skill_categories>.
+        top_counts: dict[str, int] = {}
+        top_descs: dict[str, str] = {}
+        for cat, entries in skills_by_category.items():
+            top = cat.split("/")[0] if "/" in cat else cat
+            seen: set[str] = set()
+            for name, _ in entries:
+                if name not in seen:
+                    seen.add(name)
+                    top_counts[top] = top_counts.get(top, 0) + 1
+            # Prefer the description for the exact top-level category key.
+            if top not in top_descs and category_descriptions.get(cat):
+                top_descs[top] = category_descriptions[cat]
+
+        total_skills = sum(top_counts.values())
+
+        cat_lines = []
+        for cat, n in sorted(top_counts.items()):
+            desc = top_descs.get(cat, "")
+            if desc:
+                cat_lines.append(f"  {cat} ({n}): {desc}")
             else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+                cat_lines.append(f"  {cat} ({n})")
+
+        pinned = _get_pinned_candidates(skills_by_category)
+        pinned_block = ""
+        if pinned:
+            pinned_lines = [
+                f"  - {name}: {desc}" if desc else f"  - {name}"
+                for name, desc in pinned
+            ]
+            pinned_block = (
+                "<pinned_skills>\n"
+                + "\n".join(pinned_lines)
+                + "\n</pinned_skills>\n\n"
+            )
 
         result = (
             "## Skills (mandatory)\n"
+            f"You have access to {total_skills} specialized skills "
+            f"across {len(top_counts)} categories.\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
             "to your task, you MUST load it with skill_view(name) and follow its instructions. "
             "Err on the side of loading — it is always better to have context you don't need "
@@ -1211,10 +1323,14 @@ def build_skills_system_prompt(
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
+            + pinned_block
+            + "<skill_categories>\n"
+            + "\n".join(cat_lines)
+            + "\n</skill_categories>\n"
+            + "\n"
+            "Load any pinned skill listed above directly with skill_view(name). "
+            "Otherwise, list a category with skills_list(category=\"<name>\") "
+            "to see what's available, then load the chosen skill with skill_view(name).\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
 

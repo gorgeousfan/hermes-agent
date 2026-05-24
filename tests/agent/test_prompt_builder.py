@@ -262,9 +262,12 @@ class TestBuildSkillsSystemPrompt:
             "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "python-debug" in result
-        assert "Debug Python scripts" in result
-        assert "available_skills" in result
+        # New contract: skill names are no longer dumped in the prompt — they're
+        # discoverable via skills_list(category=...). The category surfaces with
+        # its count, and the prompt advertises the discovery affordance.
+        assert "coding (1)" in result
+        assert "<skill_categories>" in result
+        assert "skills_list(category=" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -274,8 +277,8 @@ class TestBuildSkillsSystemPrompt:
             d.mkdir(parents=True, exist_ok=True)
             (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
         result = build_skills_system_prompt()
-        # "search" should appear only once per category
-        assert result.count("- search") == 1
+        # Despite duplicate-named directories, the category counts each name once.
+        assert "tools (1)" in result
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
@@ -303,7 +306,8 @@ class TestBuildSkillsSystemPrompt:
             mock_sys.platform = "linux"
             result = build_skills_system_prompt()
 
-        assert "web-search" in result
+        # Compatible skill is counted in its category; incompatible one is not.
+        assert "apple (1)" in result
         assert "imessage" not in result
 
     def test_includes_matching_platform_skills(self, monkeypatch, tmp_path):
@@ -322,8 +326,8 @@ class TestBuildSkillsSystemPrompt:
             mock_sys.platform = "darwin"
             result = build_skills_system_prompt()
 
-        assert "imessage" in result
-        assert "Send iMessages" in result
+        # Compatible on macOS → counted in its category.
+        assert "apple (1)" in result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -351,7 +355,8 @@ class TestBuildSkillsSystemPrompt:
         ):
             result = build_skills_system_prompt()
 
-        assert "web-search" in result
+        # Disabled skills don't get counted; only the enabled one remains.
+        assert "tools (1)" in result
         assert "old-tool" not in result
 
     def test_rebuilds_prompt_when_disabled_skills_change(self, monkeypatch, tmp_path):
@@ -363,14 +368,16 @@ class TestBuildSkillsSystemPrompt:
         )
 
         first = build_skills_system_prompt()
-        assert "cached-skill" in first
+        assert "tools (1)" in first
 
         (tmp_path / "config.yaml").write_text(
             "skills:\n  disabled: [cached-skill]\n"
         )
 
         second = build_skills_system_prompt()
-        assert "cached-skill" not in second
+        # Once disabled, the only skill in tools/ is gone, so the whole prompt
+        # collapses to empty (no skills at all).
+        assert second == ""
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -391,8 +398,11 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "free-skill" in result
-        assert "gated-skill" in result
+        # Both skills count toward the "media" category — prerequisites are
+        # presentational (they affect skill_view output), not exclusionary.
+        # Names themselves are no longer dumped; they're discoverable via
+        # skills_list(category="media").
+        assert "media (2)" in result
 
     def test_includes_skills_with_met_prerequisites(self, monkeypatch, tmp_path):
         """Skills with satisfied prerequisites should appear normally."""
@@ -408,7 +418,7 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "ready-skill" in result
+        assert "media (1)" in result
 
     def test_non_local_backend_keeps_skill_visible_without_probe(
         self, monkeypatch, tmp_path
@@ -426,7 +436,171 @@ class TestBuildSkillsSystemPrompt:
         )
 
         result = build_skills_system_prompt()
-        assert "backend-skill" in result
+        assert "media (1)" in result
+
+
+class TestCompactSkillsPrompt:
+    """Compact <pinned_skills> + <skill_categories> rendering."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def test_preserves_must_load_and_hermes_agent_framing(self, monkeypatch, tmp_path):
+        """The MUST-load language and hermes-agent auto-load are kept verbatim."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "free-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: free-skill\ndescription: A skill\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        # MUST-load framing intact
+        assert "MUST load it with skill_view(name)" in result
+        assert "Err on the side of loading" in result
+        # hermes-agent auto-load instruction intact
+        assert "`hermes-agent` skill" in result
+        assert "hermes config set" in result
+        # New compact blocks present
+        assert "<skill_categories>" in result
+        # The old full-dump block is gone
+        assert "<available_skills>" not in result
+
+    def test_pinned_candidates_from_sidecar(self, monkeypatch, tmp_path):
+        """A skill with pinned=True in the sidecar surfaces in <pinned_skills>."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "tools" / "my-pinned"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-pinned\ndescription: Pinned skill\n---\n"
+        )
+        other_dir = tmp_path / "skills" / "tools" / "other-skill"
+        other_dir.mkdir(parents=True)
+        (other_dir / "SKILL.md").write_text(
+            "---\nname: other-skill\ndescription: Not pinned\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        fake_report = [
+            {
+                "name": "my-pinned",
+                "pinned": True,
+                "state": "active",
+                "activity_count": 17,
+            },
+            {
+                "name": "other-skill",
+                "pinned": False,
+                "state": "active",
+                "activity_count": 99,
+            },
+        ]
+        with patch("tools.skill_usage.agent_created_report", return_value=fake_report):
+            result = build_skills_system_prompt()
+
+        # Pinned block contains the pinned skill
+        assert "<pinned_skills>" in result
+        pinned_section = result.split("<pinned_skills>", 1)[1].split("</pinned_skills>", 1)[0]
+        assert "my-pinned" in pinned_section
+        # Non-pinned skill is NOT promoted into the pinned block, even with
+        # higher activity_count — pin state is the gating signal.
+        assert "other-skill" not in pinned_section
+
+    def test_no_pinned_block_when_skill_set_is_empty(self, monkeypatch, tmp_path):
+        """With zero installed skills, the entire skills block is empty —
+        no <pinned_skills>, no <skill_categories>."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from unittest.mock import patch
+
+        with patch("tools.skill_usage.agent_created_report", return_value=[]):
+            result = build_skills_system_prompt()
+
+        assert result == ""
+
+    def test_no_pinned_block_when_no_pins(self, monkeypatch, tmp_path):
+        """No sidecar pins → no <pinned_skills> block at all (pinned means pinned).
+        Skills remain reachable via <skill_categories> + skills_list(category=...)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name in [
+            ("alpha", "apple-skill"),
+            ("alpha", "banana-skill"),
+            ("beta", "cherry-skill"),
+        ]:
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: desc-{name}\n---\n"
+            )
+
+        from unittest.mock import patch
+
+        with patch("tools.skill_usage.agent_created_report", return_value=[]):
+            result = build_skills_system_prompt()
+
+        # No pinned block — the tag must not be emitted at all.
+        assert "<pinned_skills>" not in result
+        # But the categories block is present and counts everything.
+        assert "<skill_categories>" in result
+        assert "alpha (2)" in result
+        assert "beta (1)" in result
+
+    def test_skill_categories_summary_shows_counts(self, monkeypatch, tmp_path):
+        """The <skill_categories> block lists each top-level category with its count."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name in [
+            ("alpha", "a1"),
+            ("alpha", "a2"),
+            ("beta", "b1"),
+        ]:
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: d\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        cat_section = result.split("<skill_categories>", 1)[1].split("</skill_categories>", 1)[0]
+        assert "alpha (2)" in cat_section
+        assert "beta (1)" in cat_section
+
+    def test_pin_change_invalidates_prompt_cache(self, monkeypatch, tmp_path):
+        """Toggling pinned state in the sidecar must surface on the next build,
+        without an explicit cache clear. Guarded by sidecar mtime in the cache key.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "tools" / "togglable"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: togglable\ndescription: A skill\n---\n"
+        )
+
+        from unittest.mock import patch
+
+        # First build: no pins → no <pinned_skills> block at all.
+        with patch("tools.skill_usage.agent_created_report", return_value=[]):
+            first = build_skills_system_prompt()
+        assert "<pinned_skills>" not in first
+
+        # Sidecar rewritten + sidecar reports "togglable" as pinned.
+        sidecar = tmp_path / "skills" / ".usage.json"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("{}")  # bumps mtime → cache key differs
+        pinned_report = [
+            {"name": "togglable", "pinned": True, "state": "active", "activity_count": 1}
+        ]
+        with patch("tools.skill_usage.agent_created_report", return_value=pinned_report):
+            second = build_skills_system_prompt()
+        assert "<pinned_skills>" in second
+        pinned_section = second.split("<pinned_skills>", 1)[1].split("</pinned_skills>", 1)[0]
+        assert "togglable" in pinned_section
 
 
 class TestBuildNousSubscriptionPrompt:
@@ -1037,7 +1211,9 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "duckduckgo" in result
+        # When the primary toolset is unavailable, the fallback skill is
+        # included — visible in its category count.
+        assert "search (1)" in result
 
     def test_requires_skill_hidden_when_toolset_missing(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1063,7 +1239,7 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets={"terminal"},
         )
-        assert "openhue" in result
+        assert "iot (1)" in result
 
     def test_unconditional_skill_always_shown(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1076,7 +1252,7 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "notes" in result
+        assert "general (1)" in result
 
     def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
         """Backward compat: calling with no args shows everything."""
@@ -1087,7 +1263,7 @@ class TestBuildSkillsSystemPromptConditional:
             "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
         )
         result = build_skills_system_prompt()
-        assert "duckduckgo" in result
+        assert "search (1)" in result
 
     def test_null_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata key present but null should not AttributeError."""
@@ -1102,7 +1278,7 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "safe-skill" in result
+        assert "general (1)" in result
 
     def test_null_hermes_under_metadata_does_not_crash(self, monkeypatch, tmp_path):
         """Regression: metadata.hermes present but null should not crash."""
@@ -1116,7 +1292,7 @@ class TestBuildSkillsSystemPromptConditional:
             available_tools=set(),
             available_toolsets=set(),
         )
-        assert "nested-null" in result
+        assert "general (1)" in result
 
 
 # =========================================================================
