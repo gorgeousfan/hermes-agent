@@ -887,6 +887,277 @@ def _read_configured_image_provider():
     return None
 
 
+_CUSTOM_IMAGE_SIZES = {
+    "landscape": "1536x1024",
+    "square": "1024x1024",
+    "portrait": "1024x1536",
+}
+
+_CUSTOM_IMAGE_INSTRUCTIONS = (
+    "You are an assistant that must fulfill image generation requests by "
+    "using the image_generation tool when provided."
+)
+
+
+def _openai_client_class():
+    """Return ``openai.OpenAI`` lazily so importing this tool stays cheap."""
+    import openai
+
+    return openai.OpenAI
+
+
+def _resolve_custom_image_provider_config(provider_name: str) -> Optional[Dict[str, Any]]:
+    """Resolve ``custom:<name>`` from config.yaml, including key_env fallback."""
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        entry = _get_named_custom_provider(provider_name)
+    except Exception as exc:
+        logger.debug("Could not resolve custom image provider %s: %s", provider_name, exc)
+        return None
+
+    if not isinstance(entry, dict):
+        return None
+    resolved = dict(entry)
+    key = str(resolved.get("api_key", "") or "").strip()
+    key_env = str(resolved.get("key_env", "") or "").strip()
+    if not key and key_env:
+        key = os.getenv(key_env, "").strip()
+    if key:
+        resolved["api_key"] = key
+    return resolved
+
+
+def _resolve_custom_image_host_model(provider_name: str, entry: Dict[str, Any]) -> str:
+    """Pick the chat/Responses host model that calls ``image_generation``."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+        if isinstance(model_cfg, dict):
+            active_provider = str(model_cfg.get("provider", "") or "").strip().lower()
+            if active_provider == provider_name.lower():
+                active_model = str(
+                    model_cfg.get("default", "")
+                    or model_cfg.get("name", "")
+                    or model_cfg.get("model", "")
+                    or ""
+                ).strip()
+                if active_model:
+                    return active_model
+    except Exception as exc:
+        logger.debug("Could not read active model for custom image provider: %s", exc)
+
+    configured = str(entry.get("model", "") or "").strip()
+    if configured:
+        return configured
+    models = entry.get("models")
+    if isinstance(models, list):
+        for candidate in models:
+            value = str(candidate or "").strip()
+            if value and "image" not in value.lower():
+                return value
+    return "gpt-5.5"
+
+
+def _custom_image_model_meta(model: Optional[str]) -> Dict[str, str]:
+    requested = (model or "gpt-image-2").strip() or "gpt-image-2"
+    if requested.endswith("-low"):
+        return {"id": requested, "api_model": requested[: -len("-low")], "quality": "low"}
+    if requested.endswith("-medium"):
+        return {"id": requested, "api_model": requested[: -len("-medium")], "quality": "medium"}
+    if requested.endswith("-high"):
+        return {"id": requested, "api_model": requested[: -len("-high")], "quality": "high"}
+    return {"id": requested, "api_model": requested, "quality": "medium"}
+
+
+def _safe_custom_image_cache_prefix(provider_name: str, image_model: str) -> str:
+    raw = f"custom_{provider_name}_{image_model}"
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in raw)
+
+
+def _collect_custom_responses_image_b64(
+    client: Any,
+    *,
+    host_model: str,
+    image_model: str,
+    prompt: str,
+    size: str,
+    quality: str,
+) -> Optional[str]:
+    image_b64: Optional[str] = None
+    with client.responses.stream(
+        model=host_model,
+        store=False,
+        instructions=_CUSTOM_IMAGE_INSTRUCTIONS,
+        input=[{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": prompt}],
+        }],
+        tools=[{
+            "type": "image_generation",
+            "model": image_model,
+            "size": size,
+            "quality": quality,
+            "output_format": "png",
+            "background": "opaque",
+            "partial_images": 1,
+        }],
+        tool_choice={
+            "type": "allowed_tools",
+            "mode": "required",
+            "tools": [{"type": "image_generation"}],
+        },
+    ) as stream:
+        for event in stream:
+            event_type = getattr(event, "type", "")
+            if event_type == "response.output_item.done":
+                item = getattr(event, "item", None)
+                if getattr(item, "type", None) == "image_generation_call":
+                    result = getattr(item, "result", None)
+                    if isinstance(result, str) and result:
+                        image_b64 = result
+            elif event_type == "response.image_generation_call.partial_image":
+                partial = getattr(event, "partial_image_b64", None)
+                if isinstance(partial, str) and partial:
+                    image_b64 = partial
+        final = stream.get_final_response()
+
+    for item in getattr(final, "output", None) or []:
+        if getattr(item, "type", None) == "image_generation_call":
+            result = getattr(item, "result", None)
+            if isinstance(result, str) and result:
+                image_b64 = result
+    return image_b64
+
+
+def _generate_custom_provider_image(provider_name: str, prompt: str, aspect_ratio: str, model: Optional[str]):
+    """Generate an image through ``custom:<name>`` using Responses image_generation."""
+    from agent.image_gen_provider import (
+        error_response,
+        resolve_aspect_ratio,
+        save_b64_image,
+        success_response,
+    )
+
+    prompt = (prompt or "").strip()
+    aspect = resolve_aspect_ratio(aspect_ratio)
+    meta = _custom_image_model_meta(model)
+    if not prompt:
+        return error_response(
+            error="Prompt is required and must be a non-empty string",
+            error_type="invalid_argument",
+            provider=provider_name,
+            model=meta["id"],
+            aspect_ratio=aspect,
+        )
+
+    entry = _resolve_custom_image_provider_config(provider_name)
+    if not entry:
+        return error_response(
+            error=f"No custom provider config found for image_gen.provider={provider_name!r}",
+            error_type="auth_required",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    base_url = str(entry.get("base_url", "") or "").strip().rstrip("/")
+    api_key = str(entry.get("api_key", "") or "").strip()
+    api_mode = str(entry.get("api_mode", "") or "").strip()
+    if not base_url or not api_key:
+        return error_response(
+            error=f"Custom image provider {provider_name!r} needs base_url and api_key/key_env",
+            error_type="auth_required",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+    if api_mode and api_mode != "codex_responses":
+        return error_response(
+            error=(
+                f"Custom image provider {provider_name!r} uses api_mode={api_mode!r}; "
+                "image_generation currently requires codex_responses"
+            ),
+            error_type="unsupported_api_mode",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    try:
+        OpenAI = _openai_client_class()
+    except ImportError:
+        return error_response(
+            error="openai Python package not installed (pip install openai)",
+            error_type="missing_dependency",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    host_model = _resolve_custom_image_host_model(provider_name, entry)
+    size = _CUSTOM_IMAGE_SIZES.get(aspect, _CUSTOM_IMAGE_SIZES["square"])
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        b64 = _collect_custom_responses_image_b64(
+            client,
+            host_model=host_model,
+            image_model=meta["api_model"],
+            prompt=prompt,
+            size=size,
+            quality=meta["quality"],
+        )
+    except Exception as exc:
+        logger.debug("Custom image generation failed", exc_info=True)
+        return error_response(
+            error=f"Custom image provider {provider_name!r} failed: {exc}",
+            error_type="api_error",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    if not b64:
+        return error_response(
+            error="Custom Responses output contained no image_generation_call result",
+            error_type="empty_response",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    try:
+        prefix = _safe_custom_image_cache_prefix(provider_name, meta["api_model"])
+        saved_path = save_b64_image(b64, prefix=prefix)
+    except Exception as exc:
+        return error_response(
+            error=f"Could not save image to cache: {exc}",
+            error_type="io_error",
+            provider=provider_name,
+            model=meta["id"],
+            prompt=prompt,
+            aspect_ratio=aspect,
+        )
+
+    return success_response(
+        image=str(saved_path),
+        model=meta["id"],
+        prompt=prompt,
+        aspect_ratio=aspect,
+        provider=provider_name,
+        extra={"size": size, "quality": meta["quality"], "host_model": host_model},
+    )
+
+
 def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     """Route the call to a plugin-registered provider when one is selected.
 
@@ -905,6 +1176,14 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
+
+    if configured.startswith("custom:"):
+        return json.dumps(_generate_custom_provider_image(
+            configured,
+            prompt,
+            aspect_ratio,
+            configured_model,
+        ))
 
     try:
         # Import locally so plugin discovery isn't triggered just by
