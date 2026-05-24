@@ -249,6 +249,7 @@ export interface GatewayEventHandlerContext {
   transcript: {
     appendMessage: (msg: Msg) => void
     panel: (title: string, sections: PanelSection[]) => void
+    scrollRef?: RefObject<ScrollBoxHandle | null>
     setHistoryItems: StateSetter<Msg[]>
   }
   voice: {
