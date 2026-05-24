@@ -587,6 +587,10 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
+        # One-shot retry guard for transient connection errors when no
+        # cross-model fallback is available (or already used).  Reset at the
+        # start of every compress() call.  See issue #29559.
+        self._summary_connection_retried: bool = False
         # When summary generation fails and a static fallback is inserted,
         # record how many turns were unrecoverably dropped so callers
         # (gateway hygiene, /compress) can surface a visible warning.
@@ -1082,6 +1086,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
+            self._summary_connection_retried = False
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
@@ -1172,6 +1177,26 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
                 self._fallback_to_main_for_compression(e, "failed")
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+            # Transient connection error and no cross-model fallback is
+            # available (no aux summary_model, or aux already fell back to
+            # main): instead of immediately entering cooldown — which causes
+            # the legacy fallback to drop the entire compress window with a
+            # static placeholder (issue #29559) — attempt exactly one
+            # same-model retry after a brief delay.
+            if (
+                _is_streaming_closed
+                and not getattr(self, "_summary_connection_retried", False)
+            ):
+                self._summary_connection_retried = True
+                logger.info(
+                    "Context compression: transient connection error from "
+                    "summary LLM (%s). Retrying once on the same model "
+                    "after a brief delay before falling back.",
+                    e.__class__.__name__,
+                )
+                time.sleep(1.0)
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
             # Transient errors (timeout, rate limit, network, JSON decode,
@@ -1522,6 +1547,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._summary_connection_retried = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -1646,19 +1672,48 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Legacy fallback path: LLM summary failed and abort_on_summary_failure
         # is False (the default).  Insert a static placeholder so the model
         # knows context was lost rather than silently dropping everything.
+        # When the failure looks transient (connection error → we already
+        # tried a same-model retry), preserve additional recent turns from
+        # the compress window so the user retains usable context. (#29559)
         if not summary:
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
+            window_len = compress_end - compress_start
+            _is_transient = bool(getattr(self, "_summary_connection_retried", False))
+            if _is_transient and window_len > 0:
+                _preserve_tail = min(20, window_len)
+                # Preserve the last _preserve_tail raw turns from the
+                # compress window by shrinking the dropped range.
+                _new_compress_end = compress_end - _preserve_tail
+            else:
+                _preserve_tail = 0
+                _new_compress_end = compress_end
+            n_dropped = _new_compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
-            )
+            if _preserve_tail > 0:
+                summary = (
+                    f"{SUMMARY_PREFIX}\n"
+                    f"WARNING: Summary generation was unavailable due to a transient "
+                    f"error. {n_dropped} earlier message(s) were removed without a "
+                    f"summary; the {_preserve_tail} most recent message(s) from that "
+                    f"window are preserved below for continuity. You may need to ask "
+                    f"the user to clarify recent state — do not assume the dropped "
+                    f"messages are recoverable."
+                )
+            else:
+                summary = (
+                    f"{SUMMARY_PREFIX}\n"
+                    f"WARNING: Summary generation was unavailable. {n_dropped} "
+                    f"message(s) were removed to free context space but could not "
+                    f"be summarized. The removed messages contained earlier work in "
+                    f"this session. Continue based on the recent messages below and "
+                    f"the current state of any files or resources — you may need to "
+                    f"ask the user to clarify recent state."
+                )
+            # Shrink the dropped window so the preserved tail messages are
+            # re-emitted into the final compressed output below.
+            compress_end = _new_compress_end
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

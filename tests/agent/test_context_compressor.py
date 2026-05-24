@@ -631,6 +631,128 @@ class TestStreamingClosedFallback:
         assert c._summary_failure_cooldown_until == 1060.0
 
 
+class TestConnectionErrorSameModelRetry:
+    """Issue #29559: when a transient connection error occurs and no
+    cross-model fallback is available (either no aux summary_model, or aux
+    has already fallen back to main), _generate_summary must do exactly one
+    same-model retry before entering cooldown.  When that retry also fails,
+    the legacy fallback path must preserve recent tail messages from the
+    compress window instead of dropping the entire window."""
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_connection_error_triggers_one_same_model_retry_then_succeeds(self):
+        """ConnectionError on main model → one retry → success, no placeholder."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "recovered summary"
+
+        err = Exception("RemoteProtocolError: peer closed connection")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, mock_ok],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ), patch("agent.context_compressor.time.sleep"):
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        # Both calls hit the same (main) model — no model kwarg switch.
+        assert "model" not in mock_call.call_args_list[0].kwargs
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "recovered summary" in result
+        assert c._summary_failure_cooldown_until == 0.0
+
+    def test_only_one_retry_per_compress_call(self):
+        """A second connection error after the retry must NOT loop — it falls
+        through to the cooldown branch."""
+        err = Exception("RemoteProtocolError: peer closed connection")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ), patch("agent.context_compressor.time.sleep"), patch(
+            "agent.context_compressor.time.monotonic", return_value=1000.0
+        ):
+            result = c._generate_summary(self._msgs())
+
+        assert result is None
+        # Exactly two calls: original + one retry.
+        assert mock_call.call_count == 2
+        # 30s short cooldown for streaming-closed.
+        assert c._summary_failure_cooldown_until == 1030.0
+
+    def test_compress_preserves_recent_tail_when_retry_also_fails(self):
+        """When the connection-error retry also fails, the legacy fallback
+        path must keep recent tail messages of the compress window rather
+        than dropping the entire window with a static placeholder."""
+        err = Exception("RemoteProtocolError: peer closed connection")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+
+        # Build a longer message list so the compress window has > 20 turns
+        # and we can verify the preserved-tail behavior.
+        msgs = [{"role": "system", "content": "sys"}]
+        for i in range(40):
+            role = "user" if i % 2 == 0 else "assistant"
+            msgs.append({"role": role, "content": f"middle-{i}"})
+        msgs.append({"role": "user", "content": "tail-protected-1"})
+        msgs.append({"role": "assistant", "content": "tail-protected-2"})
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ), patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ), patch("agent.context_compressor.time.sleep"):
+            result = c.compress(msgs)
+
+        assert c._last_summary_fallback_used is True
+        # Some of the latest "middle-*" messages from the compress window
+        # must survive (the preserved tail).
+        contents = [m.get("content") for m in result if isinstance(m.get("content"), str)]
+        preserved_middle = [c2 for c2 in contents if c2 and c2.startswith("middle-")]
+        assert len(preserved_middle) > 0, (
+            "Expected recent compress-window messages to be preserved when "
+            "summary failed due to a transient connection error."
+        )
+        # The placeholder must be present and use the new WARNING prefix.
+        assert any(
+            isinstance(m.get("content"), str)
+            and "WARNING" in m["content"]
+            and "Summary generation was unavailable" in m["content"]
+            for m in result
+        )
+        # Dropped count should reflect the shrunk window, not the full window.
+        full_window = 40 + 1 - 2  # 40 middle + system - protect_first_n=2
+        # (we only assert it's less than full window since exact count depends
+        # on boundary alignment internals)
+        assert 0 < c._last_summary_dropped_count < full_window
+
+
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must
     expose the aux-model failure via _last_aux_model_failure_{model,error}
