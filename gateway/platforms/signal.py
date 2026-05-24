@@ -37,6 +37,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_url,
+    resolve_channel_prompt,
 )
 from gateway.platforms.helpers import redact_phone
 from gateway.platforms.signal_rate_limit import (
@@ -594,6 +595,12 @@ class SignalAdapter(BasePlatformAdapter):
             )
             return
 
+        channel_prompt = resolve_channel_prompt(
+            self.config.extra,
+            chat_id,
+            group_id if is_group else None,
+        )
+
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
@@ -636,6 +643,7 @@ class SignalAdapter(BasePlatformAdapter):
             raw_message={"sender": sender, "timestamp_ms": ts_ms},
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            channel_prompt=channel_prompt,
         )
 
         logger.debug("Signal: message from %s in %s: %s",

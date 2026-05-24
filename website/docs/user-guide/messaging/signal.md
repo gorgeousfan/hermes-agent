@@ -141,6 +141,29 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 | Set with group IDs | Only listed groups are monitored (e.g., `groupId1,groupId2`). |
 | Set to `*` | The bot responds in any group it's a member of. |
 
+### Per-Group Prompts
+
+Signal groups can have their own ephemeral system prompt via `signal.channel_prompts` in `~/.hermes/config.yaml`. Use the gateway chat id form, `group:<group_id>`, so it matches the Signal session id shown in logs and delivery targets:
+
+```yaml
+signal:
+  channel_prompts:
+    "group:YOUR_SIGNAL_GROUP_ID": |
+      You are the project triage assistant in this Signal group.
+      Keep replies concise and focus on action items.
+```
+
+The raw Signal group id is also accepted as a fallback key for convenience:
+
+```yaml
+signal:
+  channel_prompts:
+    "YOUR_SIGNAL_GROUP_ID": |
+      Use the family education assistant persona in this group.
+```
+
+Group access control still applies. A prompt does not enable a group by itself; the group must also be allowed through `SIGNAL_GROUP_ALLOWED_USERS` or `*`.
+
 ---
 
 ## Features

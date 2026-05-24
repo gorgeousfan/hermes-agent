@@ -1889,6 +1889,68 @@ class TestSignalGroupV2Routing:
         assert captured[0].source.chat_id == "group:v2=="
 
     @pytest.mark.asyncio
+    async def test_group_channel_prompt_uses_gateway_chat_id(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="*",
+            channel_prompts={"group:v2group==": "Use private health mode."},
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "hello v2",
+            "groupV2": {"id": "v2group=="},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].channel_prompt == "Use private health mode."
+
+    @pytest.mark.asyncio
+    async def test_group_channel_prompt_falls_back_to_raw_group_id(self, monkeypatch):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            group_allowed="*",
+            channel_prompts={"legacy==": "Use homeschool mode."},
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "hello legacy",
+            "groupInfo": {"groupId": "legacy=="},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].channel_prompt == "Use homeschool mode."
+
+    @pytest.mark.asyncio
+    async def test_group_without_channel_prompt_leaves_prompt_none(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "hello",
+            "groupV2": {"id": "v2group=="},
+        }))
+
+        assert len(captured) == 1
+        assert captured[0].channel_prompt is None
+
+    @pytest.mark.asyncio
     async def test_no_group_fields_routes_as_dm(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         captured = []
