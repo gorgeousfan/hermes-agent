@@ -17,6 +17,27 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+
+def _service_project_root() -> Path:
+    """Return the stable project root that service managers should launch.
+
+    Discord thread worktrees intentionally make agent tools resolve relative
+    paths inside per-thread checkouts. Service definitions are different:
+    launchd/systemd should keep pointing at the canonical Hermes install, not
+    whichever thread worktree happened to run `hermes gateway restart`.
+    """
+    override = os.getenv("HERMES_SERVICE_PROJECT_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+
+    parts = PROJECT_ROOT.parts
+    if ".worktrees" in parts and "discord" in parts:
+        canonical = get_hermes_home() / "hermes-agent"
+        if (canonical / "hermes_cli").is_dir():
+            return canonical.resolve()
+
+    return PROJECT_ROOT
+
 from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -2141,11 +2162,12 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    service_root = _service_project_root()
+    working_dir = str(service_root)
     detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_dir = str(detected_venv) if detected_venv else str(service_root / "venv")
 
-    path_entries = _build_service_path_dirs()
+    path_entries = _build_service_path_dirs(service_root)
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
@@ -2782,7 +2804,8 @@ def _launchd_domain() -> str:
 
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
+    service_root = _service_project_root()
+    working_dir = str(service_root)
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -2794,10 +2817,10 @@ def generate_launchd_plist() -> str:
     # the systemd unit), then capture the user's full shell PATH so every
     # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_dir = str(detected_venv) if detected_venv else str(service_root / "venv")
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
-    priority_dirs = _build_service_path_dirs()
+    priority_dirs = _build_service_path_dirs(service_root)
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)

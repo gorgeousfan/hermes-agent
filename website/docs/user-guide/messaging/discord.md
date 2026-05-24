@@ -296,6 +296,9 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
+| `DISCORD_THREAD_WORKTREES` | No | `false` | When `true`, each Discord thread can get an isolated git worktree for tool/file/terminal work. Requires `DISCORD_WORKTREE_REPO` or `discord.worktree_repo`. |
+| `DISCORD_WORKTREE_REPO` | No | — | Git repository to use for Discord thread worktrees. Hermes creates one branch/worktree per Discord thread. |
+| `DISCORD_WORKTREE_ROOT` | No | `<repo>/.worktrees/discord` | Directory where per-thread worktrees are created. |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
 | `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
@@ -315,6 +318,9 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  thread_worktrees: false         # Optional: isolate each Discord thread in a git worktree
+  worktree_repo: ""               # Git repo path for thread worktrees (required when enabled)
+  worktree_root: ""               # Optional, defaults to <repo>/.worktrees/discord
   channel_prompts: {}             # Per-channel ephemeral system prompts
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
@@ -375,6 +381,28 @@ Free-response channels also **skip auto-threading** — the bot replies inline r
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
 Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+
+#### `discord.thread_worktrees`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled, Hermes creates or reuses a dedicated git worktree for each Discord thread. File tools, terminal commands, and project-mode code execution resolve relative paths inside that thread's worktree, so parallel Discord threads can work on separate branches of the same repository without clobbering each other.
+
+```yaml
+discord:
+  thread_worktrees: true
+  worktree_repo: ~/my-project
+  # Optional. Defaults to <repo>/.worktrees/discord
+  worktree_root: ~/my-project/.worktrees/discord
+```
+
+Details:
+
+- Only Discord threads are routed. DMs and plain channels keep the normal gateway working directory.
+- Branches are named `hermes/discord-<thread-id>`.
+- The default worktree root is hidden via the repository's local `.git/info/exclude`; Hermes does not edit your tracked `.gitignore`.
+- Use `/worktree status`, `/worktree commit <message>`, `/worktree pr`, and `/worktree clean --force` inside the Discord thread to inspect or manage the worktree.
+- Environment variables `DISCORD_THREAD_WORKTREES`, `DISCORD_WORKTREE_REPO`, and `DISCORD_WORKTREE_ROOT` override config.yaml values.
 
 #### `discord.reactions`
 

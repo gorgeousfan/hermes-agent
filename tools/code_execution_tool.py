@@ -1630,7 +1630,12 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    try:
+        from tools.session_cwd import get_session_cwd
+        session_cwd = get_session_cwd("")
+    except Exception:
+        session_cwd = ""
+    raw = (session_cwd or os.environ.get("TERMINAL_CWD", "")).strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

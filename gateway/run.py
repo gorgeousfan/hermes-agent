@@ -7372,6 +7372,9 @@ class GatewayRunner:
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
+        if canonical == "worktree":
+            return await self._handle_worktree_command(event)
+
         if canonical == "background":
             return await self._handle_background_command(event)
 
@@ -11400,6 +11403,39 @@ class GatewayRunner:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    async def _handle_worktree_command(self, event: MessageEvent) -> str:
+        """Manage the current Discord thread's isolated git worktree."""
+        if event.source.platform.value != "discord":
+            return "/worktree is currently only available for Discord threads."
+        args = event.get_command_args().strip()
+        parts = args.split(maxsplit=1)
+        sub = parts[0].lower() if parts else "status"
+        rest = parts[1] if len(parts) > 1 else ""
+
+        from gateway import discord_worktrees as _wt
+
+        try:
+            if sub in {"", "status"}:
+                return _wt.status_text(self.config, event.source)
+            if sub == "commit":
+                return _wt.commit_all(self.config, event.source, rest)
+            if sub in {"pr", "summary"}:
+                return _wt.pr_summary(self.config, event.source)
+            if sub == "clean":
+                return _wt.clean(self.config, event.source, force="--force" in rest.split())
+            if sub in {"help", "-h", "--help"}:
+                return (
+                    "Usage:\n"
+                    "`/worktree status` — show this thread's worktree/branch/status\n"
+                    "`/worktree commit <message>` — commit all changes in this thread worktree\n"
+                    "`/worktree pr` — show branch/PR command summary\n"
+                    "`/worktree clean --force` — remove this thread worktree"
+                )
+            return "Unknown subcommand. Try `/worktree help`."
+        except Exception as exc:
+            logger.warning("Discord worktree command failed: %s", exc, exc_info=True)
+            return f"Worktree command failed: {exc}"
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -11505,6 +11541,22 @@ class GatewayRunner:
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
+                _session_cwd_token = None
+                _run_prompt = enriched_prompt
+                try:
+                    from gateway import discord_worktrees as _wt
+                    from tools.session_cwd import set_session_cwd
+                    _thread_wt = _wt.ensure_thread_worktree(self.config, source, create=True)
+                    if _thread_wt is not None:
+                        _session_cwd_token = set_session_cwd(_thread_wt.path)
+                        _run_prompt = (
+                            f"[System note: This Discord thread is isolated in git worktree "
+                            f"{_thread_wt.path} on branch {_thread_wt.branch}. "
+                            f"Relative file/terminal/code-execution paths resolve there.]\n\n"
+                            + _run_prompt
+                        )
+                except Exception as _wt_exc:
+                    logger.warning("Discord thread worktree setup failed for background task: %s", _wt_exc, exc_info=True)
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -11535,10 +11587,16 @@ class GatewayRunner:
                 )
                 try:
                     return agent.run_conversation(
-                        user_message=enriched_prompt,
+                        user_message=_run_prompt,
                         task_id=task_id,
                     )
                 finally:
+                    if _session_cwd_token is not None:
+                        try:
+                            from tools.session_cwd import reset_session_cwd
+                            reset_session_cwd(_session_cwd_token)
+                        except Exception:
+                            pass
                     self._cleanup_agent_resources(agent)
 
             result = await self._run_in_executor_with_context(run_sync)
@@ -16764,6 +16822,23 @@ class GatewayRunner:
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
+            _session_cwd_token = None
+            try:
+                from gateway import discord_worktrees as _wt
+                from tools.session_cwd import set_session_cwd
+                _thread_wt = _wt.ensure_thread_worktree(self.config, source, create=True)
+                if _thread_wt is not None:
+                    _session_cwd_token = set_session_cwd(_thread_wt.path)
+                    message = (
+                        f"[System note: This Discord thread is isolated in git worktree "
+                        f"{_thread_wt.path} on branch {_thread_wt.branch}. "
+                        f"Relative file/terminal/code-execution paths resolve there. "
+                        f"Use /worktree status, /worktree commit <message>, /worktree pr, "
+                        f"or /worktree clean --force to manage it.]\n\n"
+                        + message
+                    )
+            except Exception as _wt_exc:
+                logger.warning("Discord thread worktree setup failed: %s", _wt_exc, exc_info=True)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
@@ -16819,6 +16894,12 @@ class GatewayRunner:
                 except Exception:
                     pass
                 reset_current_session_key(_approval_session_token)
+                if _session_cwd_token is not None:
+                    try:
+                        from tools.session_cwd import reset_session_cwd
+                        reset_session_cwd(_session_cwd_token)
+                    except Exception:
+                        pass
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done

@@ -1030,7 +1030,12 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    try:
+        from tools.session_cwd import get_session_cwd
+        session_cwd = get_session_cwd("")
+    except Exception:
+        session_cwd = ""
+    cwd = session_cwd or os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None

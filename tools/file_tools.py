@@ -120,7 +120,12 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
     p = Path(filepath).expanduser()
     if not p.is_absolute():
-        base = _get_live_tracking_cwd(task_id) or os.environ.get(
+        try:
+            from tools.session_cwd import get_session_cwd
+            session_cwd = get_session_cwd("")
+        except Exception:
+            session_cwd = ""
+        base = _get_live_tracking_cwd(task_id) or session_cwd or os.environ.get(
             "TERMINAL_CWD", os.getcwd()
         )
         p = Path(base) / p
