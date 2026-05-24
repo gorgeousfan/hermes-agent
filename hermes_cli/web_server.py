@@ -1074,6 +1074,9 @@ async def set_model_assignment(body: ModelAssignment):
             model_cfg = cfg.get("model", {})
             if not isinstance(model_cfg, dict):
                 model_cfg = {}
+            # Bare `custom` remains valid for unnamed custom endpoints.
+            # The actual named-provider fix is preserving `provider_id`
+            # upstream so we do not collapse `custom:<name>` to `custom`.
             model_cfg["provider"] = provider
             model_cfg["default"] = model
             # Clear stale base_url so the resolver picks the provider's own default.
