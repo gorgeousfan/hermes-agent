@@ -1196,10 +1196,17 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 1) Protect fenced code blocks (``` ... ```)
+        # 1) Protect fenced code blocks (``` ... ```).  Slack's mrkdwn does not
+        # strip the optional language tag like GitHub-flavored markdown — it
+        # renders ```text\nfoo\n``` as a code block whose literal first line
+        # is "text".  Drop the tag from the opening fence before stashing.
+        def _protect_fence(m):
+            block = re.sub(r'\A```[^\n]*\n', '```\n', m.group(0))
+            return _ph(block)
+
         text = re.sub(
             r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            lambda m: _ph(m.group(0)),
+            _protect_fence,
             text,
         )
 

@@ -1433,7 +1433,27 @@ class TestFormatMessage:
         assert adapter.format_message("~~deleted~~") == "~deleted~"
 
     def test_code_block_preserved(self, adapter):
+        # Slack mrkdwn doesn't recognize language tags — it would render the
+        # tag as a literal first line of the code block — so the converter
+        # strips it.  Body content is still passed through verbatim.
         code = "```python\nx = **not bold**\n```"
+        assert adapter.format_message(code) == "```\nx = **not bold**\n```"
+
+    def test_code_block_strips_language_tag(self, adapter):
+        # Regression: Slack rendered a literal "text" line at the top of code
+        # blocks containing raw command output because the LLM emitted
+        # ```text fences and the converter passed them through unchanged.
+        code = "```text\nhello world\nline 2\n```"
+        assert adapter.format_message(code) == "```\nhello world\nline 2\n```"
+
+    def test_code_block_no_language_tag_unchanged(self, adapter):
+        code = "```\nplain output\n```"
+        assert adapter.format_message(code) == code
+
+    def test_inline_triple_backtick_unchanged(self, adapter):
+        # Single-line ```hello``` has no newline after the opening fence, so
+        # nothing should be stripped.
+        code = "```hello```"
         assert adapter.format_message(code) == code
 
     def test_inline_code_preserved(self, adapter):
@@ -1580,9 +1600,9 @@ class TestFormatMessage:
     # --- Additional edge cases ---
 
     def test_message_only_code_block(self, adapter):
-        """Entire message is a fenced code block — no conversion."""
+        """Entire message is a fenced code block — body preserved, lang tag dropped."""
         code = "```python\nx = 1\n```"
-        assert adapter.format_message(code) == code
+        assert adapter.format_message(code) == "```\nx = 1\n```"
 
     def test_multiline_mixed_formatting(self, adapter):
         """Multi-line message with headers, bold, links, code, and blockquotes."""
@@ -1710,7 +1730,8 @@ class TestEditMessageStreamingPipeline:
         assert result.success is True
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"].startswith("*Result:*")
-        assert "```python\nprint('hello')\n```" in kwargs["text"]
+        # Language tag is stripped — Slack mrkdwn would render it as a literal line
+        assert "```\nprint('hello')\n```" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_edit_message_formats_blockquote_in_stream(self, adapter):
