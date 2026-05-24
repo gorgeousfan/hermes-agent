@@ -1257,6 +1257,84 @@ PY
     log_success "All dependencies installed"
 }
 
+get_macos_python_app() {
+    local python_bin="${1:-python3}"
+    [ "$OS" = "macos" ] || return 1
+    [ -x "$python_bin" ] || return 1
+
+    local app_path
+    app_path="$("$python_bin" - <<'PY' 2>/dev/null
+import os
+import sysconfig
+
+base = (
+    sysconfig.get_config_var("installed_base")
+    or sysconfig.get_config_var("prefix")
+    or ""
+)
+name = sysconfig.get_config_var("PYTHONFRAMEWORK") or "Python"
+if base:
+    print(os.path.join(base, "Resources", f"{name}.app", "Contents", "MacOS", name))
+PY
+)"
+
+    if [ -n "$app_path" ] && [ -x "$app_path" ]; then
+        printf '%s\n' "$app_path"
+        return 0
+    fi
+    return 1
+}
+
+get_python_purelib() {
+    local python_bin="${1:-python3}"
+    [ -x "$python_bin" ] || return 1
+    "$python_bin" - <<'PY' 2>/dev/null
+import sysconfig
+
+purelib = sysconfig.get_path("purelib") or ""
+if purelib:
+    print(purelib)
+PY
+}
+
+run_repo_python_module() {
+    local python_bin="$1"
+    local module_name="$2"
+    shift 2
+
+    if [ "$OS" = "macos" ]; then
+        local app_python=""
+        local purelib=""
+        app_python="$(get_macos_python_app "$python_bin" || true)"
+        purelib="$(get_python_purelib "$python_bin" || true)"
+        if [ -n "$app_python" ] && [ -n "$purelib" ]; then
+            "$app_python" -c "import runpy, sys; sys.path.insert(0, '$purelib'); sys.path.insert(0, '$INSTALL_DIR'); sys.argv = ['$module_name', *sys.argv[1:]]; runpy.run_module('$module_name', run_name='__main__')" "$@"
+            return $?
+        fi
+    fi
+
+    "$python_bin" -m "$module_name" "$@"
+}
+
+run_repo_python_script() {
+    local python_bin="$1"
+    local script_path="$2"
+    shift 2
+
+    if [ "$OS" = "macos" ]; then
+        local app_python=""
+        local purelib=""
+        app_python="$(get_macos_python_app "$python_bin" || true)"
+        purelib="$(get_python_purelib "$python_bin" || true)"
+        if [ -n "$app_python" ] && [ -n "$purelib" ]; then
+            "$app_python" -c "import runpy, sys; sys.path.insert(0, '$purelib'); sys.path.insert(0, '$INSTALL_DIR'); sys.argv = ['$script_path', *sys.argv[1:]]; runpy.run_path('$script_path', run_name='__main__')" "$@"
+            return $?
+        fi
+    fi
+
+    "$python_bin" "$script_path" "$@"
+}
+
 setup_path() {
     log_info "Setting up hermes command..."
 
@@ -1284,23 +1362,39 @@ setup_path() {
 
     local command_link_dir
     local command_link_display_dir
+    local launcher_python=""
+    local launcher_purelib=""
     command_link_dir="$(get_command_link_dir)"
     command_link_display_dir="$(get_command_link_display_dir)"
 
     # Create a user-facing shim for the hermes command.
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
+    if [ "$USE_VENV" = true ] && [ "$OS" = "macos" ]; then
+        launcher_python="$(get_macos_python_app "$INSTALL_DIR/venv/bin/python" || true)"
+        launcher_purelib="$(get_python_purelib "$INSTALL_DIR/venv/bin/python" || true)"
+    fi
     mkdir -p "$command_link_dir"
     # Older installs created this path as a symlink to $HERMES_BIN. Without
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
     rm -f "$command_link_dir/hermes"
-    cat > "$command_link_dir/hermes" <<EOF
+    if [ -n "$launcher_python" ] && [ -n "$launcher_purelib" ]; then
+        cat > "$command_link_dir/hermes" <<EOF
+#!/usr/bin/env bash
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$launcher_python" -c "import runpy, sys; sys.path.insert(0, '$launcher_purelib'); sys.path.insert(0, '$INSTALL_DIR'); sys.argv = ['hermes', *sys.argv[1:]]; runpy.run_module('hermes_cli.main', run_name='__main__')" "\$@"
+EOF
+        log_info "Using Python.app launcher fallback on macOS"
+    else
+        cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
 EOF
+    fi
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"
 
@@ -1478,7 +1572,7 @@ SOUL_EOF
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+    if run_repo_python_script "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
         log_success "Skills synced to ~/.hermes/skills/"
     else
         # Fallback: simple directory copy if Python sync fails
@@ -1720,7 +1814,7 @@ run_setup_wizard() {
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        run_repo_python_module "$INSTALL_DIR/venv/bin/python" hermes_cli.main setup < /dev/tty
     else
         python -m hermes_cli.main setup < /dev/tty
     fi
