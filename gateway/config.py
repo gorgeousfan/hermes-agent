@@ -483,6 +483,11 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Global allow-all override (mirrors GATEWAY_ALLOW_ALL_USERS env var but
+    # settable from config.yaml).  When True, every authenticated message is
+    # accepted regardless of per-user allowlists.
+    allow_all_users: bool = False
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -639,6 +644,8 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        allow_all_users = _coerce_bool(data.get("allow_all_users"), False)
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -654,6 +661,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            allow_all_users=allow_all_users,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -760,6 +768,9 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            if "allow_all_users" in yaml_cfg:
+                gw_data["allow_all_users"] = yaml_cfg["allow_all_users"]
 
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.
