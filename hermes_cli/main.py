@@ -8618,7 +8618,17 @@ def _cmd_update_pip(args):
 
     uv = shutil.which("uv")
     if uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+        # Detect if installed via `uv tool install` — those have no venv.
+        tool_check = subprocess.run(
+            [uv, "tool", "list"],
+            capture_output=True, text=True, timeout=15,
+        )
+        is_uv_tool = "hermes-agent" in tool_check.stdout
+        if is_uv_tool:
+            cmd = [uv, "tool", "upgrade", "hermes-agent"]
+        else:
+            # --system tells uv to install into the global/sys Python env (no venv needed).
+            cmd = [uv, "pip", "install", "--upgrade", "--system", "hermes-agent"]
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
