@@ -11780,21 +11780,75 @@ class GatewayRunner:
         return t("gateway.fast.session_only", label=label)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        """Handle /yolo — toggle YOLO mode with optional duration/expiry.
+
+        Usage:
+            /yolo               Toggle on/off (no expiry)
+            /yolo 30m           On for 30 minutes
+            /yolo 2h            On for 2 hours
+            /yolo until 18:00   On until 6pm today (or tomorrow if past)
+            /yolo off           Explicit off
+            /yolo status        Show current state with remaining time
+        """
         from tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
-            is_session_yolo_enabled,
+            parse_yolo_duration,
+            parse_yolo_until,
+            get_yolo_status,
         )
 
         session_key = self._session_key_for_source(event.source)
-        current = is_session_yolo_enabled(session_key)
-        if current:
+        arg = event.get_command_args().strip().lower()
+
+        # --- off ---
+        if arg == "off":
             disable_session_yolo(session_key)
             return EphemeralReply(t("gateway.yolo.disabled"))
-        else:
-            enable_session_yolo(session_key)
-            return EphemeralReply(t("gateway.yolo.enabled"))
+
+        # --- status ---
+        if arg == "status":
+            s = get_yolo_status(session_key)
+            if s["enabled"]:
+                remaining = s.get("remaining_seconds")
+                if remaining is not None and remaining > 0:
+                    mins, secs = divmod(int(remaining), 60)
+                    hrs, mins = divmod(mins, 60)
+                    time_str = f"{hrs}h {mins}m {secs}s" if hrs > 0 else f"{mins}m {secs}s"
+                    return EphemeralReply(t("gateway.yolo.status_on_with_time", remaining=time_str))
+                return EphemeralReply(t("gateway.yolo.status_on_no_expiry"))
+            return EphemeralReply(t("gateway.yolo.status_off"))
+
+        # --- duration / until ---
+        expires_at = None
+        if arg:
+            if arg.startswith("until "):
+                expires_at = parse_yolo_until(arg[6:])
+                if expires_at is None:
+                    return EphemeralReply(t("gateway.yolo.parse_error_until"))
+            else:
+                expires_at = parse_yolo_duration(arg)
+                if expires_at is None:
+                    return EphemeralReply(t("gateway.yolo.parse_error_duration"))
+
+        # Toggle: no args — flip current state
+        if not arg:
+            s = get_yolo_status(session_key)
+            if s["enabled"]:
+                disable_session_yolo(session_key)
+                return EphemeralReply(t("gateway.yolo.disabled"))
+
+        # Enable yolo (with optional expiry)
+        enable_session_yolo(session_key, expires_at=expires_at)
+
+        if expires_at is not None:
+            remaining = expires_at - time.time()
+            mins, secs = divmod(int(remaining), 60)
+            hrs, mins = divmod(mins, 60)
+            duration_str = f"{hrs}h {mins}m {secs}s" if hrs > 0 else f"{mins}m {secs}s"
+            return EphemeralReply(t("gateway.yolo.enabled_with_expiry", duration=duration_str))
+
+        return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

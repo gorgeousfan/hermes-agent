@@ -8281,7 +8281,7 @@ class HermesCLI:
         elif canonical == "footer":
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
-            self._toggle_yolo()
+            self._handle_yolo_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -9356,20 +9356,121 @@ class HermesCLI:
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 
-    def _toggle_yolo(self):
-        """Toggle YOLO mode — skip all dangerous command approval prompts."""
-        import os
+    def _handle_yolo_command(self, cmd: str):
+        """Handle /yolo — toggle YOLO mode with optional duration/expiry.
+
+        Usage:
+            /yolo               Toggle on/off (no expiry)
+            /yolo 30m           On for 30 minutes
+            /yolo 2h            On for 2 hours
+            /yolo until 18:00   On until 6pm today (or tomorrow if past)
+            /yolo off           Explicit off
+            /yolo status        Show current state with remaining time
+        """
+        from tools.approval import (
+            enable_session_yolo,
+            disable_session_yolo,
+            parse_yolo_duration,
+            parse_yolo_until,
+            get_yolo_status,
+        )
         from hermes_cli.colors import Colors as _Colors
 
-        current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
-        if current:
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        # Get the current session key (CLI uses the context var)
+        session_key = ""
+        if self.agent and hasattr(self.agent, "session_id") and self.agent.session_id:
+            session_key = self.agent.session_id
+
+        # --- off ---
+        if arg == "off":
+            disable_session_yolo(session_key)
             os.environ.pop("HERMES_YOLO_MODE", None)
             _cprint(
                 f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
                 " — dangerous commands will require approval."
             )
+            return
+
+        # --- status ---
+        if arg == "status":
+            env_avtive = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
+            s = get_yolo_status(session_key)
+            if env_avtive or s["enabled"]:
+                remaining = s.get("remaining_seconds")
+                if remaining is not None and remaining > 0:
+                    mins, secs = divmod(int(remaining), 60)
+                    hrs, mins = divmod(mins, 60)
+                    if hrs > 0:
+                        time_str = f"{hrs}h {mins}m {secs}s"
+                    else:
+                        time_str = f"{mins}m {secs}s"
+                    _cprint(
+                        f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                        f" ({time_str} remaining)"
+                    )
+                else:
+                    _cprint(
+                        f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                        " (no expiry)"
+                    )
+            else:
+                _cprint(
+                    f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                )
+            return
+
+        # --- duration / until ---
+        expires_at = None
+        if arg:
+            if arg.startswith("until "):
+                expires_at = parse_yolo_until(arg[6:])
+                if expires_at is None:
+                    _cprint(f"  {_Colors.RED}Could not parse time: {arg[6:]!r}{_Colors.RESET}")
+                    _cprint(f"  {_Colors.DIM}Try: /yolo until 18:00  or  /yolo until 2026-05-13T18:00{_Colors.RESET}")
+                    return
+            else:
+                expires_at = parse_yolo_duration(arg)
+                if expires_at is None:
+                    _cprint(f"  {_Colors.RED}Could not parse duration: {arg!r}{_Colors.RESET}")
+                    _cprint(f"  {_Colors.DIM}Try: /yolo 30m  /yolo 2h  /yolo 1d{_Colors.RESET}")
+                    return
+
+        # Toggle: if yolo is currently on with no expiry, turn it off.
+        # If a duration/until is given, always turn on with expiry.
+        if not arg:
+            # Simple toggle — check session state
+            s = get_yolo_status(session_key)
+            env_avtive = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
+            if s["enabled"] or env_avtive:
+                # Turn off
+                disable_session_yolo(session_key)
+                os.environ.pop("HERMES_YOLO_MODE", None)
+                _cprint(
+                    f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                    " — dangerous commands will require approval."
+                )
+                return
+
+        # Enable yolo (with optional expiry)
+        enable_session_yolo(session_key, expires_at=expires_at)
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
+        if expires_at is not None:
+            remaining = expires_at - time.time()
+            mins, secs = divmod(int(remaining), 60)
+            hrs, mins = divmod(mins, 60)
+            if hrs > 0:
+                time_str = f"{hrs}h {mins}m {secs}s"
+            else:
+                time_str = f"{mins}m {secs}s"
+            _cprint(
+                f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                f" — auto-expires in {time_str}"
+            )
         else:
-            os.environ["HERMES_YOLO_MODE"] = "1"
             _cprint(
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."

@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -481,6 +482,19 @@ def detect_dangerous_command(command: str) -> tuple:
     return (False, None, None)
 
 
+# Per-session YOLO state with optional auto-expiry
+@dataclass
+class YoloState:
+    """Tracks YOLO bypass state for a single session.
+
+    Attributes:
+        enabled: Whether YOLO is active for this session.
+        expires_at: Unix timestamp when YOLO auto-expires, or None for no expiry.
+    """
+    enabled: bool = True
+    expires_at: Optional[float] = None
+
+
 # =========================================================================
 # Per-session approval state (thread-safe)
 # =========================================================================
@@ -488,7 +502,7 @@ def detect_dangerous_command(command: str) -> tuple:
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
-_session_yolo: set[str] = set()
+_session_yolo: dict[str, YoloState] = {}
 _permanent_approved: set = set()
 
 # =========================================================================
@@ -586,12 +600,17 @@ def approve_session(session_key: str, pattern_key: str):
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
 
-def enable_session_yolo(session_key: str) -> None:
-    """Enable YOLO bypass for a single session key."""
+def enable_session_yolo(session_key: str, expires_at: Optional[float] = None) -> None:
+    """Enable YOLO bypass for a single session key.
+
+    Args:
+        session_key: The session to enable yolo for.
+        expires_at: Optional unix timestamp when yolo should auto-expire.
+    """
     if not session_key:
         return
     with _lock:
-        _session_yolo.add(session_key)
+        _session_yolo[session_key] = YoloState(enabled=True, expires_at=expires_at)
 
 
 def disable_session_yolo(session_key: str) -> None:
@@ -599,7 +618,7 @@ def disable_session_yolo(session_key: str) -> None:
     if not session_key:
         return
     with _lock:
-        _session_yolo.discard(session_key)
+        _session_yolo.pop(session_key, None)
 
 
 def clear_session(session_key: str) -> None:
@@ -608,7 +627,7 @@ def clear_session(session_key: str) -> None:
         return
     with _lock:
         _session_approved.pop(session_key, None)
-        _session_yolo.discard(session_key)
+        _session_yolo.pop(session_key, None)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -619,16 +638,109 @@ def clear_session(session_key: str) -> None:
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
-    """Return True when YOLO bypass is enabled for a specific session."""
+    """Return True when YOLO bypass is enabled for a specific session.
+
+    Checks both enabled flag and optional expiry. Expired entries are
+    automatically cleaned up when detected.
+    """
     if not session_key:
         return False
     with _lock:
-        return session_key in _session_yolo
+        state = _session_yolo.get(session_key)
+        if state is None or not state.enabled:
+            return False
+        if state.expires_at is not None and time.time() >= state.expires_at:
+            # Expired — auto-cleanup
+            _session_yolo.pop(session_key, None)
+            return False
+        return True
 
 
 def is_current_session_yolo_enabled() -> bool:
     """Return True when the active approval session has YOLO bypass enabled."""
     return is_session_yolo_enabled(get_current_session_key(default=""))
+
+
+def parse_yolo_duration(arg: str) -> Optional[float]:
+    """Parse a duration string into an absolute unix timestamp.
+
+    Supported formats: ``30m``, ``2h``, ``1d`` (or with full unit names:
+    ``30min``, ``2hours``, ``1day``).
+
+    Returns None when parsing fails.
+    """
+    arg = arg.strip().lower()
+    match = re.match(
+        r'^(\d+)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|day|days?)$', arg
+    )
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2)[0]  # first char: m, h, d
+    multiplier = {"m": 60, "h": 3600, "d": 86400}.get(unit)
+    if multiplier is None:
+        return None
+    return time.time() + amount * multiplier
+
+
+def parse_yolo_until(arg: str) -> Optional[float]:
+    """Parse an ``until`` time into an absolute unix timestamp.
+
+    Supported formats:
+    - ``18:00`` — today at 6pm (or tomorrow if already past)
+    - ``18:00:00`` — with seconds
+    - ``2026-05-13T18:00`` — ISO datetime
+    - ``2026-05-13 18:00`` — ISO-like with space
+    """
+    import datetime as _dt
+
+    arg = arg.strip()
+
+    # ISO format: "2026-05-13T18:00" or "2026-05-13 18:00"
+    for sep in ("T", " "):
+        if sep in arg:
+            try:
+                dt = _dt.datetime.fromisoformat(arg.replace(sep, "T"))
+                return dt.timestamp()
+            except ValueError:
+                pass
+
+    # HH:MM or HH:MM:SS — treat as today, roll to tomorrow if past
+    match = re.match(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$", arg)
+    if match:
+        now = _dt.datetime.now()
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        second = int(match.group(3)) if match.group(3) else 0
+        dt = now.replace(hour=hour, minute=minute, second=second, microsecond=0)
+        if dt <= now:
+            dt += _dt.timedelta(days=1)
+        return dt.timestamp()
+
+    return None
+
+
+def get_yolo_status(session_key: str) -> dict:
+    """Return the current yolo state for a session.
+
+    Returns a dict with keys:
+        enabled (bool): True when yolo is active.
+        expires_at (float|None): Unix timestamp of expiry, or None.
+        remaining_seconds (float|None): Seconds until expiry, or None.
+    """
+    if not session_key:
+        return {"enabled": False, "expires_at": None, "remaining_seconds": None}
+    with _lock:
+        state = _session_yolo.get(session_key)
+        if state is None or not state.enabled:
+            return {"enabled": False, "expires_at": None, "remaining_seconds": None}
+        if state.expires_at is not None:
+            remaining = state.expires_at - time.time()
+            if remaining <= 0:
+                _session_yolo.pop(session_key, None)
+                return {"enabled": False, "expires_at": None, "remaining_seconds": None}
+            return {"enabled": True, "expires_at": state.expires_at, "remaining_seconds": remaining}
+        return {"enabled": True, "expires_at": None, "remaining_seconds": None}
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:

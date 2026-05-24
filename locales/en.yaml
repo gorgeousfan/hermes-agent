@@ -356,8 +356,15 @@ gateway:
     label_all:             "TTS (voice reply to all messages)"
 
   yolo:
-    disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
+    disabled:                   "⚠ YOLO mode **OFF** for this session — dangerous commands will require approval."
     enabled:                    "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
+    expired:                    "⏰ YOLO mode for this session **expired** — approvals re-enabled."
+    status_on_no_expiry:        "⚡ YOLO mode **ON** for this session (no expiry)."
+    status_on_with_time:        "⚡ YOLO mode **ON** for this session ({remaining} remaining)."
+    status_off:                 "⚠ YOLO mode **OFF** for this session."
+    enabled_with_expiry:        "⚡ YOLO mode **ON** for this session — auto-expires in {duration}."
+    parse_error_duration:       "Could not parse duration. Try: `/yolo 30m`, `/yolo 2h`, `/yolo 1d`"
+    parse_error_until:          "Could not parse time. Try: `/yolo until 18:00`, `/yolo until 2026-05-13T18:00`"
 
   shared:
     session_db_unavailable:      "Session database not available."
