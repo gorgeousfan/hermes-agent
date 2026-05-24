@@ -1433,6 +1433,8 @@ copy_config_templates() {
             touch "$HERMES_HOME/.env"
             log_success "Created ~/.hermes/.env"
         fi
+        # Restrict .env to owner-only (holds API keys and secrets)
+        chmod 0600 "$HERMES_HOME/.env" 2>/dev/null || true
     else
         log_info "~/.hermes/.env already exists, keeping it"
     fi

@@ -329,6 +329,8 @@ fi
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
+        # Restrict .env to owner-only (holds API keys and secrets)
+        chmod 0600 .env 2>/dev/null || true
         echo -e "${GREEN}✓${NC} Created .env from template"
     fi
 else
