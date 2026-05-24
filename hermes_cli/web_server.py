@@ -3659,6 +3659,8 @@ def mount_spa(application: FastAPI):
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
+            if full_path.startswith("api/"):
+                return JSONResponse({"detail": "API route not found"}, status_code=404)
             return JSONResponse(
                 {"error": "Frontend not built. Run: cd web && npm run build"},
                 status_code=404,
@@ -3722,6 +3724,9 @@ def mount_spa(application: FastAPI):
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
+        if full_path.startswith("api/"):
+            return JSONResponse({"detail": "API route not found"}, status_code=404)
+
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
