@@ -12186,11 +12186,21 @@ class GatewayRunner:
 
     def _sanitize_telegram_topic_title(self, title: str) -> str:
         """Return a Bot API-safe forum topic name from a generated session title."""
+        return self._sanitize_topic_title(title)
+
+    def _sanitize_topic_title(self, title: str) -> str:
+        """Return a platform-safe topic/thread title from a generated session title.
+
+        Generalises the Telegram-specific sanitisation so that any platform
+        adapter can benefit from the same length-limiting and whitespace
+        cleanup.  Individual adapters may apply additional constraints inside
+        their ``update_topic_title`` overrides.
+        """
         cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
         if not cleaned:
             return "Hermes Chat"
-        # Telegram forum topic names are short (currently 1-128 chars). Keep
-        # extra room for multi-byte titles and avoid trailing ellipsis churn.
+        # Forum / thread names are typically short (Telegram: 1-128 chars).
+        # Keep extra room for multi-byte titles and avoid trailing ellipsis churn.
         if len(cleaned) > 120:
             cleaned = cleaned[:117].rstrip() + "..."
         return cleaned
@@ -12248,35 +12258,13 @@ class GatewayRunner:
 
         if adapter is None:
             return
-        topic_name = self._sanitize_telegram_topic_title(title)
+        topic_name = self._sanitize_topic_title(title)
         try:
-            rename_topic = getattr(adapter, "rename_dm_topic", None)
-            if rename_topic is not None:
-                await rename_topic(
-                    chat_id=str(source.chat_id),
-                    thread_id=str(source.thread_id),
-                    name=topic_name,
-                )
-                return
-
-            bot = getattr(adapter, "_bot", None)
-            edit_forum_topic = getattr(bot, "edit_forum_topic", None) if bot is not None else None
-            if edit_forum_topic is None:
-                edit_forum_topic = getattr(bot, "editForumTopic", None) if bot is not None else None
-            if edit_forum_topic is None:
-                return
-            try:
-                await edit_forum_topic(
-                    chat_id=int(source.chat_id),
-                    message_thread_id=int(source.thread_id),
-                    name=topic_name,
-                )
-            except (TypeError, ValueError):
-                await edit_forum_topic(
-                    chat_id=source.chat_id,
-                    message_thread_id=source.thread_id,
-                    name=topic_name,
-                )
+            await adapter.update_topic_title(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                title=topic_name,
+            )
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
 
@@ -12337,6 +12325,84 @@ class GatewayRunner:
                 fut.result()
             except Exception:
                 logger.debug("Telegram topic title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
+    async def _rename_topic_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Cross-platform best-effort rename of a topic/thread on session title change.
+
+        Unlike ``_rename_telegram_topic_for_session_title`` which is
+        Telegram-specific, this method works with *any* adapter that
+        overrides ``update_topic_title``.
+        """
+        if not source.chat_id or not source.thread_id or not title:
+            return
+
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+
+        topic_name = self._sanitize_topic_title(title)
+        try:
+            result = await adapter.update_topic_title(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                title=topic_name,
+            )
+            if result:
+                logger.debug(
+                    "Topic title updated for session %s on %s",
+                    session_id, source.platform.value if source.platform else "unknown",
+                )
+        except Exception:
+            logger.debug(
+                "Failed to rename topic for session %s on %s",
+                session_id, source.platform.value if source.platform else "unknown",
+                exc_info=True,
+            )
+
+    def _schedule_topic_title_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule a cross-platform topic rename from the auto-title background thread.
+
+        Works for any adapter whose ``update_topic_title`` returns True.
+        Falls back gracefully (no-op) when the adapter does not override
+        ``update_topic_title``.
+        """
+        if not title or not source.chat_id or not source.thread_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = safe_schedule_threadsafe(
+            self._rename_topic_for_session_title(copied_source, session_id, title),
+            loop,
+            logger=logger,
+            log_message="Topic title rename failed to schedule",
+        )
+        if future is None:
+            return
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Topic title rename failed", exc_info=True)
 
         future.add_done_callback(_log_rename_failure)
 
@@ -12644,6 +12710,22 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Best-effort: sync the new title to the platform topic/thread.
+                    if source.chat_id and source.thread_id:
+                        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+                        if adapter is not None:
+                            topic_name = self._sanitize_topic_title(sanitized)
+                            try:
+                                await adapter.update_topic_title(
+                                    chat_id=str(source.chat_id),
+                                    thread_id=str(source.thread_id),
+                                    title=topic_name,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "Failed to rename topic after /title command",
+                                    exc_info=True,
+                                )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")
@@ -17007,6 +17089,14 @@ class GatewayRunner:
                     }
                     if self._is_telegram_topic_lane(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
+                            source,
+                            effective_session_id,
+                            title,
+                        )
+                    elif source.chat_id and source.thread_id:
+                        # Generic cross-platform path: works for any adapter
+                        # that overrides update_topic_title (base returns False).
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_topic_title_rename(
                             source,
                             effective_session_id,
                             title,

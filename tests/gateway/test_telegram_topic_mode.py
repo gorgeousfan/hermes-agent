@@ -67,6 +67,7 @@ def _make_runner(session_db=None):
     adapter._bot = None
     adapter._create_dm_topic = AsyncMock(return_value=None)
     adapter.rename_dm_topic = AsyncMock()
+    adapter.update_topic_title = AsyncMock(return_value=True)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -770,10 +771,10 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         "  Build   Telegram Topic UX  ",
     )
 
-    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+    runner.adapters[Platform.TELEGRAM].update_topic_title.assert_awaited_once_with(
         chat_id="208214988",
         thread_id="42",
-        name="Build Telegram Topic UX",
+        title="Build Telegram Topic UX",
     )
 
 

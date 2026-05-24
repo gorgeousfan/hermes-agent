@@ -1176,6 +1176,52 @@ class TelegramAdapter(BasePlatformAdapter):
             self.name, chat_id, thread_id, name,
         )
 
+    async def update_topic_title(
+        self,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+    ) -> bool:
+        """Rename a Telegram forum topic to match the session title.
+
+        Cross-platform override of ``BasePlatformAdapter.update_topic_title``.
+        Delegates to ``rename_dm_topic`` for the actual Bot API call.
+
+        Returns True on success, False if the rename failed or was skipped.
+        """
+        if not self._bot:
+            return False
+        if not chat_id or not thread_id:
+            return False
+        try:
+            await self.rename_dm_topic(
+                chat_id=int(chat_id),
+                thread_id=int(thread_id),
+                name=title,
+            )
+            return True
+        except (TypeError, ValueError):
+            # Fallback for non-integer IDs — try as-is (unlikely but safe).
+            try:
+                await self.rename_dm_topic(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    name=title,
+                )
+                return True
+            except Exception:
+                logger.debug(
+                    "[%s] update_topic_title failed for chat=%s thread=%s",
+                    self.name, chat_id, thread_id, exc_info=True,
+                )
+                return False
+        except Exception:
+            logger.debug(
+                "[%s] update_topic_title failed for chat=%s thread=%s",
+                self.name, chat_id, thread_id, exc_info=True,
+            )
+            return False
+
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:

@@ -1978,6 +1978,25 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    async def update_topic_title(
+        self,
+        chat_id: str,
+        thread_id: str,
+        title: str,
+    ) -> bool:
+        """Rename a topic/thread/channel to match the session title.
+
+        Returns True if the rename succeeded, False if unsupported or failed.
+        Override in platform adapters that support topic/thread renaming
+        (e.g. Telegram forum topics, Discord threads, Slack channels).
+
+        Args:
+            chat_id: Platform-specific chat/group identifier.
+            thread_id: Platform-specific thread/topic identifier.
+            title: New title (already sanitized by the caller).
+        """
+        return False
+
     async def send_multiple_images(
         self,
         chat_id: str,
