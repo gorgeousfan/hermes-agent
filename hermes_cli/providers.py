@@ -77,6 +77,15 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="cloudcode-pa://google",
     ),
+    "vertex": HermesOverlay(
+        transport="openai_chat",
+        auth_type="vertex",
+        extra_env_vars=(
+            "VERTEX_CREDENTIALS_PATH",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "VERTEX_PROJECT_ID",
+        ),
+    ),
     "lmstudio": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -319,6 +328,9 @@ ALIASES: Dict[str, str] = {
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
 
+    # google vertex
+    "vertex-ai": "vertex",
+    "google-vertex": "vertex",
 
     # huggingface
     "hf": "huggingface",
@@ -381,6 +393,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "vertex": "Google Vertex AI",
 }
 
 
