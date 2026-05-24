@@ -207,21 +207,34 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
-    popen_cmds = []
-    monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
-    )
+    class ImmediateThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(docker_env, "threading", types.SimpleNamespace(Thread=ImmediateThread))
+    monkeypatch.setattr(docker_env, "time", types.SimpleNamespace(sleep=lambda _seconds: None))
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
     assert env._container_id
     container_id = env._container_id
+    env._docker_exe = r"C:\Program Files\Docker\Docker\resources\bin\docker.exe"
 
     env.cleanup()
 
-    # Should have stop and rm calls via Popen
-    stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
-    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    stop_cmds = [
+        cmd for cmd, _kwargs in calls
+        if cmd == [env._docker_exe, "stop", container_id]
+    ]
+    rm_cmds = [
+        cmd for cmd, _kwargs in calls
+        if cmd == [env._docker_exe, "rm", "-f", container_id]
+    ]
+    assert len(stop_cmds) == 1, f"cleanup() should stop {container_id} with argv"
+    assert len(rm_cmds) == 1, f"cleanup() should remove {container_id} with argv"
 
 
 class _FakePopen:
