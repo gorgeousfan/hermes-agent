@@ -451,6 +451,8 @@ class ConfigUpdate(BaseModel):
 class EnvVarUpdate(BaseModel):
     key: str
     value: str
+    category: Optional[str] = None
+    description: Optional[str] = None
 
 
 class EnvVarDelete(BaseModel):
@@ -459,6 +461,68 @@ class EnvVarDelete(BaseModel):
 
 class EnvVarReveal(BaseModel):
     key: str
+
+
+_CUSTOM_ENV_METADATA_FILE = "custom_env_keys.json"
+_CUSTOM_ENV_CATEGORIES = {"provider", "tool", "messaging", "setting", "custom"}
+
+
+def _custom_env_metadata_path() -> Path:
+    return get_hermes_home() / _CUSTOM_ENV_METADATA_FILE
+
+
+def _load_custom_env_metadata() -> Dict[str, Dict[str, Any]]:
+    path = _custom_env_metadata_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        _log.warning("Failed to read custom env key metadata from %s", path, exc_info=True)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    for key, value in data.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            cleaned[key] = value
+    return cleaned
+
+
+def _save_custom_env_metadata(metadata: Dict[str, Dict[str, Any]]) -> None:
+    path = _custom_env_metadata_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serializable = {k: v for k, v in sorted(metadata.items()) if isinstance(v, dict)}
+    path.write_text(json.dumps(serializable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _sanitize_custom_env_category(category: Optional[str]) -> str:
+    if category in _CUSTOM_ENV_CATEGORIES:
+        return category
+    return "custom"
+
+
+def _update_custom_env_metadata(key: str, category: Optional[str], description: Optional[str]) -> None:
+    if key in OPTIONAL_ENV_VARS:
+        return
+    metadata = _load_custom_env_metadata()
+    existing = metadata.get(key, {})
+    info = dict(existing)
+    info["category"] = _sanitize_custom_env_category(category or existing.get("category"))
+    if description is not None:
+        info["description"] = description.strip()
+    elif "description" not in info:
+        info["description"] = "Custom environment variable"
+    metadata[key] = info
+    _save_custom_env_metadata(metadata)
+
+
+def _remove_custom_env_metadata(key: str) -> None:
+    metadata = _load_custom_env_metadata()
+    if key not in metadata:
+        return
+    metadata.pop(key, None)
+    _save_custom_env_metadata(metadata)
 
 
 class ModelAssignment(BaseModel):
@@ -1202,6 +1266,7 @@ async def update_config(body: ConfigUpdate):
 @app.get("/api/env")
 async def get_env_vars():
     env_on_disk = load_env()
+    custom_metadata = _load_custom_env_metadata()
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
         value = env_on_disk.get(var_name)
@@ -1215,6 +1280,22 @@ async def get_env_vars():
             "tools": info.get("tools", []),
             "advanced": info.get("advanced", False),
         }
+
+    for var_name, value in sorted(env_on_disk.items()):
+        if var_name in result:
+            continue
+        info = custom_metadata.get(var_name, {})
+        result[var_name] = {
+            "is_set": bool(value),
+            "redacted_value": redact_key(value) if value else None,
+            "description": info.get("description") or "Custom environment variable",
+            "url": info.get("url"),
+            "category": _sanitize_custom_env_category(info.get("category")),
+            "is_password": True,
+            "tools": info.get("tools", []) if isinstance(info.get("tools", []), list) else [],
+            "advanced": bool(info.get("advanced", False)),
+            "custom": True,
+        }
     return result
 
 
@@ -1222,6 +1303,7 @@ async def get_env_vars():
 async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
+        _update_custom_env_metadata(body.key, body.category, body.description)
         return {"ok": True, "key": body.key}
     except Exception:
         _log.exception("PUT /api/env failed")
@@ -1234,6 +1316,7 @@ async def remove_env_var(body: EnvVarDelete):
         removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
+        _remove_custom_env_metadata(body.key)
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise

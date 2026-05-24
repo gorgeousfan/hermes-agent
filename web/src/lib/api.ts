@@ -118,11 +118,15 @@ export const api = {
       body: JSON.stringify({ yaml_text }),
     }),
   getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
-  setEnvVar: (key: string, value: string) =>
+  setEnvVar: (
+    key: string,
+    value: string,
+    metadata?: { category?: string; description?: string },
+  ) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
+      body: JSON.stringify({ key, value, ...(metadata ?? {}) }),
     }),
   deleteEnvVar: (key: string) =>
     fetchJSON<{ ok: boolean }>("/api/env", {
@@ -427,6 +431,7 @@ export interface EnvVarInfo {
   is_password: boolean;
   tools: string[];
   advanced: boolean;
+  custom?: boolean;
 }
 
 export interface SessionMessage {

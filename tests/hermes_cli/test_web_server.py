@@ -218,6 +218,80 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_get_env_vars_includes_custom_keys_after_save(self):
+        """GET /api/env should return arbitrary keys saved to .env so refresh keeps them visible."""
+        from hermes_cli.config import save_env_value
+
+        save_env_value("CUSTOM_REFRESH_TEST_KEY", "custom-secret-value-12345")
+
+        resp = self.client.get("/api/env")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["CUSTOM_REFRESH_TEST_KEY"] == {
+            "is_set": True,
+            "redacted_value": "cust...2345",
+            "description": "Custom environment variable",
+            "url": None,
+            "category": "custom",
+            "is_password": True,
+            "tools": [],
+            "advanced": False,
+            "custom": True,
+        }
+
+    def test_set_env_var_persists_custom_metadata(self):
+        """PUT /api/env should persist custom category/description outside .env."""
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        resp = self.client.put(
+            "/api/env",
+            json={
+                "key": "CUSTOM_METADATA_TEST_KEY",
+                "value": "metadata-secret-value-12345",
+                "category": "tool",
+                "description": "Used by a local MCP tool",
+            },
+            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
+        )
+        assert resp.status_code == 200
+
+        data = self.client.get("/api/env").json()
+        assert data["CUSTOM_METADATA_TEST_KEY"]["is_set"] is True
+        assert data["CUSTOM_METADATA_TEST_KEY"]["custom"] is True
+        assert data["CUSTOM_METADATA_TEST_KEY"]["category"] == "tool"
+        assert data["CUSTOM_METADATA_TEST_KEY"]["description"] == "Used by a local MCP tool"
+
+    def test_delete_env_var_removes_custom_metadata(self):
+        """DELETE /api/env should remove sidecar metadata for deleted custom keys."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        put_resp = self.client.put(
+            "/api/env",
+            json={
+                "key": "CUSTOM_DELETE_METADATA_TEST_KEY",
+                "value": "delete-secret-value-12345",
+                "category": "provider",
+                "description": "Temporary provider key",
+            },
+            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
+        )
+        assert put_resp.status_code == 200
+
+        delete_resp = self.client.request(
+            "DELETE",
+            "/api/env",
+            json={"key": "CUSTOM_DELETE_METADATA_TEST_KEY"},
+            headers={_SESSION_HEADER_NAME: _SESSION_TOKEN},
+        )
+        assert delete_resp.status_code == 200
+
+        metadata_path = get_hermes_home() / "custom_env_keys.json"
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text())
+            assert "CUSTOM_DELETE_METADATA_TEST_KEY" not in metadata
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value

@@ -90,7 +90,20 @@ const CATEGORY_META_ICONS: Record<string, typeof KeyRound> = {
   tool: KeyRound,
   messaging: MessageSquare,
   setting: Settings,
+  custom: KeyRound,
 };
+
+const CUSTOM_ENV_CATEGORIES = [
+  { value: "custom", label: "Custom keys" },
+  { value: "provider", label: "Provider" },
+  { value: "tool", label: "Tool" },
+  { value: "messaging", label: "Messaging" },
+  { value: "setting", label: "Setting" },
+];
+
+function redactedPreview(value: string): string {
+  return value.length > 8 ? `${value.slice(0, 4)}...${value.slice(-4)}` : "***";
+}
 
 /* ------------------------------------------------------------------ */
 /*  EnvVarRow — single key edit row                                    */
@@ -492,6 +505,10 @@ export default function EnvPage() {
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
+  const [customKey, setCustomKey] = useState("");
+  const [customValue, setCustomValue] = useState("");
+  const [customCategory, setCustomCategory] = useState("custom");
+  const [customDescription, setCustomDescription] = useState("");
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle } = usePageHeader();
@@ -510,11 +527,12 @@ export default function EnvPage() {
       { id: "section-providers", label: "Providers" },
     ];
     if (vars) {
-      const categories = ["tool", "messaging", "setting"];
+      const categories = ["tool", "messaging", "setting", "custom"];
       const CATEGORY_LABELS: Record<string, string> = {
         tool: "Tools",
         messaging: "Messaging",
         setting: "Settings",
+        custom: "Custom keys",
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -594,20 +612,74 @@ export default function EnvPage() {
     }
   };
 
+  const handleAddCustomEnvVar = async () => {
+    const key = customKey.trim().toUpperCase();
+    const value = customValue.trim();
+    const category = CUSTOM_ENV_CATEGORIES.some((entry) => entry.value === customCategory)
+      ? customCategory
+      : "custom";
+    const description = customDescription.trim() || "Custom environment variable";
+
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+      showToast("Use a valid env var name: letters, numbers, underscores, not starting with a number", "error");
+      return;
+    }
+    if (!value) {
+      showToast("Enter a value before saving the custom key", "error");
+      return;
+    }
+
+    setSaving(key);
+    try {
+      await api.setEnvVar(key, value, { category, description });
+      setVars((prev) => {
+        const existing = prev?.[key];
+        const preserveKnownMetadata = !!existing && !existing.custom;
+        return {
+          ...(prev ?? {}),
+          [key]: {
+            is_set: true,
+            redacted_value: redactedPreview(value),
+            description: preserveKnownMetadata ? existing.description : description,
+            url: existing?.url ?? null,
+            category: preserveKnownMetadata ? existing.category : category,
+            is_password: existing?.is_password ?? true,
+            tools: existing?.tools ?? [],
+            advanced: existing?.advanced ?? false,
+            ...(preserveKnownMetadata ? {} : { custom: true }),
+          },
+        };
+      });
+      setCustomKey("");
+      setCustomValue("");
+      setCustomCategory("custom");
+      setCustomDescription("");
+      showToast(`${key} saved`, "success");
+    } catch (e) {
+      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
+    } finally {
+      setSaving(null);
+    }
+  };
+
   const keyClear = useConfirmDelete({
     onDelete: useCallback(
       async (key: string) => {
         setSaving(key);
         try {
           await api.deleteEnvVar(key);
-          setVars((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
-                }
-              : prev,
-          );
+          setVars((prev) => {
+            if (!prev) return prev;
+            if (prev[key]?.custom) {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            }
+            return {
+              ...prev,
+              [key]: { ...prev[key], is_set: false, redacted_value: null },
+            };
+          });
           setEdits((prev) => {
             const n = { ...prev };
             delete n[key];
@@ -686,8 +758,9 @@ export default function EnvPage() {
       tool: t.app.nav.keys,
       messaging: t.common.messaging,
       setting: t.app.nav.config,
+      custom: "Custom keys",
     };
-    const otherCategories = ["tool", "messaging", "setting"];
+    const otherCategories = ["tool", "messaging", "setting", "custom"];
     const nonProvider = otherCategories.map((cat) => {
       const entries = Object.entries(vars).filter(
         ([, info]) => info.category === cat && (showAdvanced || !info.advanced),
@@ -721,6 +794,9 @@ export default function EnvPage() {
   const pendingClearKey = keyClear.pendingId;
   const pendingKeyDescription =
     pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined;
+  const customKeyNormalized = customKey.trim().toUpperCase();
+  const customKeyExists = !!customKeyNormalized && !!vars?.[customKeyNormalized];
+  const customKeySaving = saving === customKeyNormalized;
 
   return (
     <div className="flex flex-col gap-6">
@@ -757,6 +833,83 @@ export default function EnvPage() {
           {showAdvanced ? t.env.hideAdvanced : t.env.showAdvanced}
         </Button>
       </div>
+
+      <Card>
+        <CardHeader className="border-b border-border bg-card">
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-5 w-5 text-muted-foreground" />
+            <CardTitle className="text-base">Add custom key</CardTitle>
+          </div>
+          <CardDescription>
+            Store any environment variable in <code>~/.hermes/.env</code>. Values are hidden after saving.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 pt-4">
+          <p className="text-xs text-muted-foreground">
+            Custom keys are saved to the Hermes environment and become visible on refresh. They are only used when referenced by config, tools, plugins, or your own scripts.
+          </p>
+          <div className="grid gap-3 lg:grid-cols-[minmax(12rem,1fr)_minmax(14rem,1.2fr)_minmax(10rem,0.8fr)_minmax(14rem,1.2fr)_auto] lg:items-end">
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-key">Key name</Label>
+              <Input
+                id="custom-env-key"
+                value={customKey}
+                onChange={(e) => setCustomKey(e.target.value.toUpperCase())}
+                placeholder="EXAMPLE_API_KEY"
+                className="font-mono-ui text-xs"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-value">Value</Label>
+              <Input
+                id="custom-env-value"
+                type="password"
+                value={customValue}
+                onChange={(e) => setCustomValue(e.target.value)}
+                placeholder="Paste secret value"
+                className="font-mono-ui text-xs"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-category">Section</Label>
+              <select
+                id="custom-env-category"
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                className="h-9 border border-input bg-background px-3 py-1 text-xs text-foreground"
+              >
+                {CUSTOM_ENV_CATEGORIES.map((entry) => (
+                  <option key={entry.value} value={entry.value}>
+                    {entry.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="custom-env-description">Label / description</Label>
+              <Input
+                id="custom-env-description"
+                value={customDescription}
+                onChange={(e) => setCustomDescription(e.target.value)}
+                placeholder="Custom environment variable"
+                className="text-xs"
+              />
+            </div>
+            <Button
+              onClick={handleAddCustomEnvVar}
+              prefix={<Save />}
+              disabled={customKeySaving || !customKeyNormalized || !customValue.trim()}
+            >
+              {customKeySaving ? "..." : customKeyExists ? t.common.replace : t.common.save}
+            </Button>
+          </div>
+          {customKeyExists && (
+            <p className="text-xs text-amber-500">
+              {customKeyNormalized} already exists. Saving will replace its stored value.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <div id="section-oauth">
         <OAuthProvidersCard
