@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -100,6 +101,14 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+# Trip the reconnect loop after this many consecutive *startup* failures so a
+# permanent SDK/credential breakage doesn't produce a multi-hundred-MB error
+# log (#24851).  A stream that ran for at least RECONNECT_HEALTHY_THRESHOLD_S
+# before failing is treated as a transient mid-session disconnect and resets
+# the counter — the breaker only catches the case where start() fails fast
+# every iteration.
+MAX_CONSECUTIVE_RECONNECT_FAILURES = 5
+RECONNECT_HEALTHY_THRESHOLD_S = 30.0
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 
@@ -301,7 +310,9 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def _run_stream(self) -> None:
         """Run the async stream client with auto-reconnection."""
         backoff_idx = 0
+        consecutive_failures = 0
         while self._running:
+            started_at = time.monotonic()
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
@@ -311,6 +322,28 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if not self._running:
                     return
                 logger.warning("[%s] Stream client error: %s", self.name, e)
+                if time.monotonic() - started_at >= RECONNECT_HEALTHY_THRESHOLD_S:
+                    # The stream connected and ran for a while before failing —
+                    # treat as a transient mid-session disconnect, not a
+                    # startup loop.  Reset both the backoff index and the
+                    # failure counter so the next attempt starts fresh.
+                    consecutive_failures = 0
+                    backoff_idx = 0
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_RECONNECT_FAILURES:
+                        logger.critical(
+                            "[%s] Stream client failed %d consecutive times "
+                            "without a healthy connection; giving up to avoid "
+                            "a reconnection storm. Restart the gateway after "
+                            "fixing the underlying issue (last error: %s)",
+                            self.name,
+                            consecutive_failures,
+                            e,
+                        )
+                        self._running = False
+                        self._mark_disconnected()
+                        return
 
             if not self._running:
                 return
