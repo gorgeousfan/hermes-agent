@@ -1350,10 +1350,12 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                     logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
-                    # Sleep in small increments to stay responsive to interrupts
-                    sleep_end = time.time() + wait_time
+                    # Sleep in small increments to stay responsive to interrupts.
+                    # Use a monotonic deadline so wall-clock jumps (NTP, DST,
+                    # manual clock changes) cannot extend or shorten the wait.
+                    sleep_end = time.monotonic() + wait_time
                     _backoff_touch_counter = 0
-                    while time.time() < sleep_end:
+                    while time.monotonic() < sleep_end:
                         if agent._interrupt_requested:
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                             agent._persist_session(messages, conversation_history)
@@ -1372,7 +1374,7 @@ def run_conversation(
                         if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                             agent._touch_activity(
                                 f"retry backoff ({retry_count}/{max_retries}), "
-                                f"{int(sleep_end - time.time())}s remaining"
+                                f"{int(sleep_end - time.monotonic())}s remaining"
                             )
                     continue  # Retry the API call
 
@@ -2959,10 +2961,12 @@ def run_conversation(
                     api_error,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
-                # instead of blocking the entire wait_time in one sleep() call
-                sleep_end = time.time() + wait_time
+                # instead of blocking the entire wait_time in one sleep() call.
+                # Use a monotonic deadline so wall-clock jumps (NTP, DST,
+                # manual clock changes) cannot extend or shorten the wait.
+                sleep_end = time.monotonic() + wait_time
                 _backoff_touch_counter = 0
-                while time.time() < sleep_end:
+                while time.monotonic() < sleep_end:
                     if agent._interrupt_requested:
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                         agent._persist_session(messages, conversation_history)
@@ -2981,7 +2985,7 @@ def run_conversation(
                     if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                         agent._touch_activity(
                             f"error retry backoff ({retry_count}/{max_retries}), "
-                            f"{int(sleep_end - time.time())}s remaining"
+                            f"{int(sleep_end - time.monotonic())}s remaining"
                         )
         
         # If the API call was interrupted, skip response processing
