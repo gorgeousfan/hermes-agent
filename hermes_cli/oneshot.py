@@ -21,6 +21,7 @@ Env var fallbacks (used when the corresponding arg is not passed):
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import sys
@@ -171,13 +172,24 @@ def run_oneshot(
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
-    # Redirect stderr AND stdout to devnull for the entire call tree.
-    # We'll print the final response to the real stdout at the end.
+    # Suppress all stdout/stderr output from the agent call tree.
+    # We capture the final response via return value, then write it to
+    # the real stdout afterwards.
+    #
+    # Previous versions redirected to open(os.devnull), but the devnull
+    # file handle lacks attributes that a real text stream exposes
+    # (e.g. .encoding on some platforms returns None, .buffer is absent).
+    # _install_safe_stdio() in AIAgent.__init__ wraps sys.stdout in a
+    # _SafeWriter proxy whose __getattr__ forwards attribute lookups to
+    # the inner stream -- when that inner stream is devnull, downstream
+    # code (SDK clients, logging formatters) can silently malfunction,
+    # causing the response to be lost.  io.StringIO() is a well-behaved
+    # in-memory text stream that avoids these edge cases.  (#22975)
     real_stdout = sys.stdout
-    devnull = open(os.devnull, "w", encoding="utf-8")
+    sink = io.StringIO()
 
     try:
-        with redirect_stdout(devnull), redirect_stderr(devnull):
+        with redirect_stdout(sink), redirect_stderr(sink):
             response = _run_agent(
                 prompt,
                 model=model,
@@ -186,10 +198,7 @@ def run_oneshot(
                 use_config_toolsets=use_config_toolsets,
             )
     finally:
-        try:
-            devnull.close()
-        except Exception:
-            pass
+        sink.close()
 
     if response:
         real_stdout.write(response)
@@ -336,6 +345,11 @@ def _run_agent(
     agent.suppress_status_output = True
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
+    # Route all agent-internal print() calls through a no-op so they
+    # never touch sys.stdout.  This prevents _safe_print / _vprint
+    # from interacting with the redirected stream in ways that could
+    # interfere with response capture.  (#22975)
+    agent._print_fn = lambda *_a, **_kw: None
 
     return agent.chat(prompt) or ""
 
