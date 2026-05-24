@@ -51,6 +51,11 @@ def clarify_tool(
         choices = [str(c).strip() for c in choices if str(c).strip()]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
+        if len(choices) == 1:
+            return tool_error(
+                '"choices" needs at least 2 options, but got 1. '
+                "If you intended an open-ended question, omit the choices parameter entirely."
+            )
         if not choices:
             choices = None  # empty list → open-ended
 
@@ -112,6 +117,7 @@ CLARIFY_SCHEMA = {
             "choices": {
                 "type": "array",
                 "items": {"type": "string"},
+                "minItems": 2,
                 "maxItems": MAX_CHOICES,
                 "description": (
                     "Up to 4 answer choices. Omit this parameter entirely to "
