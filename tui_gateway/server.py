@@ -4237,6 +4237,21 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
 
+    if key in {"vi_mode", "tui_vi_mode"}:
+        raw = ("" if value is None else str(value)).strip().lower()
+        config_key = "display.tui_vi_mode" if key == "tui_vi_mode" else "display.vi_mode"
+        if raw in {"", "toggle"}:
+            cur = bool((_load_cfg().get("display") or {}).get(config_key.split(".", 1)[1], False))
+            nv = not cur
+        elif raw in {"1", "true", "yes", "on"}:
+            nv = True
+        elif raw in {"0", "false", "no", "off"}:
+            nv = False
+        else:
+            return _err(rid, 4002, f"unknown {key} value: {value}")
+        _write_config_key(config_key, nv)
+        return _ok(rid, {"key": key, "value": "on" if nv else "off"})
+
     if key in {"prompt", "personality", "skin"}:
         try:
             cfg = _load_cfg()

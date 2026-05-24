@@ -58,6 +58,8 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
+from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
@@ -420,6 +422,7 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            "vi_mode": False,
 
             "skin": "default",
         },
@@ -11919,20 +11922,40 @@ class HermesCLI:
         level = min(rms, 8000) * 7 // 8000
         return _LEVEL_BARS[level]
 
+    def _get_cli_vim_mode_fragment(self):
+        """Return a prompt fragment showing prompt_toolkit vi insert/normal mode."""
+        if not CLI_CONFIG.get("display", {}).get("vi_mode", False):
+            return []
+        try:
+            app = getattr(self, "_app", None)
+            mode = getattr(getattr(app, "vi_state", None), "input_mode", None)
+        except Exception:
+            mode = None
+
+        # prompt_toolkit starts in INSERT before Esc enters NAVIGATION/NORMAL.
+        if mode == InputMode.NAVIGATION:
+            return [("class:vim-normal", "NORMAL ")]
+        if mode == InputMode.REPLACE:
+            return [("class:vim-replace", "REPLACE ")]
+        if mode == InputMode.REPLACE_SINGLE:
+            return [("class:vim-replace", "REPLACE1 ")]
+        return [("class:vim-insert", "INSERT ")]
+
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
         compact = self._use_minimal_tui_chrome(width=self._get_tui_terminal_width())
+        vim_fragment = self._get_cli_vim_mode_fragment()
 
         def _state_fragment(style: str, icon: str, extra: str = ""):
             if compact:
                 text = icon
                 if extra:
                     text = f"{text} {extra.strip()}".rstrip()
-                return [(style, text + " ")]
+                return vim_fragment + [(style, text + " ")]
             if extra:
-                return [(style, f"{icon} {extra} {state_suffix}")]
-            return [(style, f"{icon} {state_suffix}")]
+                return vim_fragment + [(style, f"{icon} {extra} {state_suffix}")]
+            return vim_fragment + [(style, f"{icon} {state_suffix}")]
 
         if self._voice_recording:
             bar = self._audio_level_bar()
@@ -11957,7 +11980,7 @@ class HermesCLI:
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
-        return [("class:prompt", symbol)]
+        return vim_fragment + [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
         """Return the visible prompt text for width calculations."""
@@ -13849,6 +13872,9 @@ class HermesCLI:
             'placeholder': '#888888 italic',
             'prompt': '',
             'prompt-working': '#888888 italic',
+            'vim-normal': '#87CEEB bold',
+            'vim-insert': '#888888 bold',
+            'vim-replace': '#FFA500 bold',
             'hint': '#888888 italic',
             'status-bar': 'bg:#1a1a2e #C0C0C0',
             'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',
@@ -13897,12 +13923,14 @@ class HermesCLI:
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
         # Create the application
+        vi_mode = CLI_CONFIG.get("display", {}).get("vi_mode", False)
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
             full_screen=False,
             mouse_support=False,
+            editing_mode=EditingMode.VI if vi_mode else EditingMode.EMACS,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         _disable_prompt_toolkit_cpr_warning(app)
