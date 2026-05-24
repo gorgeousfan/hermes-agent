@@ -2777,7 +2777,23 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    """Return the best available launchd domain for the current user.
+
+    On macOS, ``gui/<uid>`` only exists when the user owns a GUI (Aqua)
+    login session.  SSH-only / headless users get a ``user/<uid>`` domain
+    instead.  We probe both and return whichever is reachable.
+    """
+    uid = os.getuid()
+    gui_domain = f"gui/{uid}"
+    # gui domain exists only for the console (Aqua) user
+    result = subprocess.run(
+        ["launchctl", "print", gui_domain],
+        capture_output=True, timeout=5,
+    )
+    if result.returncode == 0:
+        return gui_domain
+    # Fall back to the per-user domain (available for SSH / login sessions)
+    return f"user/{uid}"
 
 
 def generate_launchd_plist() -> str:
@@ -2847,6 +2863,13 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+    
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+        <string>Standard</string>
+        <string>Background</string>
+    </array>
     
     <key>RunAtLoad</key>
     <true/>
