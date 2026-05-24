@@ -535,15 +535,42 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _resolve_status_home() -> Path:
+    """Return the Hermes home whose gateway state the dashboard should show.
+
+    The dashboard process can outlive profile switches, especially in Docker
+    where PID 1 booted it with the root ``HERMES_HOME`` and users later switch
+    into ``profiles/<name>`` before starting the gateway. Re-read the sticky
+    active profile on each status request so we inspect the same runtime files
+    the active gateway is currently updating.
+    """
+    home = get_hermes_home()
+    try:
+        from hermes_cli.profiles import get_active_profile, get_profile_dir
+
+        active = get_active_profile()
+        if active and active != "default":
+            profile_dir = get_profile_dir(active)
+            if profile_dir.is_dir():
+                return profile_dir
+    except Exception:
+        pass
+    return home
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
+    status_home = _resolve_status_home()
+    current_home = get_hermes_home()
+    status_pid_path = status_home / "gateway.pid"
+    status_runtime_path = status_home / "gateway_state.json"
 
     # --- Gateway liveness detection ---
     # Try local PID check first (same-host).  If that fails and a remote
     # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
     # dashboard works when the gateway runs in a separate container.
-    gateway_pid = get_running_pid()
+    gateway_pid = get_running_pid(status_pid_path)
     gateway_running = gateway_pid is not None
     remote_health_body: dict | None = None
 
@@ -566,16 +593,17 @@ async def get_status():
     try:
         from gateway.config import load_gateway_config
 
-        gateway_config = load_gateway_config()
-        configured_gateway_platforms = {
-            platform.value for platform in gateway_config.get_connected_platforms()
-        }
+        if status_home == current_home:
+            gateway_config = load_gateway_config()
+            configured_gateway_platforms = {
+                platform.value for platform in gateway_config.get_connected_platforms()
+            }
     except Exception:
         configured_gateway_platforms = None
 
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
-    runtime = read_runtime_status()
+    runtime = read_runtime_status(status_runtime_path)
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
 
@@ -608,7 +636,7 @@ async def get_status():
     active_sessions = 0
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(db_path=status_home / "state.db")
         try:
             sessions = db.list_sessions_rich(limit=50)
             now = time.time()
@@ -625,9 +653,9 @@ async def get_status():
     return {
         "version": __version__,
         "release_date": __release_date__,
-        "hermes_home": str(get_hermes_home()),
-        "config_path": str(get_config_path()),
-        "env_path": str(get_env_path()),
+        "hermes_home": str(status_home),
+        "config_path": str(status_home / "config.yaml"),
+        "env_path": str(status_home / ".env"),
         "config_version": current_ver,
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,

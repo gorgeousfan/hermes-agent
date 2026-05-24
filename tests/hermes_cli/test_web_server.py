@@ -137,11 +137,11 @@ class TestWebServerEndpoints:
             def get_connected_platforms(self):
                 return [_Platform("telegram")]
 
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *args, **kwargs: 1234)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
-            lambda: {
+            lambda *args, **kwargs: {
                 "gateway_state": "running",
                 "updated_at": "2026-04-12T00:00:00+00:00",
                 "platforms": {
@@ -169,11 +169,11 @@ class TestWebServerEndpoints:
             def get_connected_platforms(self):
                 return []
 
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
-            lambda: {
+            lambda *args, **kwargs: {
                 "gateway_state": "startup_failed",
                 "updated_at": "2026-04-12T00:00:00+00:00",
                 "platforms": {
@@ -1439,8 +1439,8 @@ class TestStatusRemoteGateway:
         """When local PID check fails and remote probe succeeds, gateway shows running."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid", lambda *args, **kwargs: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda *args, **kwargs: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
             "status": "ok",
@@ -1461,8 +1461,8 @@ class TestStatusRemoteGateway:
         """When local PID check succeeds, the remote probe is never called."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+        monkeypatch.setattr(ws, "get_running_pid", lambda *args, **kwargs: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda *args, **kwargs: {
             "gateway_state": "running",
             "platforms": {},
         })
@@ -1484,8 +1484,8 @@ class TestStatusRemoteGateway:
         """When GATEWAY_HEALTH_URL is unset, no probe is attempted."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid", lambda *args, **kwargs: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda *args, **kwargs: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
         resp = self.client.get("/api/status")
@@ -1498,8 +1498,8 @@ class TestStatusRemoteGateway:
         """Remote gateway running but PID not in response — pid should be None."""
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "get_running_pid", lambda *args, **kwargs: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda *args, **kwargs: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
             "status": "ok",
@@ -1511,6 +1511,63 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
+
+    def test_status_uses_active_profile_runtime_paths(self, monkeypatch, tmp_path):
+        """Dashboard status should follow the sticky active profile at request time."""
+        import hermes_cli.web_server as ws
+        import hermes_state
+
+        docker_home = tmp_path / "opt" / "data"
+        profile_home = docker_home / "profiles" / "hermes-main"
+        profile_home.mkdir(parents=True)
+        (docker_home / "active_profile").write_text("hermes-main\n")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        monkeypatch.setattr(ws, "check_config_version", lambda: (1, 1))
+
+        seen: dict[str, Path | None] = {"pid_path": None, "status_path": None, "db_path": None}
+
+        def fake_get_running_pid(pid_path=None, cleanup_stale=True):
+            seen["pid_path"] = pid_path
+            return 4321
+
+        def fake_read_runtime_status(path=None):
+            seen["status_path"] = path
+            return {
+                "gateway_state": "running",
+                "platforms": {"telegram": {"state": "connected"}},
+            }
+
+        class FakeSessionDB:
+            def __init__(self, db_path=None):
+                seen["db_path"] = db_path
+
+            def list_sessions_rich(self, limit=50):
+                now = time.time()
+                return [{"ended_at": None, "last_active": now, "started_at": now}]
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(ws, "get_running_pid", fake_get_running_pid)
+        monkeypatch.setattr(ws, "read_runtime_status", fake_read_runtime_status)
+        monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert seen["pid_path"] == profile_home / "gateway.pid"
+        assert seen["status_path"] == profile_home / "gateway_state.json"
+        assert seen["db_path"] == profile_home / "state.db"
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 4321
+        assert data["gateway_state"] == "running"
+        assert data["hermes_home"] == str(profile_home)
+        assert data["config_path"] == str(profile_home / "config.yaml")
+        assert data["env_path"] == str(profile_home / ".env")
 
 
 # ---------------------------------------------------------------------------
