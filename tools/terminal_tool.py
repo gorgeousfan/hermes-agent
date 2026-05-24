@@ -1331,11 +1331,133 @@ def _cleanup_thread_worker():
             time.sleep(1)
 
 
+_HERMES_SANDBOX_PREFIX = "hermes-"
+
+
+def _reconcile_orphaned_docker_sandboxes() -> None:
+    """Reap `hermes-*` Docker containers left by previous processes.
+
+    Lists every container (running or stopped) whose name starts with
+    ``hermes-`` and force-removes it. Called once per process under
+    ``_env_lock`` before any sandbox can be created in this process, so the
+    filter inherently cannot hit any container we own.
+    """
+    from tools.environments.docker import find_docker
+    docker_exe = find_docker()
+    if not docker_exe:
+        return
+    try:
+        result = subprocess.run(
+            [docker_exe, "ps", "-a",
+             "--filter", f"name=^{_HERMES_SANDBOX_PREFIX}",
+             "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.warning("Orphan reconciliation: docker ps failed: %s", e)
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "Orphan reconciliation: docker ps exited %d: %s",
+            result.returncode, (result.stderr or "").strip(),
+        )
+        return
+    names = [n.strip() for n in result.stdout.splitlines() if n.strip()]
+    if not names:
+        return
+    logger.info(
+        "Orphan reconciliation: reaping %d Docker container(s): %s",
+        len(names), names,
+    )
+    for name in names:
+        try:
+            subprocess.run(
+                [docker_exe, "rm", "-f", name],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.warning(
+                "Orphan reconciliation: failed to remove container %s: %s",
+                name, e,
+            )
+
+
+def _reconcile_orphaned_daytona_sandboxes() -> None:
+    """Reap `hermes-*` Daytona sandboxes left by previous processes.
+
+    No-ops when the Daytona SDK isn't installed or the client can't
+    initialize (e.g., missing ``DAYTONA_API_KEY``). Called once per process
+    under ``_env_lock`` before any sandbox can be created.
+    """
+    try:
+        from daytona import Daytona  # type: ignore
+    except ImportError:
+        return
+    try:
+        client = Daytona()
+    except Exception as e:
+        logger.warning("Orphan reconciliation: Daytona client init failed: %s", e)
+        return
+    try:
+        sandboxes = list(client.list())
+    except Exception as e:
+        logger.warning("Orphan reconciliation: Daytona list failed: %s", e)
+        return
+    orphans = [
+        s for s in sandboxes
+        if (getattr(s, "name", "") or "").startswith(_HERMES_SANDBOX_PREFIX)
+    ]
+    if not orphans:
+        return
+    logger.info(
+        "Orphan reconciliation: reaping %d Daytona sandbox(es)",
+        len(orphans),
+    )
+    for sandbox in orphans:
+        ref = getattr(sandbox, "name", None) or getattr(sandbox, "id", "?")
+        try:
+            client.delete(sandbox)
+        except Exception as e:
+            logger.warning(
+                "Orphan reconciliation: failed to delete Daytona sandbox %s: %s",
+                ref, e,
+            )
+
+
+def _reconcile_orphaned_sandboxes() -> None:
+    """Dispatch orphan-sandbox reconciliation by configured backend.
+
+    Best-effort and never raises: any backend-specific failure is logged and
+    swallowed so an unhealthy Docker daemon or unreachable Daytona API can't
+    block tool initialization. Called exactly once per process from
+    ``_start_cleanup_thread`` while holding ``_env_lock``.
+    """
+    env_type = _get_env_config().get("env_type", "local")
+    if env_type == "docker":
+        _reconcile_orphaned_docker_sandboxes()
+    elif env_type == "daytona":
+        _reconcile_orphaned_daytona_sandboxes()
+
+
+_orphan_reconciliation_done = False
+
+
 def _start_cleanup_thread():
     """Start the background cleanup thread if not already running."""
-    global _cleanup_thread, _cleanup_running
+    global _cleanup_thread, _cleanup_running, _orphan_reconciliation_done
 
     with _env_lock:
+        if not _orphan_reconciliation_done:
+            # Reap sandboxes left running by a previous gateway process.
+            # Runs once per process under _env_lock, before any sandbox in
+            # this process is created — so the reaper cannot race with
+            # in-flight creation. Failures are logged inside the helpers.
+            _orphan_reconciliation_done = True
+            try:
+                _reconcile_orphaned_sandboxes()
+            except Exception as e:
+                logger.warning("Orphan reconciliation: unexpected error: %s", e)
+
         if _cleanup_thread is None or not _cleanup_thread.is_alive():
             _cleanup_running = True
             _cleanup_thread = threading.Thread(target=_cleanup_thread_worker, daemon=True)
