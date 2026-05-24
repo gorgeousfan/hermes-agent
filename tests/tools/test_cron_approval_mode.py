@@ -247,15 +247,24 @@ class TestCronModeInteractions:
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
-    def test_non_cron_non_interactive_still_auto_approves(self, monkeypatch):
-        """Non-cron, non-interactive sessions (e.g. scripted usage) still auto-approve."""
+    def test_non_cron_non_interactive_fails_closed(self, monkeypatch):
+        """Non-cron, non-interactive sessions (e.g. ``batch_runner.py``,
+        scripted embedded usage) **must** fail closed.  Pre-#29159 this
+        branch fell through to ``approved: True`` and silently bypassed
+        the approval prompt — GHSA-7gp4-gfvg-4mpj called this out as the
+        Dangerous Command Approval Bypass."""
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_HEADLESS_APPROVE", raising=False)
 
         result = check_dangerous_command("rm -rf /tmp/stuff", "local")
-        assert result["approved"]
+        assert not result["approved"]
+        assert "BLOCKED" in result["message"]
+        # Remediation pointer must be present so operators hit by the
+        # block know how to opt back in deliberately.
+        assert "HERMES_HEADLESS_APPROVE" in result["message"]
 
 
 class TestCronWithGatewayOrigin:
