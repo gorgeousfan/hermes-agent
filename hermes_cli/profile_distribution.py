@@ -527,6 +527,30 @@ def plan_install(
     )
 
 
+
+def _additive_copytree(src: Path, dst: Path, ignore=None) -> None:
+    """Copy *src* into *dst* additively — existing extra files in *dst* are kept.
+
+    Unlike ``shutil.copytree`` + ``shutil.rmtree``, this preserves any
+    local files that are not part of the source tree.  Only files present
+    in *src* are overwritten or created; everything else in *dst* is left
+    untouched.
+    """
+    if not dst.exists():
+        shutil.copytree(src, dst, ignore=ignore)
+        return
+
+    for entry in src.iterdir():
+        name = entry.name
+        if ignore and name in (ignore(str(src), [name]) or []):
+            continue
+        dest_entry = dst / name
+        if entry.is_dir():
+            _additive_copytree(entry, dest_entry, ignore=ignore)
+        else:
+            shutil.copy2(entry, dest_entry)
+
+
 def _copy_dist_payload(
     staged: Path,
     target: Path,
@@ -556,9 +580,10 @@ def _copy_dist_payload(
 
         dest = target / name
         if entry.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(
+            # Use additive merge so locally-installed skills (or other
+            # directory content not present in the distribution) survive
+            # install/update.  Only overwrite files the distribution ships.
+            _additive_copytree(
                 entry,
                 dest,
                 ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
