@@ -100,6 +100,14 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _todoist_signature(body: bytes, secret: str) -> str:
+    """Compute X-Todoist-Hmac-SHA256 (base64-encoded HMAC-SHA256) for *body*."""
+    import base64
+    return base64.b64encode(
+        hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    ).decode()
+
+
 # ===================================================================
 # Signature validation
 # ===================================================================
@@ -169,6 +177,33 @@ class TestValidateSignature:
         sig = _generic_signature(body, secret)
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_todoist_signature_valid(self):
+        """Valid X-Todoist-Hmac-SHA256 (base64 HMAC-SHA256) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:added", "event_data": {"content": "buy milk"}}'
+        secret = "todoist-client-secret"
+        sig = _todoist_signature(body, secret)
+        req = _mock_request(headers={"X-Todoist-Hmac-SHA256": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_todoist_signature_invalid(self):
+        """Wrong X-Todoist-Hmac-SHA256 is rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:added"}'
+        secret = "todoist-client-secret"
+        req = _mock_request(
+            headers={"X-Todoist-Hmac-SHA256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+        )
+        assert adapter._validate_signature(req, body, secret) is False
+
+    def test_validate_todoist_signature_wrong_secret(self):
+        """Valid signature with a different secret is rejected."""
+        adapter = _make_adapter()
+        body = b'{"event_name": "item:added"}'
+        wrong_sig = _todoist_signature(body, "other-secret")
+        req = _mock_request(headers={"X-Todoist-Hmac-SHA256": wrong_sig})
+        assert adapter._validate_signature(req, body, "todoist-client-secret") is False
 
 
 # ===================================================================
@@ -303,6 +338,49 @@ class TestEventFilter:
                 headers={"X-GitHub-Event": "whatever"},
             )
             assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_matches_todoist_event_name(self):
+        """Todoist sends event in payload['event_name'] (not event_type)."""
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["item:added"],
+                "prompt": "Todoist event: {event_name}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"event_name": "item:added", "user_id": "u1"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_rejects_unconfigured_todoist_event(self):
+        """Todoist event not in events list returns 200 ignored."""
+        routes = {
+            "todoist": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["item:added"],
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/todoist",
+                json={"event_name": "item:completed", "user_id": "u1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
 
 
 # ===================================================================

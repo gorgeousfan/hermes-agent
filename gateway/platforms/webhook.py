@@ -27,6 +27,7 @@ Security:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -65,6 +66,12 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+
+# Sentinel an agent can emit (as its full response, or contained anywhere in it)
+# to ask the webhook adapter to skip delivery entirely.  Empty responses are
+# treated the same way.  Mirrors the convention used by the Feishu comment
+# adapter so quiet-success / no-op outcomes don't spam the deliver target.
+NO_REPLY_SENTINEL = "NO_REPLY"
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -235,6 +242,18 @@ class WebhookAdapter(BasePlatformAdapter):
         """
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
+
+        # NO_REPLY suppression — agent can opt out of delivery entirely.
+        # Empty / whitespace-only responses or any response containing the
+        # NO_REPLY_SENTINEL token are dropped before any deliver branch runs.
+        # The full response is still recorded in the agent transcript / logs.
+        if not content or not content.strip() or NO_REPLY_SENTINEL in content:
+            logger.info(
+                "[webhook] NO_REPLY for %s (deliver=%s), skipping delivery",
+                chat_id,
+                deliver_type,
+            )
+            return SendResult(success=True)
 
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
@@ -419,6 +438,7 @@ class WebhookAdapter(BasePlatformAdapter):
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("event_name", "")  # Todoist uses event_name
             or "unknown"
         )
         allowed_events = route_config.get("events", [])
@@ -629,6 +649,15 @@ class WebhookAdapter(BasePlatformAdapter):
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
+
+        # Todoist: X-Todoist-Hmac-SHA256 = base64(HMAC-SHA256(body, client_secret))
+        # https://developer.todoist.com/sync/v9/#request-format
+        td_sig = request.headers.get("X-Todoist-Hmac-SHA256", "")
+        if td_sig:
+            expected = base64.b64encode(
+                hmac.new(secret.encode(), body, hashlib.sha256).digest()
+            ).decode()
+            return hmac.compare_digest(td_sig, expected)
 
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")
