@@ -1942,3 +1942,147 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestTurnPairPreservation:
+    """Causal Coupling guard: compaction must never create an orphan user turn.
+
+    The original #10896 fix pulled cut_idx back to include the last user
+    message in the tail.  However ``_find_tail_cut_by_tokens`` applies
+    ``max(cut_idx, head_end + 1)`` at its call site, which can push the
+    boundary *forward* past the user message again when the user message sits
+    at or near ``head_end``.  The result: user lands in the compressed region
+    without its assistant reply, the summariser marks it as pending, and the
+    next session re-executes the already-completed request.
+
+    These tests verify the Causal Coupling guard in
+    ``_ensure_last_user_message_in_tail`` and ``_find_turn_pair_end``.
+    """
+
+    @pytest.fixture
+    def compressor(self):
+        return ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=1,
+            protect_last_n=0,
+            quiet_mode=True,
+        )
+
+    # ------------------------------------------------------------------
+    # _find_turn_pair_end unit tests
+    # ------------------------------------------------------------------
+
+    def test_pair_end_user_only(self, compressor):
+        """User at end of list — no reply yet — pair_end is user+1."""
+        msgs = [
+            {"role": "user", "content": "hello"},
+        ]
+        assert compressor._find_turn_pair_end(msgs, 0) == 1
+
+    def test_pair_end_user_with_assistant_reply(self, compressor):
+        """User + assistant — pair_end skips both."""
+        msgs = [
+            {"role": "user", "content": "do x"},
+            {"role": "assistant", "content": "done"},
+        ]
+        assert compressor._find_turn_pair_end(msgs, 0) == 2
+
+    def test_pair_end_user_assistant_with_tools(self, compressor):
+        """User + assistant + tool results — pair_end skips the whole group."""
+        msgs = [
+            {"role": "user", "content": "run it"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "exec", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+        ]
+        assert compressor._find_turn_pair_end(msgs, 0) == 4
+
+    def test_pair_end_stops_at_next_user(self, compressor):
+        """pair_end must not cross into the next user turn."""
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+        assert compressor._find_turn_pair_end(msgs, 0) == 2
+
+    # ------------------------------------------------------------------
+    # _ensure_last_user_message_in_tail unit tests
+    # ------------------------------------------------------------------
+
+    def test_user_already_in_tail_unchanged(self, compressor):
+        """When the user message is already past cut_idx, nothing changes."""
+        msgs = [
+            {"role": "user", "content": "head"},
+            {"role": "assistant", "content": "head reply"},
+            {"role": "user", "content": "last user"},
+            {"role": "assistant", "content": "last reply"},
+        ]
+        # cut_idx=2 → tail = msgs[2:], last user is at 2 → already in tail
+        result = compressor._ensure_last_user_message_in_tail(msgs, cut_idx=2, head_end=1)
+        assert result == 2
+
+    def test_user_in_compressed_region_pulled_back(self, compressor):
+        """User that ended up in the compressed region triggers cut pullback."""
+        msgs = [
+            {"role": "user", "content": "head"},       # 0
+            {"role": "assistant", "content": "hi"},     # 1
+            {"role": "user", "content": "do thing"},   # 2  ← last user
+            {"role": "assistant", "content": "done"},  # 3
+        ]
+        # cut_idx=3 puts user at idx 2 in compressed region (2 < 3)
+        result = compressor._ensure_last_user_message_in_tail(msgs, cut_idx=3, head_end=0)
+        # Should pull cut back to ≤ 2 so user is in tail
+        assert result <= 2
+
+    def test_orphan_prevention_user_in_compressed_region(self, compressor):
+        """Regression: user answered in-session ends up in compressed region.
+
+        Scenario: last user is at index 4, cut_idx=5 (token walk stopped there).
+        _ensure finds last_user_idx=4 < cut_idx=5 → pulls back.
+        The resulting tail must include the user at 4.
+        """
+        msgs = [
+            {"role": "user", "content": "q1"},               # 0
+            {"role": "assistant", "content": "a1"},           # 1
+            {"role": "user", "content": "q2"},                # 2
+            {"role": "assistant", "content": "a2"},           # 3
+            {"role": "user", "content": "turn lights off"},   # 4 ← last user
+            {"role": "assistant", "content": "lights off done"},  # 5
+        ]
+        head_end = 3
+        result = compressor._ensure_last_user_message_in_tail(msgs, cut_idx=5, head_end=head_end)
+        # User at 4 < cut_idx=5 → must pull cut back to ≤ 4
+        assert result <= 4, (
+            f"Expected cut ≤ 4 to keep user at idx 4 in tail, got {result}"
+        )
+
+    def test_no_orphan_after_full_compaction_cycle(self, compressor):
+        """End-to-end: after _find_tail_cut_by_tokens, no orphan user turns exist.
+
+        Build a conversation where the last user message is answered and the
+        conversation has enough history to trigger compression. Verify that the
+        tail never starts with an unanswered user message.
+        """
+        msgs = [
+            {"role": "user", "content": "initial"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        for i in range(5):
+            msgs.append({"role": "user", "content": f"step {i}"})
+            msgs.append({"role": "assistant", "content": f"done {i}"})
+        msgs.append({"role": "user", "content": "lights off please"})
+        msgs.append({"role": "assistant", "content": "lights are off"})
+
+        head_end = compressor.protect_first_n
+        cut = compressor._find_tail_cut_by_tokens(msgs, head_end)
+        tail = msgs[cut:]
+
+        # Tail must not start with an unanswered user message
+        if tail and tail[0].get("role") == "user":
+            assert len(tail) >= 2 and tail[1].get("role") == "assistant", (
+                f"Orphan user turn detected at tail start: {tail[0]['content']!r} "
+                f"— next role is {tail[1].get('role') if len(tail) > 1 else 'nothing'}"
+            )
