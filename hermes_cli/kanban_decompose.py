@@ -70,7 +70,8 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "skills": ["<skill-name>", ...]  # optional — skill bundles to force-load
       },
       ...
     ]
@@ -89,6 +90,9 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Use "skills" to specify skill bundles the worker should force-load
+    (e.g. ["github-workflow", "test-driven-development"]). Omit if no
+    special skills are needed.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -431,11 +435,18 @@ def decompose_task(
             parents = []
         # Clean parent indices: drop non-int and out-of-range.
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
+        # Extract optional skills list from the decomposer response.
+        raw_skills = entry.get("skills")
+        if isinstance(raw_skills, list):
+            skills_list = [s for s in raw_skills if isinstance(s, str) and s.strip()]
+        else:
+            skills_list = []
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
+            "skills": skills_list,
         })
 
     try:

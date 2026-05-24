@@ -3544,6 +3544,7 @@ def decompose_triage_task(
             "body": "...",                     # optional
             "assignee": "profile-name",        # optional, None -> default fallback
             "parents": [0, 2],                 # indices into this same children list
+            "skills": ["skill-name"],          # optional list of skill names
         }
 
     Returns the list of created child task ids (in input order) on
@@ -3631,11 +3632,18 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            # Extract optional skills from the child dict.
+            raw_skills = child.get("skills")
+            skills_val = None
+            if isinstance(raw_skills, list) and raw_skills:
+                cleaned = [s for s in raw_skills if isinstance(s, str) and s.strip()]
+                if cleaned:
+                    skills_val = json.dumps(cleaned)
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " tenant, created_at, created_by, skills) "
+                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -3644,6 +3652,7 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    skills_val,
                 ),
             )
             _append_event(
