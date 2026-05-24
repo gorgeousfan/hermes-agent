@@ -67,7 +67,6 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
-import MissionControlPage from "@/pages/MissionControlPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -108,7 +107,6 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
-  "/mission-control": MissionControlPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -318,11 +316,10 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const isMissionControlRoute = normalizedPath === "/mission-control";
-  // When embedded chat is on, the terminal host should be visible on
-  // both /chat and /mission-control.  On any other route (sessions,
-  // analytics, etc.) the persistent host stays hidden.
-  const showPersistentChat =
-    isChatRoute || isMissionControlRoute;
+  // Keep the persistent PTY host scoped to the real chat route.  /mission-control
+  // is owned by the Mission Control dashboard plugin when installed; rendering
+  // the chat host there hides the plugin page and leaves a blank terminal panel.
+  const showPersistentChat = isChatRoute;
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
