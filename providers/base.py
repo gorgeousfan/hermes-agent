@@ -79,6 +79,10 @@ class ProviderProfile:
 
     # ── Hooks (override in subclass for complex providers) ───
 
+    def get_model_capabilities(self, model: str) -> Any | None:
+        """Return ModelCapabilities for a model, or None to use models.dev."""
+        return None
+
     def get_hostname(self) -> str:
         """Return the provider's base hostname for URL-based detection.
 

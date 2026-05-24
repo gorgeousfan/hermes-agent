@@ -462,6 +462,16 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if profile:
+            caps = profile.get_model_capabilities(model)
+            if isinstance(caps, ModelCapabilities):
+                return caps
+    except Exception:
+        pass
+
     models = _get_provider_models(provider)
     if models is None:
         return None

@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
+    ModelCapabilities,
     _extract_context,
     fetch_models_dev,
     get_model_capabilities,
@@ -364,6 +365,17 @@ CAPS_REGISTRY = {
 
 class TestGetModelCapabilities:
     """Tests for get_model_capabilities vision detection."""
+
+    def test_provider_plugin_capabilities_for_unmapped_provider(self):
+        caps = ModelCapabilities(supports_vision=True)
+        profile = MagicMock()
+        profile.get_model_capabilities.return_value = caps
+
+        with patch("providers.get_provider_profile", return_value=profile), \
+             patch("agent.models_dev.fetch_models_dev") as mock_fetch:
+            assert get_model_capabilities("my-custom-provider", "my-custom-model") is caps
+
+        mock_fetch.assert_not_called()
 
     def test_vision_from_attachment_flag(self):
         """Models with attachment=True and no modalities should report supports_vision=True."""
