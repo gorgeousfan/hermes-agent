@@ -19,6 +19,8 @@ from utils import atomic_replace
 # alter arbitrary user env vars, but credentials are known to require
 # pure ASCII (they become HTTP header values).
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+_NEXUS_BOOTSTRAP_MAX_BYTES = 1_048_576
+_NEXUS_BOOTSTRAP_MAX_SECRETS = 128
 
 # Names we've already warned about during this process, so repeated
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
@@ -198,8 +200,10 @@ def _load_nexus_bootstrap_env() -> bool:
     - NEXUS_SERVICE_TOKEN or NEXUS_TOKEN
 
     When present, Nexus values override stale shell or dotenv values so the
-    central vault becomes the authority during cutover. Failures are swallowed:
-    bootstrap secret loading must not block Hermes startup or leak secret values.
+    central vault becomes the authority during cutover. External secret
+    sources that run later may still apply according to their own override
+    policy. Failures are swallowed: bootstrap secret loading must not block
+    Hermes startup or leak secret values.
     """
     enabled = os.getenv("HERMES_NEXUS_BOOTSTRAP_ENABLED", "1").strip().lower()
     if enabled in {"0", "false", "no", "off"}:
@@ -231,7 +235,14 @@ def _load_nexus_bootstrap_env() -> bool:
     )
     try:
         with urlopen(req, timeout=15) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+            raw_body = resp.read(_NEXUS_BOOTSTRAP_MAX_BYTES + 1)
+            if len(raw_body) > _NEXUS_BOOTSTRAP_MAX_BYTES:
+                print(
+                    "  Nexus vault bootstrap: response too large; using local fallback.",
+                    file=sys.stderr,
+                )
+                return False
+            payload = json.loads(raw_body.decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         print(
             "  Nexus vault bootstrap: configured but unavailable; using local fallback.",
@@ -261,6 +272,8 @@ def _load_nexus_bootstrap_env() -> bool:
             continue
         _SECRET_SOURCES[name] = "Nexus vault"
         loaded.append(name)
+        if len(loaded) >= _NEXUS_BOOTSTRAP_MAX_SECRETS:
+            break
 
     if not loaded:
         return False

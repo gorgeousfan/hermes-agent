@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import hermes_cli.env_loader as env_loader
 from hermes_cli.env_loader import get_secret_source, load_hermes_dotenv
 
 
@@ -124,7 +125,7 @@ def test_nexus_bootstrap_overrides_local_dotenv_secret(tmp_path, monkeypatch, ca
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return json.dumps({"secrets": {"TELEGRAM_BOT_TOKEN": "vault-token"}}).encode("utf-8")
 
     with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()) as mock_urlopen:
@@ -174,7 +175,7 @@ def test_nexus_bootstrap_ignores_empty_or_non_string_secrets(tmp_path, monkeypat
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return json.dumps(
                 {
                     "secrets": {
@@ -253,7 +254,7 @@ def test_nexus_bootstrap_url_encodes_integration_id_and_uses_timeout(tmp_path, m
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return json.dumps({"secrets": {"TELEGRAM_BOT_TOKEN": "vault-token"}}).encode("utf-8")
 
     with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()) as mock_urlopen:
@@ -280,7 +281,7 @@ def test_nexus_bootstrap_non_dict_json_body_falls_back(tmp_path, monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return b"[]"
 
     with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
@@ -305,7 +306,7 @@ def test_nexus_bootstrap_empty_secrets_response_falls_back(tmp_path, monkeypatch
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return json.dumps({"secrets": {}}).encode("utf-8")
 
     with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
@@ -330,13 +331,70 @@ def test_nexus_bootstrap_non_utf8_body_falls_back(tmp_path, monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return b"\xff\xfe\x00"
 
     with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
         load_hermes_dotenv(hermes_home=home)
 
     assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+
+
+def test_nexus_bootstrap_oversized_response_falls_back(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            assert size == getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_BYTES") + 1
+            return b"{" + (b" " * getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_BYTES")) + b"}"
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+    assert "response too large" in capsys.readouterr().err
+
+
+def test_nexus_bootstrap_limits_applied_secrets(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    secrets = {
+        f"NEXUS_TEST_{idx}_TOKEN": f"value-{idx}"
+        for idx in range(getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_SECRETS") + 1)
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"secrets": secrets}).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    loaded = [key for key in secrets if os.getenv(key) is not None]
+    assert len(loaded) == getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_SECRETS")
 
 
 def test_nexus_bootstrap_invalid_env_value_is_skipped(tmp_path, monkeypatch):
@@ -356,7 +414,7 @@ def test_nexus_bootstrap_invalid_env_value_is_skipped(tmp_path, monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def read(self):
+        def read(self, *_args):
             return json.dumps(
                 {
                     "secrets": {
