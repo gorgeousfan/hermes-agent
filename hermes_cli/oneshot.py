@@ -174,11 +174,12 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
+    real_stderr = sys.stderr
     devnull = open(os.devnull, "w", encoding="utf-8")
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(
+            result = _run_agent(
                 prompt,
                 model=model,
                 provider=provider,
@@ -191,11 +192,51 @@ def run_oneshot(
         except Exception:
             pass
 
+    # ``_run_agent`` now returns the structured ``run_conversation`` result
+    # dict instead of just the final-response string, so oneshot can
+    # distinguish "agent produced no text but ran fine" from
+    # "agent failed mid-turn (e.g. compression-exhausted, rate limit,
+    # invalid model slug)". The previous code returned 0 with empty stdout
+    # in both cases, so callers like the MeshBoard launcher saw a silent
+    # rc=0 exit on hard failures — pure stdout/stderr capture gave them
+    # no signal at all. Surface every structured failure to real_stderr
+    # and exit non-zero so wrappers can classify.
+    if isinstance(result, dict):
+        response = str(result.get("final_response") or "")
+        failed = bool(result.get("failed") or result.get("partial"))
+        error_detail = str(result.get("error") or "")
+    else:
+        # Defensive: if some path returns a bare string, treat it as the
+        # response. This preserves backwards-compat for any caller still
+        # exercising the old shape.
+        response = str(result or "")
+        failed = False
+        error_detail = ""
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
+
+    if failed:
+        # Always emit *something* to stderr — even if the agent already
+        # produced a partial response. Wrappers need a reliable signal
+        # to classify the outcome; a non-empty stdout + empty stderr
+        # currently looks identical to a clean run.
+        message = error_detail or "hermes -z: agent reported failure with no error detail"
+        real_stderr.write(f"hermes -z: {message}\n")
+        if result.get("compression_exhausted"):
+            real_stderr.write(
+                "hermes -z: context compression exhausted — the model's "
+                "context window cannot fit the conversation after the "
+                "configured max compression attempts. Consider /new in "
+                "an interactive session, a longer-context model, or a "
+                "smaller prompt.\n"
+            )
+        real_stderr.flush()
+        return 1
+
     return 0
 
 
@@ -221,9 +262,58 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
-) -> str:
+) -> dict:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.  Returns the structured ``run_conversation``
+    result dict (with ``final_response``, ``failed``, ``error``,
+    ``compression_exhausted``, etc.).
+
+    Previously returned only the final-response string, which meant
+    oneshot mode could not distinguish a successful empty response from
+    a hard failure. Wrappers like the MeshBoard launcher need the
+    failure flags to classify a non-zero exit; returning the full result
+    lets ``run_oneshot`` surface the error to real_stderr and exit
+    non-zero on failure.
+    """
+    try:
+        return _run_agent_inner(
+            prompt,
+            model=model,
+            provider=provider,
+            toolsets=toolsets,
+            use_config_toolsets=use_config_toolsets,
+        )
+    except Exception as exc:
+        # Catch anything (agent init, config loading, conversation_loop
+        # raises) and synthesise a failed-result dict. Without this, an
+        # exception would propagate past run_oneshot's redirect_stderr
+        # block, then Python's default handler would print a traceback
+        # to real_stderr — useful for humans but it bypasses the
+        # uniform "hermes -z: <error>" surface that wrappers parse.
+        # The synthetic dict preserves the exception class + message so
+        # the line is still diagnostically useful.
+        logging.debug(
+            "oneshot _run_agent: agent path raised", exc_info=True,
+        )
+        return {
+            "final_response": "",
+            "failed": True,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "messages": [],
+            "api_calls": 0,
+        }
+
+
+def _run_agent_inner(
+    prompt: str,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    toolsets: object = None,
+    use_config_toolsets: bool = True,
+) -> dict:
+    """The actual agent-construction-and-run path. Separated from
+    ``_run_agent`` so the outer wrapper can convert any raise into a
+    structured failed-result dict without obscuring the real flow."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -337,7 +427,16 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    # Use run_conversation directly (not agent.chat) so the caller can see
+    # the structured result including failed/error/compression_exhausted.
+    # agent.chat discards everything except final_response.
+    result = agent.run_conversation(prompt)
+    if isinstance(result, dict):
+        return result
+    # AIAgent.run_conversation should always return a dict, but defend
+    # against a string fallback in case a future code path narrows the
+    # return type. Wrap so the oneshot caller's contract stays stable.
+    return {"final_response": str(result or ""), "failed": False}
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

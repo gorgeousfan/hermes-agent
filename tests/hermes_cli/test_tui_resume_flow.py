@@ -752,9 +752,12 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def chat(self, prompt):
+        def run_conversation(self, prompt):
+            # _run_agent now calls run_conversation directly (not chat)
+            # so the caller can see the structured result including
+            # failed/error/compression_exhausted flags.
             captured["prompt"] = prompt
-            return "ok"
+            return {"final_response": "ok"}
 
     class FakeSessionDB:
         def __new__(cls):
@@ -798,7 +801,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    assert _run_agent("recall this") == "ok"
+    result = _run_agent("recall this")
+    assert isinstance(result, dict)
+    assert result.get("final_response") == "ok"
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
