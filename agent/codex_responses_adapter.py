@@ -10,6 +10,8 @@ in and return transformed results.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -43,6 +45,70 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
 # ---------------------------------------------------------------------------
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
+
+# Magic-byte signatures keyed by MIME image subtype.  Used to drop inline
+# data: URLs whose declared MIME doesn't match the actual payload (e.g. a
+# .docx ZIP base64-encoded under image/jpeg).  Such mismatches cause the
+# Responses provider to 400 the entire request — a single bad attachment
+# would poison all the valid images in the same turn.
+_IMAGE_MAGIC_SIGNATURES: Dict[str, tuple[tuple[bytes, ...], ...]] = {
+    "jpeg": ((b"\xff\xd8\xff",),),
+    "jpg": ((b"\xff\xd8\xff",),),
+    "png": ((b"\x89PNG\r\n\x1a\n",),),
+    "gif": ((b"GIF87a",), (b"GIF89a",)),
+}
+
+_DATA_URL_RE = re.compile(r"^data:image/([A-Za-z0-9.+-]+);base64,(.*)$", re.DOTALL)
+
+
+def _is_valid_inline_image_data_url(url: str) -> bool:
+    """Return True if the URL is safe to forward to a Responses provider.
+
+    Non-data URLs (http/https) pass through unchanged.  Inline ``data:image``
+    URLs are decoded and magic-checked against their declared MIME subtype;
+    mismatches return False so the caller can drop the part.  Unknown image
+    subtypes (e.g. ``image/heic``) pass through to avoid over-aggressive
+    filtering of formats whose magic we don't track.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    if not url.startswith("data:"):
+        return True
+
+    m = _DATA_URL_RE.match(url)
+    if not m:
+        logger.warning("Skipping input_image with malformed data URL prefix")
+        return False
+    subtype = m.group(1).strip().lower()
+    payload = m.group(2)
+    try:
+        decoded = base64.b64decode(payload, validate=False)
+    except (binascii.Error, ValueError):
+        logger.warning("Skipping input_image with undecodable base64 payload (mime=%s)", subtype)
+        return False
+
+    signatures = _IMAGE_MAGIC_SIGNATURES.get(subtype)
+    if subtype == "webp":
+        if len(decoded) >= 12 and decoded[0:4] == b"RIFF" and decoded[8:12] == b"WEBP":
+            return True
+        prefix_hex = decoded[:8].hex()
+        logger.warning(
+            "Skipping input_image with declared MIME %s but mismatched magic bytes (first 8 bytes: %s)",
+            f"image/{subtype}", prefix_hex,
+        )
+        return False
+    if signatures is None:
+        return True
+    for sig_group in signatures:
+        if all(decoded.startswith(sig) for sig in sig_group):
+            return True
+    prefix_hex = decoded[:8].hex()
+    logger.warning(
+        "Skipping input_image with declared MIME %s but mismatched magic bytes (first 8 bytes: %s)",
+        f"image/{subtype}", prefix_hex,
+    )
+    return False
+
 
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
     """Convert chat-style multimodal content to Responses API input parts.
@@ -87,6 +153,8 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
             else:
                 url = image_ref
             if not isinstance(url, str) or not url:
+                continue
+            if not _is_valid_inline_image_data_url(url):
                 continue
             image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
             if isinstance(detail, str) and detail.strip():
