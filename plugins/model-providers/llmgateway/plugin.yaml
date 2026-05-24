@@ -1,0 +1,5 @@
+name: llmgateway-provider
+kind: model-provider
+version: 1.0.0
+description: LLM Gateway (llmgateway.io)
+author: Nous Research

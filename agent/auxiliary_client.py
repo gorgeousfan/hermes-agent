@@ -270,6 +270,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
     "ai-gateway": "google/gemini-3-flash",
+    "llmgateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
@@ -391,6 +392,14 @@ from hermes_cli import __version__ as _HERMES_VERSION
 _AI_GATEWAY_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
+
+# LLM Gateway (llmgateway.io) app attribution headers. The gateway reads
+# ``X-Source`` for dashboard attribution, analogous to OpenRouter's
+# ``HTTP-Referer`` / ``X-Title`` pair.
+_LLMGATEWAY_HEADERS = {
+    "X-Source": "https://hermes-agent.nousresearch.com",
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
 
