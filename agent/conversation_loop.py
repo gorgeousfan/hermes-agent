@@ -1137,6 +1137,11 @@ def run_conversation(
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
+                # Pre-emptive RPM throttle: if the last response showed
+                # we're near the provider's RPM limit, sleep until the
+                # window resets rather than eating a 429. (#7069)
+                agent._maybe_rpm_throttle()
+
                 if _use_streaming:
                     response = agent._interruptible_streaming_api_call(
                         api_kwargs, on_first_delta=_stop_spinner
