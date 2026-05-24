@@ -148,7 +148,10 @@ def _query_osv(
     )
 
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        result = json.loads(resp.read())
+        try:
+            result = json.loads(resp.read())
+        except (json.JSONDecodeError, ValueError):
+            return []
 
     vulns = result.get("vulns", [])
     # Only malware advisories — ignore regular CVEs

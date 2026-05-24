@@ -9,6 +9,8 @@ Routes messages to the appropriate destination based on:
 """
 
 import logging
+import os
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -207,7 +209,23 @@ class DeliveryRouter:
         lines.append("")
         lines.append(content)
         
-        output_path.write_text("\n".join(lines))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        content_str = "\n".join(lines)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(output_path.parent), prefix=".delivery_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content_str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, output_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         
         return {
             "path": str(output_path),

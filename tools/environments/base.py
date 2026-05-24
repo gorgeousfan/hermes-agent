@@ -18,6 +18,8 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+from utils import atomic_json_write
 from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
@@ -166,8 +168,7 @@ def _load_json_store(path: Path) -> dict:
 
 def _save_json_store(path: Path, data: dict) -> None:
     """Write *data* as pretty-printed JSON to *path*."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_json_write(path, data)
 
 
 def _file_mtime_key(host_path: str) -> tuple[float, int] | None:

@@ -33,6 +33,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import httpx
 import yaml
 
+from utils import atomic_json_write
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
@@ -2774,7 +2775,7 @@ class HubLockFile:
 
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        atomic_json_write(self.path, data)
 
     def record_install(
         self,
@@ -2841,7 +2842,7 @@ class TapsManager:
 
     def save(self, taps: List[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        atomic_json_write(self.path, {"taps": taps})
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""
@@ -2895,11 +2896,11 @@ def ensure_hub_dirs() -> None:
     QUARANTINE_DIR.mkdir(exist_ok=True)
     INDEX_CACHE_DIR.mkdir(exist_ok=True)
     if not LOCK_FILE.exists():
-        LOCK_FILE.write_text('{"version": 1, "installed": {}}\n')
+        atomic_json_write(LOCK_FILE, {"version": 1, "installed": {}})
     if not AUDIT_LOG.exists():
         AUDIT_LOG.touch()
     if not TAPS_FILE.exists():
-        TAPS_FILE.write_text('{"taps": []}\n')
+        atomic_json_write(TAPS_FILE, {"taps": []})
 
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
