@@ -29,6 +29,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
     estimate_messages_tokens_rough,
+    invalidate_endpoint_model_metadata_cache,
 )
 from agent.redact import redact_sensitive_text
 
@@ -480,6 +481,31 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+
+        # Re-probe context length in case the provider-side model configuration
+        # changed (e.g. LM Studio context length was adjusted).  The gateway
+        # path creates a fresh ContextCompressor on /new; the CLI path reuses
+        # the existing compressor and must explicitly re-probe (#31043).
+        try:
+            # LM Studio's runtime context length is transient, and endpoint
+            # model metadata is cached briefly.  Drop that cache before probing
+            # so /new reflects a just-reloaded model instead of a 5-minute-old
+            # /api/v1/models response.
+            if (self.provider or "").lower() == "lmstudio" and self.base_url:
+                invalidate_endpoint_model_metadata_cache(self.base_url)
+            new_ctx_len = get_model_context_length(
+                self.model, base_url=self.base_url, api_key=self.api_key,
+                provider=self.provider,
+            )
+        except Exception:
+            new_ctx_len = None
+
+        if new_ctx_len is not None and new_ctx_len != self.context_length:
+            self.update_model(
+                self.model, new_ctx_len,
+                base_url=self.base_url, api_key=self.api_key,
+                provider=self.provider, api_mode=self.api_mode,
+            )
 
     def update_model(
         self,
