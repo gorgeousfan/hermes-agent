@@ -449,6 +449,44 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         raise
 
 
+def _normalize_script_path(script: Optional[Any]) -> Optional[str]:
+    """Normalize a cron job script reference.
+
+    The scheduler resolves relative paths against ``HERMES_HOME/scripts/``
+    (see ``cron.scheduler._run_job_script``).  A user-supplied
+    ``"scripts/foo.py"`` would therefore resolve to
+    ``HERMES_HOME/scripts/scripts/foo.py`` and silently fall through the
+    "Script not found" branch at runtime — the script appears to vanish
+    between configuration and execution.  Strip a leading ``scripts``
+    segment from relative paths to short-circuit that trap at create /
+    update time.
+
+    Absolute paths and ``~``-prefixed paths are returned verbatim — the
+    scheduler's existing path-traversal guard validates them against the
+    scripts directory at runtime, and rewriting them here would risk
+    silently re-pointing a user's explicit absolute path.
+    """
+    if not isinstance(script, str):
+        return None
+    raw = script.strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute() or raw.startswith("~"):
+        return raw
+    parts = candidate.parts
+    if len(parts) > 1 and parts[0] == "scripts":
+        stripped = str(Path(*parts[1:]))
+        logger.info(
+            "Cron script path %r normalized to %r — relative paths resolve "
+            "under HERMES_HOME/scripts/, so a leading 'scripts/' prefix "
+            "would create a scripts/scripts/ double-directory trap.",
+            raw, stripped,
+        )
+        return stripped
+    return raw
+
+
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     """Normalize and validate a cron job workdir.
 
@@ -601,8 +639,7 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
-    normalized_script = str(script).strip() if isinstance(script, str) else None
-    normalized_script = normalized_script or None
+    normalized_script = _normalize_script_path(script)
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
@@ -750,6 +787,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        # Normalize script if present in updates — same scripts/ prefix
+        # stripping create_job applies, so users can switch a job's script
+        # via update without re-introducing the double-directory trap.
+        if "script" in updates:
+            updates["script"] = _normalize_script_path(updates["script"])
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
