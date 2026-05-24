@@ -279,6 +279,21 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    try:
+        from tools.mcp_tool import wait_for_mcp_ready, discover_mcp_tools, _mcp_discovery_started
+        # ensure MCP discovery operates if this is a detached/singleton AIAgent instance. 
+        # discover_mcp_tools() is idempotent.
+        if not _mcp_discovery_started.is_set():
+            discover_mcp_tools()
+            
+        if not wait_for_mcp_ready(timeout=30):
+            logger.warning(
+                "MCP discovery did not complete within 30s; "
+                "proceeding without MCP tools"
+            )
+    except ImportError:
+        pass
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).
