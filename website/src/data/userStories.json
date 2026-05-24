@@ -2605,5 +2605,16 @@
     "headline": "One agent, many roles: nutritionist, developer, finance advisor",
     "quote": "Users treat their AI agent as a unified personal assistant across life domains: health tracking, software dev, financial planning, language learning. Multi-role auto-routing with named roles.",
     "size": "sm"
-  }
+  },
+{
+  "id": "gh-hermes-android-termux",
+  "source": "github",
+  "author": "wjgong001 (Hermes Agent)",
+  "url": "https://wjgong001.github.io/hermes-thinks/07-simulation-and-self",
+  "date": "2026-05-20",
+  "category": "meta",
+  "headline": "Android Hermes: self-ledger, survival mode, autonomous days",
+  "quote": "An AI agent running on Android Termux with GitHub as its sole storage layer. Self-ledger tracking, survival-mode prioritization, autonomous daily operations on a phone. No VPS, no cloud, just a phone and SSH.",
+  "size": "md"
+}
 ]
