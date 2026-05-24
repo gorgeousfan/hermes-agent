@@ -755,7 +755,25 @@ if _config_path.exists():
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
+            _local_terminal_keys = {
+                "backend",
+                "cwd",
+                "timeout",
+                "lifetime_seconds",
+                "persistent_shell",
+            }
+            _terminal_backend = str(_terminal_cfg.get("backend", "")).strip().lower()
+            if _terminal_backend == "local":
+                # config.yaml is authoritative for terminal settings. When users
+                # switch back to the local backend, stale Docker/container env
+                # vars from a prior config or .env should not influence gateway
+                # tool execution.
+                for _cfg_key, _env_var in _terminal_env_map.items():
+                    if _cfg_key not in _local_terminal_keys:
+                        os.environ.pop(_env_var, None)
             for _cfg_key, _env_var in _terminal_env_map.items():
+                if _terminal_backend == "local" and _cfg_key not in _local_terminal_keys:
+                    continue
                 if _cfg_key in _terminal_cfg:
                     _val = _terminal_cfg[_cfg_key]
                     # Skip cwd placeholder values (".", "auto", "cwd") — the

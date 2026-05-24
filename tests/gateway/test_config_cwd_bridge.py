@@ -33,13 +33,25 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
+            "docker_image": "TERMINAL_DOCKER_IMAGE",
+            "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+            "docker_env": "TERMINAL_DOCKER_ENV",
+            "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
             "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
             "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
             "container_disk": "TERMINAL_CONTAINER_DISK",
         }
+        local_terminal_keys = {"backend", "cwd", "timeout"}
+        terminal_backend = str(terminal_cfg.get("backend", "")).strip().lower()
+        if terminal_backend == "local":
+            for cfg_key, env_var in terminal_env_map.items():
+                if cfg_key not in local_terminal_keys:
+                    env.pop(env_var, None)
         for cfg_key, env_var in terminal_env_map.items():
+            if terminal_backend == "local" and cfg_key not in local_terminal_keys:
+                continue
             if cfg_key in terminal_cfg:
                 val = terminal_cfg[cfg_key]
                 # Skip cwd placeholder values — don't overwrite already-resolved
@@ -216,6 +228,38 @@ class TestNestedTerminalCwdPlaceholderSkip:
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
         assert result["TERMINAL_CWD"] == "/from/env"
+
+    def test_local_backend_ignores_stale_docker_config_keys(self):
+        """terminal.backend: local should not bridge Docker-only settings."""
+        cfg = {
+            "terminal": {
+                "backend": "local",
+                "cwd": ".",
+                "docker_image": "python:3.12",
+                "docker_volumes": ["/host:/workspace"],
+                "docker_mount_cwd_to_workspace": True,
+                "container_memory": 8192,
+            }
+        }
+        result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
+        assert result["TERMINAL_ENV"] == "local"
+        assert result["TERMINAL_CWD"] == "/from/env"
+        assert "TERMINAL_DOCKER_IMAGE" not in result
+        assert "TERMINAL_DOCKER_VOLUMES" not in result
+        assert "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE" not in result
+        assert "TERMINAL_CONTAINER_MEMORY" not in result
+
+    def test_local_backend_clears_stale_docker_env_values(self):
+        cfg = {"terminal": {"backend": "local"}}
+        result = _simulate_config_bridge(cfg, {
+            "TERMINAL_DOCKER_IMAGE": "old-image",
+            "TERMINAL_DOCKER_VOLUMES": "[\"/old:/workspace\"]",
+            "TERMINAL_CONTAINER_MEMORY": "8192",
+        })
+        assert result["TERMINAL_ENV"] == "local"
+        assert "TERMINAL_DOCKER_IMAGE" not in result
+        assert "TERMINAL_DOCKER_VOLUMES" not in result
+        assert "TERMINAL_CONTAINER_MEMORY" not in result
 
 
 class TestTildeExpansion:
