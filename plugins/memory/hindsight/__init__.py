@@ -1489,6 +1489,10 @@ class HindsightMemoryProvider(MemoryProvider):
         self._ensure_writer()
         self._register_atexit()
         self._retain_queue.put(_do_retain)
+        # Clear accumulated turns. The async writer captured a
+        # snapshot via closure at enqueue time. Without this
+        # _session_turns grows unbounded, causing duplication (#23724).
+        self._session_turns = []
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
