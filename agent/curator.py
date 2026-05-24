@@ -356,7 +356,11 @@ CURATOR_REVIEW_PROMPT = (
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
     "skills, or as one skill with N labeled subsections?' When the "
-    "answer is the latter, merge.\n\n"
+    "answer is the latter, merge.\n"
+    "6. Respect the current `stale_after_days` and `archive_after_days` "
+    "thresholds injected below. Do NOT archive a skill younger than "
+    "`archive_after_days`, and do NOT call something 'stale' before "
+    "`stale_after_days` unless a human explicitly overrode that policy.\n\n"
     "How to work — not optional:\n"
     "1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills "
     "sharing a first word or domain keyword). Examples you are likely "
@@ -405,13 +409,12 @@ CURATOR_REVIEW_PROMPT = (
     "  - skill_manage action=write_file — add a references/, templates/, "
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
-    "  - skill_manage action=delete     — archive a skill. MUST pass "
-    "`absorbed_into=<umbrella>` when you've merged its content into another "
-    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
-    "forwarding target. This drives cron-job skill-reference migration — "
-    "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — mv a sibling into the archive "
-    "OR move its content into a support subfile\n\n"
+    "  - terminal                       — the ONLY way to archive a skill: "
+    "use `mv` to move a sibling into `~/.hermes/skills/.archive/`, or move "
+    "its content into a support subfile.\n"
+    "  - NEVER use skill_manage action=delete during consolidation or "
+    "pruning. That action permanently deletes the directory and bypasses "
+    ".archive/ recovery.\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -443,6 +446,21 @@ CURATOR_REVIEW_PROMPT = (
     "not omit the block. The block comes AFTER your human-readable "
     "summary of clusters processed, patches made, and decisions left alone."
 )
+
+
+def _render_review_prompt() -> str:
+    """Inject the current curator age thresholds into the review prompt."""
+    stale_days = get_stale_after_days()
+    archive_days = get_archive_after_days()
+    thresholds = (
+        "Current curator thresholds:\n"
+        f"- stale_after_days: {stale_days}\n"
+        f"- archive_after_days: {archive_days}\n"
+        "Hard rule: do not archive any skill younger than "
+        f"{archive_days} days, and do not mark a skill stale before "
+        f"{stale_days} days unless a human explicitly overrode that policy."
+    )
+    return f"{CURATOR_REVIEW_PROMPT}\n\n{thresholds}"
 
 
 # ---------------------------------------------------------------------------
@@ -1465,14 +1483,15 @@ def run_curator_review(
                     "error": None,
                 }
             else:
+                review_prompt = _render_review_prompt()
                 if dry_run:
                     prompt = (
                         f"{CURATOR_DRY_RUN_BANNER}\n\n"
-                        f"{CURATOR_REVIEW_PROMPT}\n\n"
+                        f"{review_prompt}\n\n"
                         f"{candidate_list}"
                     )
                 else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                    prompt = f"{review_prompt}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"

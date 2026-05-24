@@ -544,6 +544,7 @@ def test_curator_review_prompt_points_at_existing_tools_only():
     assert "skills_list" in CURATOR_REVIEW_PROMPT
     assert "skill_view" in CURATOR_REVIEW_PROMPT
     assert "terminal" in CURATOR_REVIEW_PROMPT.lower()
+    assert "NEVER use skill_manage action=delete" in CURATOR_REVIEW_PROMPT
     # These would be nice but aren't actually registered as tools — the
     # curator uses skill_manage + terminal mv instead.
     assert "archive_skill" not in CURATOR_REVIEW_PROMPT
@@ -603,6 +604,19 @@ def test_curator_review_prompt_offers_support_file_actions():
     assert "write_file" in CURATOR_REVIEW_PROMPT
     # Must offer creating a brand-new umbrella when no existing one fits
     assert "action=create" in CURATOR_REVIEW_PROMPT or "create a new umbrella" in CURATOR_REVIEW_PROMPT.lower()
+
+
+def test_curator_review_prompt_injects_current_age_thresholds(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    monkeypatch.setattr(curator, "get_stale_after_days", lambda: 12)
+    monkeypatch.setattr(curator, "get_archive_after_days", lambda: 34)
+
+    prompt = curator._render_review_prompt()
+
+    assert "stale_after_days: 12" in prompt
+    assert "archive_after_days: 34" in prompt
+    assert "younger than 34 days" in prompt
+    assert "stale before 12 days" in prompt
 
 
 
