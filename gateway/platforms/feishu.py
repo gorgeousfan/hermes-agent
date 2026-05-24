@@ -69,6 +69,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from agent.i18n import t
+
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
 # so they remain available for tests and webhook mode even if lark_oapi is missing.
 try:
@@ -220,12 +222,16 @@ _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_always": "always",
     "deny": "deny",
 }
-_APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved permanently",
-    "deny": "Denied",
-}
+
+def _approval_label(choice: str) -> str:
+    """Return translated label for an approval choice."""
+    labels = {
+        "once": t("platform.approved_once"),
+        "session": t("platform.approved_session"),
+        "always": t("platform.approved_always"),
+        "deny": t("platform.denied"),
+    }
+    return labels.get(choice, t("platform.feishu.resolved"))
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -1893,10 +1899,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     {
                         "tag": "action",
                         "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
+                            _btn(t("platform.approve_once"), "approve_once", "primary"),
+                            _btn(t("platform.approve_session"), "approve_session"),
+                            _btn(t("platform.approve_always"), "approve_always"),
+                            _btn(t("platform.deny"), "deny", "danger"),
                         ],
                     },
                 ],
@@ -1995,7 +2001,7 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        label = _approval_label(choice)
         return {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -2013,15 +2019,15 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:
         yes = answer == "y"
-        label = "Yes" if yes else "No"
+        label = t("platform.feishu.yes") if yes else t("platform.feishu.no")
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"{'✅' if yes else '❌'} Update prompt answered: {label}", "tag": "plain_text"},
+                "title": {"content": t("platform.update_prompt_answered", label=label), "tag": "plain_text"},
                 "template": "green" if yes else "red",
             },
             "elements": [
-                {"tag": "markdown", "content": f"Answered by **{user_name}**"},
+                {"tag": "markdown", "content": t("platform.feishu.answered_by", user=user_name)},
             ],
         }
 

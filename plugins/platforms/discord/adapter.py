@@ -49,6 +49,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 import re
+from hermes.i18n import t
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -2435,7 +2436,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         try:
             await interaction.response.send_message(
-                "You're not authorized to use this command.",
+                t('platform.discord.not_authorized_command'),
                 ephemeral=True,
             )
         except Exception as e:
@@ -2483,11 +2484,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not home or not getattr(home, "chat_id", None):
                     continue
                 msg = (
-                    "⚠️ Unauthorized Discord slash attempt\n"
-                    f"User: {user_name} ({user_id})\n"
-                    f"Channel: {chan_id} (guild {guild_id})\n"
-                    f"Command: {command_text}\n"
-                    f"Reason: {reason}"
+                    f"{t('platform.discord.unauthorized_slash')}\n"
+                    f"{t('platform.discord.user')}: {user_name} ({user_id})\n"
+                    f"{t('platform.discord.channel')}: {chan_id} ({t('platform.discord.guild')} {guild_id})\n"
+                    f"{t('platform.discord.command')}: {command_text}\n"
+                    f"{t('platform.discord.reason')}: {reason}"
                 )
                 result = await adapter.send(str(home.chat_id), msg)
                 # Only return on confirmed delivery. SendResult(success=False)
@@ -3342,8 +3343,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 entry = self._skill_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(
-                        f"Unknown skill: `{name}`. Start typing for "
-                        f"autocomplete suggestions.",
+                        t('platform.discord.unknown_skill', name=name),
                         ephemeral=True,
                     )
                     return
@@ -3498,7 +3498,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not result.get("success"):
             error = result.get("error", "unknown error")
-            await interaction.followup.send(f"Failed to create thread: {error}", ephemeral=True)
+            await interaction.followup.send(t('platform.discord.thread_create_failed', error=error), ephemeral=True)
             return
 
         thread_id = result.get("thread_id")
@@ -3506,7 +3506,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Tell the user where the thread is
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
-        await interaction.followup.send(f"Created thread {link}", ephemeral=True)
+        await interaction.followup.send(t('platform.discord.thread_created', link=link), ephemeral=True)
 
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
@@ -4054,11 +4054,11 @@ class DiscordAdapter(BasePlatformAdapter):
             max_desc = 4088
             cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
+                title=t('platform.discord.approval_required_title'),
                 description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(name=t('platform.discord.reason'), value=description, inline=False)
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -4093,7 +4093,7 @@ class DiscordAdapter(BasePlatformAdapter):
             max_desc = 4088
             body = message if len(message) <= max_desc else message[: max_desc - 3] + "..."
             embed = discord.Embed(
-                title=title or "Confirm",
+                title=title or t('platform.discord.confirm'),
                 description=body,
                 color=discord.Color.orange(),
             )
@@ -4150,7 +4150,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 body = body[: max_desc - 3] + "..."
 
             embed = discord.Embed(
-                title="❓ Hermes needs your input",
+                title=t('platform.discord.input_needed'),
                 description=body,
                 color=discord.Color.orange(),
             )
@@ -4164,8 +4164,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if clean_choices:
                 embed.add_field(
-                    name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
+                    name=t('platform.discord.choices'),
+                    value=t('platform.discord.pick_one'),
                     inline=False,
                 )
                 view = ClarifyChoiceView(
@@ -4176,8 +4176,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
             else:
                 embed.add_field(
-                    name="Reply",
-                    value="Reply in this channel with your answer.",
+                    name=t('platform.discord.reply'),
+                    value=t('platform.discord.reply_instruction'),
                     inline=False,
                 )
                 view = None
@@ -4208,7 +4208,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             default_hint = f" (default: {default})" if default else ""
             embed = discord.Embed(
-                title="⚕ Update Needs Your Input",
+                title=t('platform.discord.update_needs_input'),
                 description=f"{prompt}{default_hint}",
                 color=discord.Color.gold(),
             )
@@ -4257,11 +4257,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 provider_label = current_provider
 
             embed = discord.Embed(
-                title="⚙ Model Configuration",
+                title=t('platform.discord.model_config_title'),
                 description=(
-                    f"Current model: `{current_model or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    f"{t('platform.discord.current_model')}`{current_model or 'unknown'}`\n"
+                    f"{t('platform.discord.provider_label', provider=provider_label)}\n\n"
+                    f"{t('platform.discord.select_provider')}"
                 ),
                 color=discord.Color.blue(),
             )
@@ -5038,13 +5038,13 @@ def _define_discord_view_classes() -> None:
             """Resolve the approval via the gateway approval queue and update the embed."""
             if self.resolved:
                 await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
+                    t('platform.discord.already_resolved_approval'), ephemeral=True
                 )
                 return
 
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
+                    t('platform.discord.not_authorized_approve'), ephemeral=True
                 )
                 return
 
@@ -5073,29 +5073,29 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
 
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label=t('platform.discord.allow_once'), style=discord.ButtonStyle.green)
         async def allow_once(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), t('platform.discord.approved_once'))
 
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
+        @discord.ui.button(label=t('platform.discord.allow_session'), style=discord.ButtonStyle.grey)
         async def allow_session(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
+            await self._resolve(interaction, "session", discord.Color.blue(), t('platform.discord.approved_session'))
 
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label=t('platform.discord.always_allow'), style=discord.ButtonStyle.blurple)
         async def allow_always(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
+            await self._resolve(interaction, "always", discord.Color.purple(), t('platform.discord.approved_permanently'))
 
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        @discord.ui.button(label=t('platform.discord.deny_button'), style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+            await self._resolve(interaction, "deny", discord.Color.red(), t('platform.discord.denied'))
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
@@ -5146,12 +5146,12 @@ def _define_discord_view_classes() -> None:
         ):
             if self.resolved:
                 await interaction.response.send_message(
-                    "This prompt has already been resolved~", ephemeral=True,
+                    t('platform.discord.already_resolved'), ephemeral=True,
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
+                    t('platform.discord.not_authorized_prompt'), ephemeral=True,
                 )
                 return
 
@@ -5184,23 +5184,23 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Discord slash-confirm resolve failed: %s", exc, exc_info=True)
 
-        @discord.ui.button(label="Approve Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label=t('platform.discord.approve_once'), style=discord.ButtonStyle.green)
         async def approve_once(
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), t('platform.discord.approved_once'))
 
-        @discord.ui.button(label="Always Approve", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label=t('platform.discord.approve_always'), style=discord.ButtonStyle.blurple)
         async def approve_always(
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Always approved")
+            await self._resolve(interaction, "always", discord.Color.purple(), t('platform.discord.always_approved'))
 
-        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+        @discord.ui.button(label=t('platform.discord.cancel_button'), style=discord.ButtonStyle.red)
         async def cancel(
             self, interaction: discord.Interaction, button: discord.ui.Button,
         ):
-            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), t('platform.discord.cancelled'))
 
         async def on_timeout(self):
             self.resolved = True
@@ -5239,12 +5239,12 @@ def _define_discord_view_classes() -> None:
         ):
             if self.resolved:
                 await interaction.response.send_message(
-                    "Already answered~", ephemeral=True
+                    t('platform.discord.already_answered'), ephemeral=True
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    t('platform.discord.not_authorized'), ephemeral=True
                 )
                 return
 
@@ -5275,17 +5275,17 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Failed to write update response: %s", exc)
 
-        @discord.ui.button(label="Yes", style=discord.ButtonStyle.green, emoji="✓")
+        @discord.ui.button(label=t('platform.discord.yes'), style=discord.ButtonStyle.green, emoji="✓")
         async def yes_btn(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._respond(interaction, "y", discord.Color.green(), "Yes")
+            await self._respond(interaction, "y", discord.Color.green(), t('platform.discord.yes'))
 
-        @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
+        @discord.ui.button(label=t('platform.discord.no'), style=discord.ButtonStyle.red, emoji="✗")
         async def no_btn(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._respond(interaction, "n", discord.Color.red(), "No")
+            await self._respond(interaction, "n", discord.Color.red(), t('platform.discord.no'))
 
         async def on_timeout(self):
             self.resolved = True
@@ -5347,7 +5347,7 @@ def _define_discord_view_classes() -> None:
                 return
 
             select = discord.ui.Select(
-                placeholder="Choose a provider...",
+                placeholder=t('platform.discord.choose_provider_placeholder'),
                 options=options[:25],
                 custom_id="model_provider_select",
             )
@@ -5355,7 +5355,7 @@ def _define_discord_view_classes() -> None:
             self.add_item(select)
 
             cancel_btn = discord.ui.Button(
-                label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel"
+                label=t('platform.discord.cancel'), style=discord.ButtonStyle.red, custom_id="model_cancel"
             )
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
@@ -5383,7 +5383,7 @@ def _define_discord_view_classes() -> None:
                 return
 
             select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
+                placeholder=t('platform.discord.choose_model_placeholder', provider=provider.get('name', provider_slug)),
                 options=options,
                 custom_id="model_model_select",
             )
@@ -5391,13 +5391,13 @@ def _define_discord_view_classes() -> None:
             self.add_item(select)
 
             back_btn = discord.ui.Button(
-                label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_back"
+                label=t('platform.discord.back'), style=discord.ButtonStyle.grey, custom_id="model_back"
             )
             back_btn.callback = self._on_back
             self.add_item(back_btn)
 
             cancel_btn = discord.ui.Button(
-                label="Cancel", style=discord.ButtonStyle.red, custom_id="model_cancel2"
+                label=t('platform.discord.cancel'), style=discord.ButtonStyle.red, custom_id="model_cancel2"
             )
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
@@ -5405,7 +5405,7 @@ def _define_discord_view_classes() -> None:
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    t('platform.discord.not_authorized'), ephemeral=True
                 )
                 return
 
@@ -5420,12 +5420,12 @@ def _define_discord_view_classes() -> None:
 
             total = provider.get("total_models", 0) if provider else 0
             shown = min(len(provider.get("models", [])), 25) if provider else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+            extra = f"\n*{t('platform.discord.more_available_hint', count=total - shown)}*" if total > shown else ""
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
-                    title="⚙ Model Configuration",
-                    description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    title=t('platform.discord.model_config_title'),
+                    description=f"{t('platform.discord.provider_label', provider=f'**{pname}**')}\n{t('platform.discord.select_model')}{extra}",
                     color=discord.Color.blue(),
                 ),
                 view=self,
@@ -5434,12 +5434,12 @@ def _define_discord_view_classes() -> None:
         async def _on_model_selected(self, interaction: discord.Interaction):
             if self.resolved:
                 await interaction.response.send_message(
-                    "Already resolved~", ephemeral=True
+                    t('platform.discord.already_resolved'), ephemeral=True
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    t('platform.discord.not_authorized'), ephemeral=True
                 )
                 return
 
@@ -5448,8 +5448,8 @@ def _define_discord_view_classes() -> None:
             self.clear_items()
             await interaction.response.edit_message(
                 embed=discord.Embed(
-                    title="⚙ Switching Model",
-                    description=f"Switching to `{model_id}`...",
+                    title=t('platform.discord.switching_model'),
+                    description=t('platform.discord.switching_to', model_id=model_id),
                     color=discord.Color.blue(),
                 ),
                 view=None,
@@ -5462,11 +5462,11 @@ def _define_discord_view_classes() -> None:
                     self._selected_provider,
                 )
             except Exception as exc:
-                result_text = f"Error switching model: {exc}"
+                result_text = t('platform.discord.switch_error', error=exc)
 
             await interaction.edit_original_response(
                 embed=discord.Embed(
-                    title="⚙ Model Switched",
+                    title=t('platform.discord.model_switched'),
                     description=result_text,
                     color=discord.Color.green(),
                 ),
@@ -5476,7 +5476,7 @@ def _define_discord_view_classes() -> None:
         async def _on_back(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
+                    t('platform.discord.not_authorized'), ephemeral=True
                 )
                 return
 
@@ -5490,11 +5490,11 @@ def _define_discord_view_classes() -> None:
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
-                    title="⚙ Model Configuration",
+                    title=t('platform.discord.model_config_title'),
                     description=(
-                        f"Current model: `{self.current_model or 'unknown'}`\n"
-                        f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        f"{t('platform.discord.current_model')}`{self.current_model or 'unknown'}`\n"
+                        f"{t('platform.discord.provider_label', provider=provider_label)}\n\n"
+                        f"{t('platform.discord.select_provider')}"
                     ),
                     color=discord.Color.blue(),
                 ),
@@ -5506,8 +5506,8 @@ def _define_discord_view_classes() -> None:
             self.clear_items()
             await interaction.response.edit_message(
                 embed=discord.Embed(
-                    title="⚙ Model Configuration",
-                    description="Model selection cancelled.",
+                    title=t('platform.discord.model_config_title'),
+                    description=t('platform.discord.model_selection_cancelled'),
                     color=discord.Color.greyple(),
                 ),
                 view=self,
@@ -5559,7 +5559,7 @@ def _define_discord_view_classes() -> None:
                 self.add_item(button)
 
             other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)",
+                label=t('platform.discord.other_answer'),
                 style=discord.ButtonStyle.secondary,
                 custom_id=f"clarify:{clarify_id}:other",
             )
@@ -5585,12 +5585,12 @@ def _define_discord_view_classes() -> None:
             """Resolve the clarify with a chosen option."""
             if self.resolved:
                 await interaction.response.send_message(
-                    "This prompt has already been answered~", ephemeral=True,
+                    t('platform.discord.already_answered_prompt'), ephemeral=True,
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
+                    t('platform.discord.not_authorized_prompt'), ephemeral=True,
                 )
                 return
 
@@ -5605,7 +5605,7 @@ def _define_discord_view_classes() -> None:
                 user = getattr(interaction, "user", None)
                 display_name = getattr(user, "display_name", "user")
                 embed.color = discord.Color.green()
-                embed.set_footer(text=f"Answered by {display_name}: {choice}")
+                embed.set_footer(text=t('platform.discord.answered_by', user=display_name, choice=choice))
 
             try:
                 await interaction.response.edit_message(embed=embed, view=self)
@@ -5653,12 +5653,12 @@ def _define_discord_view_classes() -> None:
             """Flip the clarify entry into text-capture mode."""
             if self.resolved:
                 await interaction.response.send_message(
-                    "This prompt has already been answered~", ephemeral=True,
+                    t('platform.discord.already_answered_prompt'), ephemeral=True,
                 )
                 return
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to answer this prompt~", ephemeral=True,
+                    t('platform.discord.not_authorized_prompt'), ephemeral=True,
                 )
                 return
 
@@ -5686,7 +5686,7 @@ def _define_discord_view_classes() -> None:
                 display_name = getattr(user, "display_name", "user")
                 embed.color = discord.Color.blue()
                 embed.set_footer(
-                    text=f"Awaiting typed response from {display_name}…",
+                    text=t('platform.discord.awaiting_response', user=display_name),
                 )
 
             try:

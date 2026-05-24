@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+from agent.i18n import t as _t
 import sys
 import threading
 import time
@@ -285,7 +286,7 @@ def _hardline_block_result(description: str) -> dict:
         "approved": False,
         "hardline": True,
         "message": (
-            f"BLOCKED (hardline): {description}. "
+            f"BLOCKED (hardline): {_localize_reason(description)}. "
             "This command is on the unconditional blocklist and cannot "
             "be executed via the agent — not even with --yolo, /yolo, "
             "approvals.mode=off, or cron approve mode. If you genuinely "
@@ -300,7 +301,7 @@ def _sudo_stdin_block_result(description: str) -> dict:
     return {
         "approved": False,
         "message": (
-            f"BLOCKED: {description}. "
+            f"BLOCKED: {_localize_reason(description)}. "
             "Do not pipe passwords to 'sudo -S' — this is a brute-force "
             "attack vector. Set SUDO_PASSWORD in your .env file if the "
             "agent needs passwordless sudo, or run the sudo command "
@@ -1022,7 +1023,7 @@ def _format_tirith_description(tirith_result: dict) -> str:
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return _t("approval.reason.security_scan_prefix") + ": " + (summary or _t("approval.reason.security_issue_detected"))
 
     parts = []
     for f in findings:
@@ -1030,14 +1031,14 @@ def _format_tirith_description(tirith_result: dict) -> str:
         title = f.get("title", "")
         desc = f.get("description", "")
         if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+            parts.append(f"[{severity}] {_localize_reason(title)}: {desc}" if severity else f"{_localize_reason(title)}: {desc}")
         elif title:
-            parts.append(f"[{severity}] {title}" if severity else title)
+            parts.append(f"[{severity}] {_localize_reason(title)}" if severity else _localize_reason(title))
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return _t("approval.reason.security_scan_prefix") + ": " + (summary or _t("approval.reason.security_issue_detected"))
 
-    return "Security scan — " + "; ".join(parts)
+    return _t("approval.reason.security_scan_prefix") + " — " + "; ".join(parts)
 
 
 def check_all_command_guards(command: str, env_type: str,

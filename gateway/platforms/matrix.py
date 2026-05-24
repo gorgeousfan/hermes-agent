@@ -39,6 +39,8 @@ from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
+from agent.i18n import t
+
 try:
     from mautrix.types import (
         ContentURI,
@@ -1275,16 +1277,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
-        text = (
-            "⚠️ **Dangerous command requires approval**\n"
-            f"```\n{cmd_preview}\n```\n"
-            f"Reason: {description}\n\n"
-            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
-            "`/approve always` to approve permanently, or `/deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n"
-            "✅ = /approve\n"
-            "❎ = /deny"
-        )
+        text = t("platform.approval_prompt", command=cmd_preview, reason=description)
 
         result = await self.send(chat_id, text, metadata=metadata)
         if not result.success or not result.message_id:

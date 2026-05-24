@@ -32,6 +32,7 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.i18n import t
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -344,9 +345,7 @@ def run_conversation(
         try:
             if agent._cleanup_dead_connections():
                 agent._emit_status(
-                    "🔌 Detected stale connections from a previous provider "
-                    "issue — cleaned up automatically. Proceeding with fresh "
-                    "connection."
+                    t("agent.stale_connections_cleaned")
                 )
         except Exception:
             pass
@@ -446,7 +445,8 @@ def run_conversation(
     
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)
-        agent._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
+        _preview_truncated = _print_preview[:60] + ('...' if len(_print_preview) > 60 else '')
+        agent._safe_print(t("agent.starting_conversation", preview=_preview_truncated))
     
     # ── System prompt (cached per session for prefix caching) ──
     # Built once on first call, reused for all subsequent calls.
@@ -493,9 +493,9 @@ def run_conversation(
                 f"{agent.context_compressor.context_length:,}",
             )
             agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {agent.context_compressor.threshold_tokens:,} threshold. "
-                "This may take a moment."
+                t("run_agent.preflight_compression",
+                  tokens=f"{_preflight_tokens:,}",
+                  threshold=f"{agent.context_compressor.threshold_tokens:,}")
             )
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
@@ -655,7 +655,7 @@ def run_conversation(
         
         api_call_count += 1
         agent._api_call_count = api_call_count
-        agent._touch_activity(f"starting API call #{api_call_count}")
+        agent._touch_activity(t("activity.starting_api", number=api_call_count))
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
@@ -665,7 +665,7 @@ def run_conversation(
         elif not agent.iteration_budget.consume():
             _turn_exit_reason = "budget_exhausted"
             if not agent.quiet_mode:
-                agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
+                agent._safe_print(t("agent.iteration_budget_exhausted", used=agent.iteration_budget.used, max_total=agent.iteration_budget.max_total))
             break
 
         # Fire step_callback for gateway hooks (agent:step event)
@@ -1014,10 +1014,7 @@ def run_conversation(
                     )
                     _nous_remaining = nous_rate_limit_remaining()
                     if _nous_remaining is not None and _nous_remaining > 0:
-                        _nous_msg = (
-                            f"Nous Portal rate limit active — "
-                            f"resets in {_fmt_nous_remaining(_nous_remaining)}."
-                        )
+                        _nous_msg = t("gateway.nous_rate_limit", time=_fmt_nous_remaining(_nous_remaining))
                         agent._vprint(
                             f"{agent.log_prefix}⏳ {_nous_msg} Trying fallback...",
                             force=True,
@@ -1258,7 +1255,7 @@ def run_conversation(
                     # rate-limit symptom.  Switch to fallback immediately
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
-                        agent._emit_status("⚠️ Empty/malformed response — switching to fallback...")
+                        agent._emit_status(t("gateway.empty_response"))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -1328,13 +1325,13 @@ def run_conversation(
                     
                     if retry_count >= max_retries:
                         # Try fallback before giving up
-                        agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                        agent._emit_status(t("gateway.max_retries_invalid", max=max_retries))
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
                             continue
-                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                        agent._emit_status(t("gateway.max_retries_exceeded", max=max_retries))
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
                         return {
@@ -1359,7 +1356,7 @@ def run_conversation(
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
-                                "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
+                                "final_response": t("agent.operation_interrupted_retry", hint=_failure_hint, attempt=retry_count, max=max_retries),
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
@@ -1371,8 +1368,10 @@ def run_conversation(
                         _backoff_touch_counter += 1
                         if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                             agent._touch_activity(
-                                f"retry backoff ({retry_count}/{max_retries}), "
-                                f"{int(sleep_end - time.time())}s remaining"
+                                t("activity.retry_backoff",
+                                  current=retry_count,
+                                  max=max_retries,
+                                  remaining=int(sleep_end - time.time()))
                             )
                     continue  # Retry the API call
 
@@ -1489,14 +1488,7 @@ def run_conversation(
                         # Return a user-friendly message as the response so
                         # CLI (response box) and gateway (chat message) both
                         # display it naturally instead of a suppressed error.
-                        _exhaust_response = (
-                            "⚠️ **Thinking Budget Exhausted**\n\n"
-                            "The model used all its output tokens on reasoning "
-                            "and had none left for the actual response.\n\n"
-                            "To fix this:\n"
-                            "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
-                            "→ Or switch to a larger/non-reasoning model with `/model`"
-                        )
+                        _exhaust_response = t("gateway.thinking_exhausted")
                         agent._cleanup_task_resources(effective_task_id)
                         agent._persist_session(messages, conversation_history)
                         return {
@@ -1567,7 +1559,7 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response remained truncated after 3 continuation attempts",
+                                "error": t("agent.response_truncated"),
                             }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
@@ -1595,7 +1587,7 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit",
+                                "error": t("agent.output_length_limit"),
                             }
 
                     # If we have prior messages, roll back to last complete state
@@ -1612,7 +1604,7 @@ def run_conversation(
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
-                            "error": "Response truncated due to output length limit"
+                            "error": t("agent.output_length_limit")
                         }
                     else:
                         # First message was truncated - mark as failed
@@ -1624,7 +1616,7 @@ def run_conversation(
                             "api_calls": api_call_count,
                             "completed": False,
                             "failed": True,
-                            "error": "First response truncated due to output length limit"
+                            "error": t("agent.first_response_truncated")
                         }
                 
                 # Track actual token usage from response for context management
@@ -1651,7 +1643,7 @@ def run_conversation(
                         ctx = agent.context_compressor.context_length
                         if getattr(agent.context_compressor, "_context_probe_persistable", False):
                             save_context_length(agent.model, agent.base_url, ctx)
-                            agent._safe_print(f"{agent.log_prefix}💾 Cached context length: {ctx:,} tokens for {agent.model}")
+                            agent._safe_print(t("agent.cached_context", prefix=agent.log_prefix, ctx=ctx, model=agent.model))
                         agent.context_compressor._context_probed = False
                         agent.context_compressor._context_probe_persistable = False
 
@@ -1767,7 +1759,7 @@ def run_conversation(
                         clear_nous_rate_limit()
                     except Exception:
                         pass
-                agent._touch_activity(f"API call #{api_call_count} completed")
+                agent._touch_activity(t("activity.starting_api", number=api_call_count) + " (completed)")
                 break  # Success, exit retry loop
 
             except InterruptedError:
@@ -1780,7 +1772,7 @@ def run_conversation(
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
                 interrupted = True
-                final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
+                final_response = t("agent.operation_interrupted_waiting", elapsed=f"{api_elapsed:.1f}")
                 break
 
             except Exception as api_error:
@@ -2312,7 +2304,7 @@ def run_conversation(
                 retry_count += 1
                 elapsed_time = time.time() - api_start_time
                 agent._touch_activity(
-                    f"API error recovery (attempt {retry_count}/{max_retries})"
+                    t("activity.error_recovery", current=retry_count, max=max_retries)
                 )
                 
                 error_type = type(api_error).__name__
@@ -2436,7 +2428,7 @@ def run_conversation(
                         conversation_history = None
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._emit_status(
-                                f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
+                                t("gateway.context_reduced", tokens=f"{_reduced_ctx:,}") + " "
                                 f"(was {old_ctx:,}), retrying..."
                             )
                             time.sleep(2)
@@ -2464,7 +2456,7 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        agent._emit_status(t("agent.rate_limited_fallback"))
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
@@ -2584,12 +2576,12 @@ def run_conversation(
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
+                            "error": t("agent.payload_too_large_max", max=max_compression_attempts),
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    agent._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
+                    agent._emit_status(t("gateway.payload_too_large", current=compression_attempts, max=max_compression_attempts))
 
                     original_len = len(messages)
                     messages, active_system_prompt = agent._compress_context(
@@ -2602,7 +2594,7 @@ def run_conversation(
                     conversation_history = None
 
                     if len(messages) < original_len:
-                        agent._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        agent._emit_status(t("gateway.compressed", original=original_len, compressed=len(messages)))
                         time.sleep(2)  # Brief pause between compression retries
                         restart_with_compressed_messages = True
                         break
@@ -2615,7 +2607,7 @@ def run_conversation(
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": "Request payload too large (413). Cannot compress further.",
+                            "error": t("agent.payload_too_large"),
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
@@ -2668,7 +2660,7 @@ def run_conversation(
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                                "error": t("agent.context_length_exceeded_max", max=max_compression_attempts),
                                 "partial": True,
                                 "failed": True,
                                 "compression_exhausted": True,
@@ -2742,12 +2734,12 @@ def run_conversation(
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                            "error": t("agent.context_length_exceeded_max", max=max_compression_attempts),
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
                         }
-                    agent._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
+                    agent._emit_status(t("gateway.context_too_large", tokens=f"{approx_tokens:,}", current=compression_attempts, max=max_compression_attempts))
 
                     original_len = len(messages)
                     messages, active_system_prompt = agent._compress_context(
@@ -2761,7 +2753,7 @@ def run_conversation(
 
                     if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                         if len(messages) < original_len:
-                            agent._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                            agent._emit_status(t("gateway.compressed", original=original_len, compressed=len(messages)))
                         time.sleep(2)  # Brief pause between compression retries
                         restart_with_compressed_messages = True
                         break
@@ -2775,7 +2767,7 @@ def run_conversation(
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
+                            "error": t("agent.context_length_exceeded", tokens=f"{approx_tokens:,}"),
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
@@ -2840,7 +2832,7 @@ def run_conversation(
                 if is_client_error:
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
-                    agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                    agent._emit_status(t("gateway.non_retryable_error", status=status_code))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2851,7 +2843,7 @@ def run_conversation(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
                     agent._emit_status(
-                        f"❌ Non-retryable error (HTTP {status_code}): "
+                        t("gateway.no_retryable_error", status=status_code, detail="") + 
                         f"{agent._summarize_api_error(api_error)}"
                     )
                     agent._vprint(f"{agent.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
@@ -2911,7 +2903,7 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    agent._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
+                    agent._emit_status(t("gateway.max_retries_exhausted", max=max_retries))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2919,9 +2911,9 @@ def run_conversation(
                         continue
                     _final_summary = agent._summarize_api_error(api_error)
                     if is_rate_limited:
-                        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                        agent._emit_status(t("gateway.rate_limited_retries", max=max_retries, summary=_final_summary))
                     else:
-                        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+                        agent._emit_status(t("gateway.api_failed_retries", max=max_retries, summary=_final_summary))
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                     # Detect SSE stream-drop pattern (e.g. "Network
@@ -2995,9 +2987,9 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
-                    agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                    agent._emit_status(t("gateway.rate_limited_waiting", time=f"{wait_time:.1f}", current=retry_count + 1, max=max_retries))
                 else:
-                    agent._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                    agent._emit_status(t("gateway.retrying_in", time=f"{wait_time:.1f}", current=retry_count, max=max_retries))
                 logger.warning(
                     "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                     wait_time,
@@ -3028,8 +3020,10 @@ def run_conversation(
                     _backoff_touch_counter += 1
                     if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
                         agent._touch_activity(
-                            f"error retry backoff ({retry_count}/{max_retries}), "
-                            f"{int(sleep_end - time.time())}s remaining"
+                            t("activity.error_retry_backoff",
+                              current=retry_count,
+                              max=max_retries,
+                              remaining=int(sleep_end - time.time()))
                         )
         
         # If the API call was interrupted, skip response processing
@@ -3350,7 +3344,7 @@ def run_conversation(
                             "api_calls": api_call_count,
                             "completed": False,
                             "partial": True,
-                            "error": "Response truncated due to output length limit",
+                            "error": t("agent.output_length_limit"),
                         }
 
                     # Track retries for invalid JSON arguments
@@ -3480,9 +3474,7 @@ def run_conversation(
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"
                     final_response = agent._toolguard_controlled_halt_response(decision)
-                    agent._emit_status(
-                        f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
-                    )
+                    agent._emit_status(t("gateway.guardrail_halted", tool=decision.tool_name, code=decision.code))
                     messages.append({"role": "assistant", "content": final_response})
                     # Emit the halt message to the client so it's not
                     # indistinguishable from a crash.  The stream display
@@ -3551,7 +3543,7 @@ def run_conversation(
                     )
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
-                    agent._safe_print("  ⟳ compacting context…")
+                    agent._safe_print(f"  {t('run_agent.compacting_context')}")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
@@ -3598,8 +3590,7 @@ def run_conversation(
                             len(_recovered),
                         )
                         agent._emit_status(
-                            "↻ Stream interrupted — using delivered content "
-                            "as final response"
+                            t("agent.stream_interrupted")
                         )
                         final_response = _recovered
                         agent._response_was_previewed = True
@@ -3619,7 +3610,7 @@ def run_conversation(
                     if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
                         _turn_exit_reason = "fallback_prior_turn_content"
                         logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
+                        agent._emit_status(t("agent.empty_response_tools"))
                         agent._last_content_with_tools = None
                         agent._last_content_tools_all_housekeeping = False
                         agent._empty_content_retries = 0
@@ -3675,8 +3666,7 @@ def run_conversation(
                             "to continue processing"
                         )
                         agent._emit_status(
-                            "⚠️ Model returned empty after tool calls — "
-                            "nudging to continue"
+                            t("agent.empty_after_tools")
                         )
                         # Append the empty assistant message first so the
                         # message sequence stays valid:
@@ -3721,8 +3711,7 @@ def run_conversation(
                             agent._thinking_prefill_retries,
                         )
                         agent._emit_status(
-                            f"↻ Thinking-only response — prefilling to continue "
-                            f"({agent._thinking_prefill_retries}/2)"
+                            t("agent.thinking_only") + f" ({agent._thinking_prefill_retries}/2)"
                         )
                         interim_msg = agent._build_assistant_message(
                             assistant_message, "incomplete"
@@ -3756,8 +3745,7 @@ def run_conversation(
                             agent._empty_content_retries, agent.model,
                         )
                         agent._emit_status(
-                            f"⚠️ Empty response from model — retrying "
-                            f"({agent._empty_content_retries}/3)"
+                            t("gateway.empty_model_response", current=agent._empty_content_retries)
                         )
                         continue
 
@@ -3775,14 +3763,12 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._emit_status(
-                            "⚠️ Model returning empty responses — "
-                            "switching to fallback provider..."
+                            t("agent.empty_responses_fallback")
                         )
                         if agent._try_activate_fallback():
                             agent._empty_content_retries = 0
                             agent._emit_status(
-                                f"↻ Switched to fallback: {agent.model} "
-                                f"({agent.provider})"
+                                t("agent.switched_fallback", model=agent.model, provider=agent.provider)
                             )
                             logger.info(
                                 "Fallback activated after empty responses: "
@@ -3815,8 +3801,7 @@ def run_conversation(
                             "Reasoning: %s", reasoning_preview,
                         )
                         agent._emit_status(
-                            "⚠️ Model produced reasoning but no visible "
-                            "response after all retries. Returning empty."
+                            t("agent.reasoning_no_content")
                         )
                     else:
                         logger.warning(
@@ -3827,7 +3812,7 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._emit_status(
-                            "❌ Model returned no content after all retries"
+                            t("gateway.no_content_retries")
                             + (" and fallback attempts." if agent._fallback_chain else
                                ". No fallback providers configured.")
                         )
@@ -3958,13 +3943,11 @@ def run_conversation(
         # user message and makes a single toolless request.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
+            t("gateway.iteration_exhausted", current=api_call_count, max=agent.max_iterations)
         )
         if not agent.quiet_mode:
             agent._safe_print(
-                f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                "— requesting summary..."
+                "\\n" + t("gateway.iteration_exhausted_cli", current=api_call_count, max=agent.max_iterations)
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
 

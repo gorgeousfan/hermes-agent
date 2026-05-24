@@ -44,6 +44,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from agent.i18n import t
+
 try:
     import aiohttp
     AIOHTTP_AVAILABLE = True
@@ -1284,7 +1286,7 @@ class WeComAdapter(BasePlatformAdapter):
         if prepared["rejected"]:
             await self._send_followup_markdown(
                 chat_id,
-                f"⚠️ {prepared['reject_reason']}",
+                t("platform.reject_reason", reason=prepared['reject_reason']),
                 reply_to=reply_to,
             )
             return SendResult(success=False, error=prepared["reject_reason"])

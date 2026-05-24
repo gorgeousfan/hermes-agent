@@ -26,6 +26,7 @@ from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
 from hermes_constants import get_optional_skills_dir
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -608,7 +609,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     print(color("─" * 60, Colors.DIM))
     print()
-    print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
+    print(color(t("setup.edit_config_hint"), Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
     print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
@@ -630,7 +631,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     print(color("─" * 60, Colors.DIM))
     print()
-    print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
+    print(color(t("setup.ready_to_go"), Colors.CYAN, Colors.BOLD))
     print()
     print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
     print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
@@ -1972,7 +1973,7 @@ def _setup_telegram():
         if not prompt_yes_no("Reconfigure Telegram?", False):
             # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
-                print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
+                print_info(t("setup.tg_no_allowlist"))
                 if prompt_yes_no("Add allowed users now?", True):
                     print_info("   To find your Telegram user ID: message @userinfobot")
                     allowed_users = prompt("Allowed user IDs (comma-separated)")
@@ -2011,7 +2012,7 @@ def _setup_telegram():
         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Telegram allowlist configured - only listed users can use the bot")
     else:
-        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+        print_info(t("setup.generic_no_allowlist"))
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results,")
@@ -2032,6 +2033,74 @@ def _setup_telegram():
         home_channel = prompt("Home channel ID (leave empty to set later)")
         if home_channel:
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
+
+
+def _setup_discord():
+    """Configure Discord bot credentials and allowlist."""
+    print_header("Discord")
+    existing = get_env_value("DISCORD_BOT_TOKEN")
+    if existing:
+        print_info("Discord: already configured")
+        if not prompt_yes_no("Reconfigure Discord?", False):
+            if not get_env_value("DISCORD_ALLOWED_USERS"):
+                print_info(t("setup.discord_no_allowlist"))
+                if prompt_yes_no("Add allowed users now?", True):
+                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    if allowed_users:
+                        cleaned_ids = _clean_discord_user_ids(allowed_users)
+                        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+                        print_success("Discord allowlist configured")
+            return
+
+    print_info("Create a bot at https://discord.com/developers/applications")
+    token = prompt("Discord bot token", password=True)
+    if not token:
+        return
+    save_env_value("DISCORD_BOT_TOKEN", token)
+    print_success("Discord token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your Discord user ID:")
+    print_info("   1. Enable Developer Mode in Discord settings")
+    print_info("   2. Right-click your name → Copy ID")
+    print()
+    print_info("   You can also use Discord usernames (resolved on gateway start).")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+    )
+    if allowed_users:
+        cleaned_ids = _clean_discord_user_ids(allowed_users)
+        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+        print_success("Discord allowlist configured")
+    else:
+        print_info(t("setup.servers_no_allowlist"))
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
+    print_info("   (requires Developer Mode in Discord settings)")
+    print_info("   You can also set this later by typing /set-home in a Discord channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+
+
+def _clean_discord_user_ids(raw: str) -> list:
+    """Strip common Discord mention prefixes from a comma-separated ID string."""
+    cleaned = []
+    for uid in raw.replace(" ", "").split(","):
+        uid = uid.strip()
+        if uid.startswith("<@") and uid.endswith(">"):
+            uid = uid.lstrip("<@!").rstrip(">")
+        if uid.lower().startswith("user:"):
+            uid = uid[5:]
+        if uid:
+            cleaned.append(uid)
+    return cleaned
 
 
 def _setup_slack():
@@ -2088,7 +2157,7 @@ def _setup_slack():
         save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Slack allowlist configured")
     else:
-        print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
+        print_warning(t("setup.slack_no_allowlist"))
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
 
     print()
@@ -2250,7 +2319,7 @@ def _setup_matrix():
             save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
             print_success("Matrix allowlist configured")
         else:
-            print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+            print_info(t("setup.generic_no_allowlist"))
 
         print()
         print_info("📬 Home Room: where Hermes delivers cron job results and notifications.")
@@ -2293,7 +2362,7 @@ def _setup_mattermost():
         save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("Mattermost allowlist configured")
     else:
-        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+        print_info(t("setup.generic_no_allowlist"))
 
     print()
     print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
@@ -2344,7 +2413,7 @@ def _setup_bluebubbles():
         save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("BlueBubbles allowlist configured")
     else:
-        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+        print_info(t("setup.imessage_no_allowlist"))
 
     print()
     print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")
@@ -3586,9 +3655,9 @@ def _run_quick_setup(config: dict, hermes_home):
 
         platform_labels = [
             {
-                "Telegram": "📱 Telegram",
-                "Discord": "💬 Discord",
-                "Slack": "💼 Slack",
+                "Telegram": t("setup.platform_telegram"),
+                "Discord": t("setup.platform_discord"),
+                "Slack": t("setup.platform_slack"),
             }.get(p, p)
             for p in platform_order
         ]

@@ -229,21 +229,12 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+        return t("gateway.provider_auth_failed")
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+        return t("gateway.provider_rejected")
     if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+        return t("gateway.provider_rate_limited")
+    return t("gateway.provider_failed")
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -1548,11 +1539,7 @@ def _normalize_empty_agent_response(
             for p in ("context", "token", "too large", "too long", "exceed", "payload")
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
-            return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
-            )
+            return t("gateway.session_too_large")
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session."
@@ -1562,11 +1549,8 @@ def _normalize_empty_agent_response(
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
-        return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again."
-        )
+            return t("gateway.processing_stopped", error=str(err)[:200])
+        return t("gateway.processing_no_response")
 
     return response
 
@@ -2519,7 +2503,7 @@ class GatewayRunner:
         return "restart" if self._restart_requested else "shutdown"
 
     def _status_action_gerund(self) -> str:
-        return "restarting" if self._restart_requested else "shutting down"
+        return t("gateway.action_restarting") if self._restart_requested else t("gateway.action_shutting_down")
 
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
@@ -3042,9 +3026,9 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = t("gateway.busy_queued", action=self._status_action_gerund())
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = t("gateway.busy_rejecting", action=self._status_action_gerund())
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -3163,20 +3147,11 @@ class GatewayRunner:
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
-            message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
-            )
+            message = t("gateway.steered", detail=status_detail)
         elif is_queue_mode:
-            message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
-            )
+            message = t("gateway.busy_queued_detail", detail=status_detail)
         else:
-            message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
-            )
+            message = t("gateway.interrupting", detail=status_detail)
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
@@ -3274,14 +3249,13 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = t("gateway.action_restarting") if self._restart_requested else t("gateway.action_shutting_down")
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            t("gateway.hint_interrupt_resume")
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else t("gateway.hint_interrupt")
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = t("gateway.busy_action_hint", action=action, hint=hint)
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -6986,7 +6960,7 @@ class GatewayRunner:
             if event.get_command() in {"queue", "q"}:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
-                    return "Usage: /queue <prompt>"
+                    return t("gateway.queue.usage")
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     queued_event = MessageEvent(
@@ -6999,8 +6973,8 @@ class GatewayRunner:
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                    return t("gateway.queue.queued")
+                return t("gateway.queue.queued_depth", depth=depth)
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -7010,7 +6984,7 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "steer":
                 steer_text = event.get_command_args().strip()
                 if not steer_text:
-                    return "Usage: /steer <prompt>"
+                    return t("gateway.steer.usage")
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
@@ -7024,17 +6998,17 @@ class GatewayRunner:
                             channel_prompt=event.channel_prompt,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
-                    return "Agent still starting — /steer queued for the next turn."
+                    return t("gateway.steer.starting_queued")
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
                     except Exception as exc:
                         logger.warning("Steer failed for session %s: %s", _quick_key, exc)
-                        return f"⚠️ Steer failed: {exc}"
+                        return t("gateway.steer_failed", error=exc)
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
-                    return "Steer rejected (empty payload)."
+                        return t("gateway.steer.queued", preview=preview)
+                    return t("gateway.steer.rejected_empty")
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -7046,11 +7020,11 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
-                return "No active agent — /steer queued for the next turn."
+                return t("gateway.steer.no_agent_queued")
 
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return t("gateway.agent_running.wait_or_stop")
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
@@ -7095,7 +7069,7 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return t("gateway.agent_running.goal_hint")
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7141,10 +7115,7 @@ class GatewayRunner:
             # silently discarded by the slash-command safety net,
             # producing a zero-char response. See #5057, #6252, #10370.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
-                )
+                return t("gateway.busy_agent_running", command=_cmd_def_inner.name)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -7202,9 +7173,9 @@ class GatewayRunner:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
                 return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                    t("gateway.busy_queued", action=self._status_action_gerund())
                     if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                    else t("gateway.busy_rejecting", action=self._status_action_gerund())
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -7320,7 +7291,7 @@ class GatewayRunner:
                     message = hook_result.get("message")
                     if isinstance(message, str) and message:
                         return message
-                    return f"Command `/{command}` was blocked by a hook."
+                    return t("gateway.agent_running.hook_blocked", command=command)
                 if decision == "handled":
                     message = hook_result.get("message")
                     return message if isinstance(message, str) and message else None
@@ -7346,10 +7317,7 @@ class GatewayRunner:
                 event=event,
                 command="new",
                 title="/new",
-                detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
-                ),
+                detail=t("gateway.detail_new"),
                 execute=_do_reset,
             )
 
@@ -7420,7 +7388,7 @@ class GatewayRunner:
                 event=event,
                 command="undo",
                 title="/undo",
-                detail="This removes the last user/assistant exchange from history.",
+                detail=t("gateway.detail_undo"),
                 execute=_do_undo,
             )
         
@@ -7478,7 +7446,7 @@ class GatewayRunner:
             # message. If the payload is empty, surface the usage hint.
             steer_payload = event.get_command_args().strip()
             if not steer_payload:
-                return "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
+                return t("gateway.steer.usage_no_agent")
             try:
                 event.text = steer_payload
             except Exception:
@@ -7497,7 +7465,7 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            return t("gateway.busy_not_accepting", action=self._status_action_gerund())
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -7532,11 +7500,11 @@ class GatewayRunner:
                                 output = redact_sensitive_text(output)
                             return output if output else "Command returned no output."
                         except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
+                            return t("gateway.quick.timed_out")
                         except Exception as e:
-                            return f"Quick command error: {e}"
+                            return t("gateway.quick.error", error=str(e))
                     else:
-                        return f"Quick command '/{command}' has no command defined."
+                        return t("gateway.quick.no_command", command=command)
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -7547,9 +7515,9 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         # Fall through to normal command dispatch below
                     else:
-                        return f"Quick command '/{command}' has no target defined."
+                        return t("gateway.quick.no_target", command=command)
                 else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+                    return t("gateway.quick.unsupported_type", command=command)
 
         # Plugin-registered slash commands
         if command:
@@ -8469,14 +8437,7 @@ class GatewayRunner:
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
-                                        _warn_msg = (
-                                            "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
-                                        )
+                                        _warn_msg = t("gateway.compression_aborted", error=_err)
                                         try:
                                             _adapter = self.adapters.get(source.platform)
                                             if _adapter and source.chat_id:
@@ -8651,11 +8612,7 @@ class GatewayRunner:
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
+                response = t("gateway.no_response_after_tools")
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -8845,11 +8802,7 @@ class GatewayRunner:
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
-                response = (response or "") + (
-                    "\n\n🔄 Session auto-reset — the conversation exceeded the "
-                    "maximum context size and could not be compressed further. "
-                    "Your next message will start a fresh session."
-                )
+                response = (response or "") + ("\n\n" + t("gateway.session_auto_reset"))
 
             ts = datetime.now().isoformat()
             
@@ -9033,11 +8986,7 @@ class GatewayRunner:
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
+                    return t("gateway.session_too_large")
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
             return (
@@ -9145,7 +9094,7 @@ class GatewayRunner:
         if config_context_length is not None:
             ctx_source = "config"
         elif context_length == DEFAULT_FALLBACK_CONTEXT:
-            ctx_source = "default — set model.context_length in config to override"
+            ctx_source = t("gateway.reset.ctx_source_default")
         else:
             ctx_source = "detected"
 
@@ -9158,14 +9107,14 @@ class GatewayRunner:
             ctx_display = str(context_length)
 
         lines = [
-            f"◆ Model: `{model}`",
-            f"◆ Provider: {provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+            t("gateway.reset.info_model", model=model),
+            t("gateway.reset.info_provider", provider=provider or "openrouter"),
+            t("gateway.reset.info_context", ctx_display=ctx_display, ctx_source=ctx_source),
         ]
 
         # Show endpoint for local/custom setups
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
-            lines.append(f"◆ Endpoint: {base_url}")
+            lines.append(t("gateway.reset.info_endpoint", base_url=base_url))
 
         return "\n".join(lines)
 
@@ -9373,7 +9322,7 @@ class GatewayRunner:
                 "platform. Ask an admin to add you to allow_admin_from "
                 "or to set user_allowed_commands."
             )
-        return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
+        return t("gateway.admin_only", command=canonical_cmd, hint=suffix)
 
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
@@ -9789,7 +9738,7 @@ class GatewayRunner:
 
         if action in {"pause", "resume"}:
             if not target:
-                return f"Usage: /platform {action} <name>"
+                return t("gateway.usage_cmd.platform", action=action)
             platform = _resolve_platform(target)
             if platform is None:
                 return f"Unknown platform: {target}"
@@ -10418,13 +10367,13 @@ class GatewayRunner:
         raw_args = event.get_command_args().strip() if event else ""
         new_value, errors = crs.parse_args(raw_args)
         if errors:
-            return "❌ " + "\n❌ ".join(errors)
+            return t("gateway.config_load_errors", errors="\n❌ ".join(errors))
 
         # Load + persist via the same helpers used for /model and /yolo
         try:
             from hermes_cli.config import load_config, save_config
         except Exception as exc:
-            return f"❌ Could not load config: {exc}"
+            return t("gateway.config_load_error", error=exc)
         cfg = load_config()
 
         result = crs.apply(
@@ -10698,7 +10647,7 @@ class GatewayRunner:
 
         if verb == "remove":
             if not rest:
-                return "Usage: /subgoal remove <n>"
+                return t("gateway.usage_cmd.subgoal_remove")
             try:
                 idx = int(rest.split()[0])
             except ValueError:
@@ -11565,7 +11514,7 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    t("gateway.bg_task_no_creds", task_id=task_id),
                     metadata=_thread_metadata,
                 )
                 return
@@ -11652,7 +11601,7 @@ class GatewayRunner:
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                header = t("gateway.bg_task_complete", preview=preview)
 
                 if text_content:
                     await adapter.send(
@@ -11693,7 +11642,7 @@ class GatewayRunner:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=t("gateway.bg_task_complete_empty", preview=preview),
                     metadata=_thread_metadata,
                 )
 
@@ -11702,7 +11651,7 @@ class GatewayRunner:
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=t("gateway.bg_task_failed", task_id=task_id, error=e),
                     metadata=_thread_metadata,
                 )
             except Exception:
@@ -12150,7 +12099,7 @@ class GatewayRunner:
                 # from current files (SOUL.md, memory, etc.).
                 self._evict_cached_agent(session_key)
                 self._cleanup_agent_resources(tmp_agent)
-            lines = [f"🗜️ {summary['headline']}"]
+            lines = [t("gateway.compression_summary", headline=summary['headline'])]
             if focus_topic:
                 lines.append(t("gateway.compress.focus_line", topic=focus_topic))
             lines.append(summary["token_line"])
@@ -13446,15 +13395,7 @@ class GatewayRunner:
                 return result
             return result
 
-        prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
-            f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
-        )
+        prompt_message = t("gateway.dangerous_confirm", command=command, detail=detail)
         return await self._request_slash_confirm(
             event=event,
             command=command,
@@ -14001,11 +13942,11 @@ class GatewayRunner:
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
-                        await adapter.send(chat_id, "✅ Hermes update finished.", metadata=metadata)
+                        await adapter.send(chat_id, t("gateway.update_finished"), metadata=metadata)
                     else:
                         await adapter.send(
                             chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
+                            t("gateway.update_failed_code", code=exit_code),
                             metadata=metadata,
                         )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
@@ -14093,7 +14034,7 @@ class GatewayRunner:
             try:
                 await adapter.send(
                     chat_id,
-                    "❌ Hermes update timed out after 30 minutes.",
+                    t("gateway.update_timed_out"),
                     metadata=metadata,
                 )
             except Exception:
@@ -14166,13 +14107,13 @@ class GatewayRunner:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
                     if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        msg = t("gateway.update_finished_output", output=output)
                     else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                        msg = t("gateway.update_failed_output", output=output)
                 elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = t("gateway.update_finished_success")
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    msg = t("gateway.update_failed")
                 await adapter.send(chat_id, msg, metadata=metadata)
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
@@ -14226,7 +14167,7 @@ class GatewayRunner:
             metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                t("gateway.restart.success"),
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -14267,7 +14208,7 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = t("gateway.online")
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -15323,7 +15264,7 @@ class GatewayRunner:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
             return {
-                "final_response": "⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp",
+                "final_response": t("gateway.proxy_no_aiohttp"),
                 "messages": [],
                 "api_calls": 0,
                 "tools": [],
@@ -15332,7 +15273,7 @@ class GatewayRunner:
         proxy_url = self._get_proxy_url()
         if not proxy_url:
             return {
-                "final_response": "⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)",
+                "final_response": t("gateway.proxy_not_configured"),
                 "messages": [],
                 "api_calls": 0,
                 "tools": [],
@@ -15474,7 +15415,7 @@ class GatewayRunner:
                             resp.status, proxy_url, error_text[:500],
                         )
                         return {
-                            "final_response": f"⚠️ Proxy error ({resp.status}): {error_text[:300]}",
+                            "final_response": t("gateway.proxy_error", status=resp.status, detail=error_text[:300]),
                             "messages": [],
                             "api_calls": 0,
                             "tools": [],
@@ -15530,7 +15471,7 @@ class GatewayRunner:
             logger.error("Proxy connection error to %s: %s", proxy_url, e)
             if not full_response:
                 return {
-                    "final_response": f"⚠️ Proxy connection error: {e}",
+                    "final_response": t("gateway.proxy_connection_error", error=e),
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
@@ -16315,7 +16256,7 @@ class GatewayRunner:
                 )
             except Exception as exc:
                 return {
-                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "final_response": t("gateway.provider_auth_failed"),
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
@@ -16747,13 +16688,7 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
-                )
+                msg = t("platform.approval_prompt", command=cmd_preview, reason=desc)
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
                         _status_adapter.send(
@@ -17241,9 +17176,9 @@ class GatewayRunner:
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
+                        _parts = [t("activity.iteration", current=_a['api_call_count'], max=_a['max_iterations'])]
                         if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
+                            _parts.append(t("activity.running_tool", tool=_a['current_tool']))
                         else:
                             _parts.append(_a.get("last_activity_desc", ""))
                         _status_detail = " — " + ", ".join(_parts)
@@ -17252,7 +17187,7 @@ class GatewayRunner:
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        t("gateway.still_working", elapsed=_elapsed_mins, detail=_status_detail),
                         metadata=_status_thread_metadata,
                     )
                     if (
@@ -17349,10 +17284,7 @@ class GatewayRunner:
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    t("gateway.no_activity_warning", minutes=_elapsed_warn),
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -17411,20 +17343,23 @@ class GatewayRunner:
 
                 # Construct a user-facing message with diagnostic context.
                 _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
+                    t("gateway.agent_inactive", minutes=_timeout_mins)
                 ]
                 if _cur_tool:
                     _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
+                        t("gateway.agent_stuck_tool",
+                          tool=_cur_tool,
+                          seconds=f"{_secs_ago:.0f}",
+                          current=_iter_n,
+                          max=_iter_max)
                     )
                 else:
                     _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
+                        t("gateway.agent_last_activity",
+                          desc=_last_desc,
+                          seconds=f"{_secs_ago:.0f}",
+                          current=_iter_n,
+                          max=_iter_max)
                     )
                 _diag_lines.append(
                     "To increase the limit, set agent.gateway_timeout in config.yaml "
@@ -18054,10 +17989,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 existing_pid, hermes_home,
             )
             print(
-                f"\n❌ Gateway already running (PID {existing_pid}).\n"
-                f"   Use 'hermes gateway restart' to replace it,\n"
-                f"   or 'hermes gateway stop' to kill it first.\n"
-                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
+                t("gateway.already_running", pid=existing_pid)
             )
             return False
 

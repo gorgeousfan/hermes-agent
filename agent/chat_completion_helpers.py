@@ -36,6 +36,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.model_metadata import is_local_endpoint
+from agent.i18n import t as _t
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
@@ -205,7 +206,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     )
 
     _call_start = time.time()
-    agent._touch_activity("waiting for non-streaming API response")
+    agent._touch_activity(_t("activity.waiting_api"))
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
@@ -234,7 +235,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
             agent._emit_status(
-                f"⚠️ No response from provider for {int(_elapsed)}s "
+                _t("gateway.no_provider_response", time=int(_elapsed)) + " "
                 f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
                 f"Aborting call."
             )
@@ -944,8 +945,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
 
         agent._emit_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
+            t("agent.primary_model_failed", model=fb_model, provider=fb_provider)
         )
         logger.info(
             "Fallback activated: %s → %s (%s)",
@@ -960,7 +960,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
-    print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
+    print(t("agent.max_iterations", max=agent.max_iterations))
 
     summary_request = (
         "You've reached the maximum number of tool-calling iterations allowed. "
@@ -1412,7 +1412,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Reset stale-stream timer so the detector measures from this
         # attempt's start, not a previous attempt's last chunk.
         last_chunk_time["t"] = time.time()
-        agent._touch_activity("waiting for provider response (streaming)")
+        agent._touch_activity(_t("activity.waiting_stream"))
         # Initialize per-attempt stream diagnostics so the retry block can
         # reach for them after the stream dies.  Lives on
         # ``request_client_holder["diag"]`` for closure access.
@@ -1448,7 +1448,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         usage_obj = None
         for chunk in stream:
             last_chunk_time["t"] = time.time()
-            agent._touch_activity("receiving stream response")
+            agent._touch_activity(_t("activity.receiving_stream"))
 
             # Update per-attempt diagnostic counters.  Best-effort —
             # failures are swallowed so the streaming hot path is never
@@ -1684,7 +1684,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # actively arriving (the chat_completions path
                 # already does this at the top of its chunk loop).
                 last_chunk_time["t"] = time.time()
-                agent._touch_activity("receiving stream response")
+                agent._touch_activity(_t("activity.receiving_stream"))
 
                 # Update per-attempt diagnostic counters (best-effort).
                 try:
@@ -1933,12 +1933,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             diag=request_client_holder.get("diag"),
                         )
                         agent._emit_status(
-                            "❌ Provider returned malformed streaming data after "
+                            _t("gateway.malformed_stream", retries="") + " "
                             f"{_max_stream_retries + 1} attempts. "
                             "The provider may be experiencing issues — "
                             "try again in a moment."
                             if _is_stream_parse_err else
-                            "❌ Connection to provider failed after "
+                            _t("gateway.connection_failed", retries="") + " "
                             f"{_max_stream_retries + 1} attempts. "
                             "The provider may be experiencing issues — "
                             "try again in a moment."
@@ -2040,10 +2040,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
             agent._emit_status(
-                f"⚠️ No response from provider for {int(_stale_elapsed)}s "
-                f"(model: {api_kwargs.get('model', 'unknown')}, "
-                f"context: ~{_est_ctx:,} tokens). "
-                f"Reconnecting..."
+                t("agent.no_response_reconnect", time=int(_stale_elapsed), model=api_kwargs.get('model', 'unknown'), tokens=f"{_est_ctx:,}")
             )
             try:
                 _close_request_client_once("stale_stream_kill")
