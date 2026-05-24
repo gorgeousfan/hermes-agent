@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from typing import Optional
 
@@ -629,26 +630,42 @@ class DockerEnvironment(BaseEnvironment):
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
-            try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
-                )
-                subprocess.Popen(stop_cmd, shell=True)
-            except Exception as e:
-                logger.warning("Failed to stop container %s: %s", self._container_id, e)
-
-            if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
-                try:
-                    subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
-                    )
-                except Exception:
-                    pass
+            container_id = self._container_id
+            docker_exe = self._docker_exe
+            persistent = self._persistent
             self._container_id = None
+
+            def _cleanup_container() -> None:
+                try:
+                    stop_result = subprocess.run(
+                        [docker_exe, "stop", "--time", "60", container_id],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=65,
+                        check=False,
+                    )
+                    if not persistent or stop_result.returncode != 0:
+                        subprocess.run(
+                            [docker_exe, "rm", "-f", container_id],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=15,
+                            check=False,
+                        )
+                except Exception as e:
+                    logger.warning("Failed to clean up container %s: %s", container_id, e)
+
+            # Stop in a background worker so cleanup doesn't block, but avoid
+            # shell=True so configured docker paths and container IDs are never
+            # shell-parsed. Keep the worker non-daemon so interpreter shutdown
+            # cannot silently abandon cleanup after it has been scheduled.
+            try:
+                threading.Thread(
+                    target=_cleanup_container,
+                    name=f"docker-cleanup-{container_id[:12]}",
+                ).start()
+            except Exception:
+                _cleanup_container()
 
         if not self._persistent:
             for d in (self._workspace_dir, self._home_dir):

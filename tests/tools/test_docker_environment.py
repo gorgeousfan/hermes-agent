@@ -29,6 +29,15 @@ def _mock_subprocess_run(monkeypatch):
     return calls
 
 
+class _ImmediateThread:
+    def __init__(self, target, daemon=False, **kwargs):
+        self.target = target
+        self.daemon = daemon
+
+    def start(self):
+        self.target()
+
+
 def _make_dummy_env(**kwargs):
     """Helper to construct DockerEnvironment with minimal required args."""
     return docker_env.DockerEnvironment(
@@ -203,15 +212,10 @@ def test_auto_mount_replaces_persistent_workspace_bind(monkeypatch, tmp_path):
 
 
 def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When persistent=false, cleanup() must schedule docker stop + rm."""
+    """When persistent=false, cleanup() must stop and remove the container."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
-
-    popen_cmds = []
-    monkeypatch.setattr(
-        docker_env.subprocess, "Popen",
-        lambda cmd, **kw: (popen_cmds.append(cmd), type("P", (), {"poll": lambda s: 0, "wait": lambda s, **k: None, "returncode": 0, "stdout": iter([]), "stdin": None})())[1],
-    )
+    monkeypatch.setattr(docker_env.threading, "Thread", _ImmediateThread)
 
     env = _make_dummy_env(persistent_filesystem=False, task_id="ephemeral-task")
     assert env._container_id
@@ -219,9 +223,12 @@ def test_non_persistent_cleanup_removes_container(monkeypatch):
 
     env.cleanup()
 
-    # Should have stop and rm calls via Popen
-    stop_cmds = [c for c in popen_cmds if container_id in str(c) and "stop" in str(c)]
-    assert len(stop_cmds) >= 1, f"cleanup() should schedule docker stop for {container_id}"
+    stop_cmds = [c for c in calls if c[0] == ["/usr/bin/docker", "stop", "--time", "60", container_id]]
+    rm_cmds = [c for c in calls if c[0] == ["/usr/bin/docker", "rm", "-f", container_id]]
+    assert len(stop_cmds) == 1, f"cleanup() should stop {container_id}"
+    assert len(rm_cmds) == 1, f"cleanup() should remove {container_id}"
+    assert "shell" not in stop_cmds[0][1]
+    assert "shell" not in rm_cmds[0][1]
 
 
 class _FakePopen:
