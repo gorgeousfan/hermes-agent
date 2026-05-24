@@ -61,7 +61,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
@@ -199,6 +199,10 @@ _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
+# If wall-clock receipt lags behind Feishu-reported event create_time by more
+# than this many seconds, prepend a [SYSTEM:] banner so the agent can tell
+# replayed/delayed webhook callbacks from realtime traffic (#22424).
+_DEFAULT_STALE_DELIVERY_ANNOTATION_SECONDS = 180.0
 # ---------------------------------------------------------------------------
 # TTL, rate-limit and webhook security constants
 # ---------------------------------------------------------------------------
@@ -393,6 +397,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    stale_delivery_annotation_seconds: float = _DEFAULT_STALE_DELIVERY_ANNOTATION_SECONDS
 
 
 @dataclass
@@ -1567,6 +1572,12 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            stale_delivery_annotation_seconds=float(
+                os.getenv(
+                    "HERMES_FEISHU_STALE_DELIVERY_SECONDS",
+                    str(_DEFAULT_STALE_DELIVERY_ANNOTATION_SECONDS),
+                )
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1599,6 +1610,75 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._stale_delivery_annotation_seconds = max(0.0, settings.stale_delivery_annotation_seconds)
+
+    @staticmethod
+    def _parse_feishu_unix_timestamp(raw: Any) -> Optional[float]:
+        """Convert Feishu/Lark string or numeric timestamps to UTC unix seconds."""
+        if raw is None:
+            return None
+        try:
+            if isinstance(raw, bool):
+                return None
+            if isinstance(raw, (int, float)):
+                val = float(raw)
+            else:
+                s = str(raw).strip()
+                if not s:
+                    return None
+                val = float(s)
+        except (TypeError, ValueError):
+            return None
+        if val <= 0:
+            return None
+        # Millisecond unix times are ~1.7e12; second times are ~1.7e9.
+        if val >= 1e12:
+            val /= 1000.0
+        return val
+
+    @staticmethod
+    def _feishu_payload_event_unix(data: Any) -> Optional[float]:
+        """Best-effort event wall time from a Feishu callback envelope (UTC seconds)."""
+        candidates: List[Any] = []
+        header = getattr(data, "header", None)
+        if header is not None:
+            candidates.extend(
+                getattr(header, name, None) for name in ("create_time", "event_time", "ts")
+            )
+        event = getattr(data, "event", None)
+        if event is not None:
+            candidates.extend(getattr(event, name, None) for name in ("create_time", "event_time"))
+            message = getattr(event, "message", None)
+            if message is not None:
+                candidates.append(getattr(message, "create_time", None))
+        for raw in candidates:
+            parsed = FeishuAdapter._parse_feishu_unix_timestamp(raw)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _maybe_prefix_stale_delivery_banner(self, *, data: Any, text: str) -> str:
+        """If Feishu event time is far behind receipt, annotate inbound user text."""
+        if self._stale_delivery_annotation_seconds <= 0:
+            return text
+        event_unix = self._feishu_payload_event_unix(data)
+        if event_unix is None:
+            return text
+        lag = time.time() - event_unix
+        if lag <= self._stale_delivery_annotation_seconds:
+            return text
+        ts_utc = datetime.fromtimestamp(event_unix, tz=timezone.utc)
+        banner = (
+            "[SYSTEM: Feishu delayed delivery — Feishu event create_time is "
+            f"{ts_utc.strftime('%Y-%m-%dT%H:%M:%SZ')} (~{int(lag)}s before Hermes received this callback). "
+            "This may be a replay after connectivity was restored.]\n\n"
+        )
+        logger.info(
+            "[Feishu] Stale inbound callback: lag=%.1fs threshold=%.1fs message will be annotated",
+            lag,
+            self._stale_delivery_annotation_seconds,
+        )
+        return f"{banner}{text}" if text else banner.rstrip()
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -2971,6 +3051,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if inbound_type == MessageType.TEXT and not text and not media_urls:
             logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
             return
+
+        # Stale/replayed callbacks are annotated before mention hints so the
+        # agent sees delivery lag context first (#22424).
+        text = self._maybe_prefix_stale_delivery_banner(data=data, text=text)
 
         if inbound_type != MessageType.COMMAND:
             hint = _build_mention_hint(mentions)

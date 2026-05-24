@@ -4823,3 +4823,166 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestFeishuStaleDeliveryAnnotation(unittest.TestCase):
+    """Regression for Feishu webhook replays after outages (#22424)."""
+
+    def test_parse_feishu_unix_timestamp_accepts_seconds_and_milliseconds(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        now = time.time()
+        sec = int(now)
+        self.assertAlmostEqual(
+            FeishuAdapter._parse_feishu_unix_timestamp(str(sec)), float(sec), delta=1.0
+        )
+        ms = str(int(now * 1000))
+        self.assertAlmostEqual(FeishuAdapter._parse_feishu_unix_timestamp(ms), now, delta=1.5)
+
+    def test_feishu_payload_event_unix_prefers_header_create_time(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        ts = 1_700_000_000
+        data = SimpleNamespace(
+            header=SimpleNamespace(create_time=str(ts)),
+            event=SimpleNamespace(
+                message=SimpleNamespace(create_time=str(ts + 9999)),
+                sender=None,
+                create_time=str(ts + 1111),
+            ),
+        )
+        self.assertEqual(FeishuAdapter._feishu_payload_event_unix(data), float(ts))
+
+    @patch.dict(os.environ, {"HERMES_FEISHU_STALE_DELIVERY_SECONDS": "60"}, clear=False)
+    def test_process_inbound_message_prefixes_stale_callback_banner(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "Alice", "user_id_alt": None}
+        )
+        old_ms = str(int(time.time() * 1000) - 400_000)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"hello"}',
+            message_id="om_stale",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(
+            header=SimpleNamespace(create_time=old_ms),
+            event=SimpleNamespace(message=message, sender=sender),
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_stale",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertTrue(event.text.startswith("[SYSTEM: Feishu delayed delivery"))
+        self.assertIn("hello", event.text)
+
+    @patch.dict(os.environ, {"HERMES_FEISHU_STALE_DELIVERY_SECONDS": "600"}, clear=False)
+    def test_process_inbound_message_skips_banner_when_lag_within_threshold(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "Alice", "user_id_alt": None}
+        )
+        recent_ms = str(int(time.time() * 1000) - 30_000)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"hello"}',
+            message_id="om_fresh",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(
+            header=SimpleNamespace(create_time=recent_ms),
+            event=SimpleNamespace(message=message, sender=sender),
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_fresh",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertFalse(event.text.startswith("[SYSTEM: Feishu delayed delivery"))
+        self.assertEqual(event.text, "hello")
+
+    @patch.dict(os.environ, {"HERMES_FEISHU_STALE_DELIVERY_SECONDS": "0"}, clear=False)
+    def test_process_inbound_message_skips_banner_when_disabled(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "Alice", "user_id_alt": None}
+        )
+        old_ms = str(int(time.time() * 1000) - 400_000)
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"hello"}',
+            message_id="om_off",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(
+            header=SimpleNamespace(create_time=old_ms),
+            event=SimpleNamespace(message=message, sender=sender),
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_off",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.text, "hello")
