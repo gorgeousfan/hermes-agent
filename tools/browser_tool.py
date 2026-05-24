@@ -1999,6 +1999,17 @@ def _run_browser_command(
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
         browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
 
+        # Honor browser.headed config — when enabled, show a visible
+        # browser window so the user can watch what the agent is doing.
+        if not session_info.get("cdp_url") and not _is_camofox_mode():
+            try:
+                from hermes_cli.config import read_raw_config
+                _cfg = read_raw_config()
+                if _cfg.get("browser", {}).get("headed", False):
+                    browser_env["AGENT_BROWSER_HEADED"] = "true"
+            except Exception:
+                pass
+
         # Tell the agent-browser daemon to self-terminate after being idle
         # for our configured inactivity timeout.  This is the daemon-side
         # counterpart to our Python-side _cleanup_inactive_browser_sessions

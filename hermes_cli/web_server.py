@@ -345,6 +345,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Reasoning effort for delegated subagents",
         "options": ["", "low", "medium", "high"],
     },
+    "browser.headed": {
+        "type": "boolean",
+        "description": "Run browser in headed mode (visible window).  Enable to show a visible browser window via AGENT_BROWSER_HEADED.",
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
