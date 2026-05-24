@@ -307,6 +307,55 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_stdio_server_recovers_redacted_env_from_shell(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """If --env value is redacted upstream, recover from os.environ."""
+        fake_tools = [FakeTool("search", "Search repos")]
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_live_token_1234567890")
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == {
+                "GITHUB_TOKEN": "ghp_live_token_1234567890",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["@mcp/github"],
+            env=["GITHUB_TOKEN=***"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import read_raw_config
+
+        srv = read_raw_config()["mcp_servers"]["github"]
+        assert srv["env"]["GITHUB_TOKEN"] == "ghp_live_token_1234567890"
+
+    def test_add_stdio_server_rejects_redacted_env_without_recovery(
+        self, capsys
+    ):
+        """Redacted placeholders must not be written when env recovery fails."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            mcp_command="npx",
+            args=["@mcp/github"],
+            env=["GITHUB_TOKEN=***"],
+        ))
+        out = capsys.readouterr().out
+        assert "appears redacted" in out
+
     def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
         """Invalid environment variable names are rejected up front."""
         from hermes_cli.mcp_config import cmd_mcp_add
@@ -599,4 +648,3 @@ class TestMcpLogin:
         cmd_mcp_login(_make_args(name="srv"))
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
-

@@ -30,6 +30,15 @@ from tools.mcp_tool import _ENV_VAR_PATTERN
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_REDACTED_ENV_VALUE_RE = re.compile(
+    r"^(?:\*{3,}|\[REDACTED\]|<REDACTED>|\(REDACTED\)|REDACTED)$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_redacted_env_value(value: str) -> bool:
+    """Return True when *value* is an obvious redaction placeholder."""
+    return bool(_REDACTED_ENV_VALUE_RE.fullmatch(str(value or "").strip()))
 
 
 _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -124,6 +133,19 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
             raise ValueError(f"Invalid --env value '{text}' (missing variable name)")
         if not _ENV_VAR_NAME_RE.match(key):
             raise ValueError(f"Invalid --env variable name '{key}'")
+        # Some entrypoints redact command text before it reaches argparse,
+        # turning secret values into "***" or "[REDACTED]". If we can recover
+        # from the caller environment, do so; otherwise fail fast so we don't
+        # persist an unusable placeholder into mcp_servers.<name>.env.
+        if _looks_like_redacted_env_value(value):
+            recovered = os.getenv(key, "").strip()
+            if recovered and not _looks_like_redacted_env_value(recovered):
+                value = recovered
+            else:
+                raise ValueError(
+                    f"--env {key}=... appears redacted. Export {key} in your shell "
+                    f"and retry, or pass --env {key}=${{{key}}}."
+                )
         parsed[key] = value
     return parsed
 
