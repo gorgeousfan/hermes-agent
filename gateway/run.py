@@ -959,7 +959,11 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(
+    *,
+    source: Optional[SessionSource] = None,
+    user_config: Optional[dict] = None,
+) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     Provider is read from ``config.yaml`` ``model.provider`` (the single
@@ -970,7 +974,8 @@ def _resolve_runtime_agent_kwargs() -> dict:
 
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
-    before giving up.
+    before giving up. When a gateway source is supplied, apply
+    config-driven gateway_credential_routing after provider resolution.
     """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
@@ -991,7 +996,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    return {
+    result = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -1000,6 +1005,20 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+    if source is not None:
+        try:
+            from agent.credential_pool import load_pool
+            from gateway.credential_routing import route_runtime_kwargs
+            result = route_runtime_kwargs(
+                result,
+                source=source,
+                user_config=user_config if isinstance(user_config, dict) else _load_gateway_config(),
+                pool_loader=load_pool,
+            )
+        except Exception:
+            # fail_closed routes intentionally raise; preserve that behavior.
+            raise
+    return result
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -2281,7 +2300,7 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs = _resolve_runtime_agent_kwargs(source=source, user_config=user_config)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -7829,10 +7848,10 @@ class GatewayRunner:
                 from agent.model_metadata import get_model_context_length
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
-                _msg_runtime = _resolve_runtime_agent_kwargs()
+                _msg_cfg = _load_gateway_config()
+                _msg_runtime = _resolve_runtime_agent_kwargs(source=source, user_config=_msg_cfg)
                 _msg_config_ctx = None
                 try:
-                    _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
                     if isinstance(_msg_model_cfg, dict):
                         _msg_raw_ctx = _msg_model_cfg.get("context_length")
