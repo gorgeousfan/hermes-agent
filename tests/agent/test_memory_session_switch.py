@@ -229,6 +229,7 @@ def _make_hindsight_provider():
     provider._agent_workspace = ""
     provider._retain_tags = []
     provider._retain_context = "test-context"
+    provider._retain_context_tagging = "off"
     provider._retain_async = False
     provider._bank_id = "test-bank"
     # Prefetch state the switch path drains/clears.
@@ -256,6 +257,16 @@ def _make_hindsight_provider():
     provider._api_key = ""
     provider._client = None
     provider._resolve_retain_target = lambda fb: (fb, None)
+    # Delta-mode retain attributes (default to full mode for hermetic test).
+    provider._retain_mode = "full"
+    provider._retain_overlap_turns = 2
+    provider._last_retain_index = 0
+    # Smart-pipeline state read by flush-on-switch path; defaults disable
+    # extract/prefilter/dedup so unit tests don't need an aux LLM stub.
+    provider._retain_extract = False
+    provider._retain_prefilter = False
+    provider._retain_dedup = False
+    provider._aux_fallback_to_main = False
     # Stub the network-touching helper so any enqueued flush closure is
     # a no-op if ever drained in a unit test.
     provider._run_hindsight_operation = lambda _op: None
