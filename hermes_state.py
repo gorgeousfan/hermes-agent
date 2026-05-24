@@ -337,6 +337,7 @@ class SessionDB:
 
         self._lock = threading.Lock()
         self._write_count = 0
+        self._trigram_fts_available = True
         try:
             self._conn = sqlite3.connect(
                 str(self.db_path),
@@ -549,6 +550,50 @@ class SessionDB:
                             "reconcile %s.%s: %s", table_name, col_name, exc,
                         )
 
+    def _backfill_trigram_fts(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            "INSERT INTO messages_fts_trigram(rowid, content) "
+            "SELECT id, "
+            "COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') "
+            "FROM messages"
+        )
+
+    def _rebuild_trigram_fts(self, cursor: sqlite3.Cursor, reason: Exception) -> bool:
+        """Rebuild the optional trigram FTS index without touching transcripts."""
+        logger.warning("Rebuilding messages_fts_trigram after init failure: %s", reason)
+        for trigger in (
+            "messages_fts_trigram_insert",
+            "messages_fts_trigram_delete",
+            "messages_fts_trigram_update",
+        ):
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.DatabaseError:
+                pass
+        try:
+            cursor.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+        except sqlite3.DatabaseError:
+            # If the virtual table constructor is broken, DROP TABLE can fail
+            # before it reaches the shadow tables. Remove only the optional FTS
+            # schema entries; sessions/messages remain ordinary tables.
+            try:
+                cursor.execute("PRAGMA writable_schema=ON")
+                cursor.execute("DELETE FROM sqlite_schema WHERE name LIKE 'messages_fts_trigram%'")
+            except sqlite3.DatabaseError as exc:
+                cursor.execute("PRAGMA writable_schema=OFF")
+                logger.warning(
+                    "Could not repair messages_fts_trigram; disabling optional "
+                    "trigram search for this connection: %s",
+                    exc,
+                )
+                return False
+            cursor.execute("PRAGMA writable_schema=OFF")
+        cursor.executescript(FTS_TRIGRAM_SQL)
+        self._backfill_trigram_fts(cursor)
+        return True
+
     def _init_schema(self):
         """Create tables and FTS if they don't exist, reconcile columns.
 
@@ -687,8 +732,12 @@ class SessionDB:
         # Trigram FTS5 for CJK/substring search
         try:
             cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+        except sqlite3.DatabaseError as exc:
+            if "no such table" in str(exc).lower():
+                cursor.executescript(FTS_TRIGRAM_SQL)
+                self._backfill_trigram_fts(cursor)
+            else:
+                self._trigram_fts_available = self._rebuild_trigram_fts(cursor, exc)
 
         self._conn.commit()
 
@@ -1499,6 +1548,10 @@ class SessionDB:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                (session_id, "unknown", time.time()),
+            )
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
@@ -2241,7 +2294,7 @@ class SessionDB:
                 self._count_cjk(t) < 3 for t in _tokens_for_check
             )
 
-            if cjk_count >= 3 and not _any_short_cjk:
+            if self._trigram_fts_available and cjk_count >= 3 and not _any_short_cjk:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -2287,7 +2340,8 @@ class SessionDB:
                 with self._lock:
                     try:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
-                    except sqlite3.OperationalError:
+                    except sqlite3.DatabaseError:
+                        self._trigram_fts_available = False
                         matches = []
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
@@ -3276,4 +3330,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

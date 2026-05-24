@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
 import time
 import pytest
 from pathlib import Path
@@ -38,6 +39,20 @@ class TestSessionLifecycle:
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
+
+    def test_append_message_creates_missing_session_row(self, db):
+        """Gateway flushes can race with session creation; don't drop messages."""
+        message_id = db.append_message(
+            session_id="missing-session",
+            role="user",
+            content="persist this gateway message",
+        )
+
+        session = db.get_session("missing-session")
+        assert message_id > 0
+        assert session is not None
+        assert session["source"] == "unknown"
+        assert session["message_count"] == 1
 
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -2927,12 +2942,69 @@ class TestFTS5ToolCallMigration:
     """v11 migration: pre-existing state.db with old external-content FTS tables
     must be re-indexed so tool_name / tool_calls become searchable after upgrade."""
 
+    def test_rebuild_trigram_fts_preserves_messages(self, tmp_path):
+        """A corrupt optional trigram index must not make state.db unusable."""
+        db_path = tmp_path / "repair.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            session_db.create_session("s1", "cli")
+            session_db.append_message(
+                "s1",
+                role="assistant",
+                content="substring recovery message",
+                tool_name="REPAIRTOOL",
+            )
+
+            cursor = session_db._conn.cursor()
+            for trigger in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            cursor.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+
+            rebuilt = session_db._rebuild_trigram_fts(
+                cursor,
+                sqlite3.DatabaseError("vtable constructor failed: messages_fts_trigram"),
+            )
+            session_db._conn.commit()
+
+            assert rebuilt is True
+            indexed_count = session_db._conn.execute(
+                "SELECT count(*) FROM messages_fts_trigram"
+            ).fetchone()[0]
+            assert indexed_count == 1
+            assert len(session_db.search_messages("substring")) == 1
+            assert len(session_db.search_messages("REPAIRTOOL")) == 1
+        finally:
+            session_db.close()
+
+    def test_rebuild_trigram_fts_degrades_when_schema_repair_is_blocked(self, db):
+        """Some sqlite builds block writable_schema; state.db must still open."""
+        class BlockedSchemaCursor:
+            def execute(self, sql):
+                if sql == "DROP TABLE IF EXISTS messages_fts_trigram":
+                    raise sqlite3.DatabaseError(
+                        "vtable constructor failed: messages_fts_trigram"
+                    )
+                if sql.startswith("DELETE FROM sqlite_schema"):
+                    raise sqlite3.OperationalError("table sqlite_master may not be modified")
+
+            def executescript(self, _sql):
+                raise AssertionError("blocked schema repair must not recreate FTS")
+
+        rebuilt = db._rebuild_trigram_fts(
+            BlockedSchemaCursor(),
+            sqlite3.DatabaseError("vtable constructor failed: messages_fts_trigram"),
+        )
+
+        assert rebuilt is False
+
     def test_v10_to_v11_upgrade_backfills_tool_fields(self, tmp_path):
         """Simulate an existing user: build a v10-shaped DB by hand, insert a
         row with tool_calls, then open via SessionDB (which runs migrations).
         After upgrade, the tool_calls token must be searchable."""
-        import sqlite3
-
         db_path = tmp_path / "legacy.db"
 
         # Build the pre-v11 schema by hand: external-content FTS tables +
@@ -3020,4 +3092,3 @@ class TestFTS5ToolCallMigration:
             assert version == SCHEMA_VERSION
         finally:
             session_db.close()
-
