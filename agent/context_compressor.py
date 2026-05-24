@@ -75,6 +75,36 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# Deterministic fallback budget used when the auxiliary summarizer fails but
+# Hermes still has to drop a middle window to stay within context. This is not a
+# replacement for a real LLM summary; it is a last-resort continuity receipt
+# from the exact turns being removed.
+_FALLBACK_HANDOFF_MAX_CHARS = 6000
+_FALLBACK_MESSAGE_MAX_CHARS = 700
+
+
+def _compact_fallback_text(value: Any, *, max_chars: int = _FALLBACK_MESSAGE_MAX_CHARS) -> str:
+    """Return redacted one-block text for deterministic fallback handoffs."""
+    text = redact_sensitive_text(_content_text_for_contains(value))
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        return text[: max_chars - 15].rstrip() + " ...[truncated]"
+    return text
+
+
+def _extract_tool_names(msg: Dict[str, Any]) -> list[str]:
+    """Best-effort extraction of tool names from assistant tool-call messages."""
+    names: list[str] = []
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            name = ((tc.get("function") or {}).get("name") or "").strip()
+        else:
+            fn = getattr(tc, "function", None)
+            name = (getattr(fn, "name", "") if fn else "").strip()
+        if name:
+            names.append(name)
+    return names
+
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
@@ -537,8 +567,8 @@ class ContextCompressor(ContextEngine):
         self.quiet_mode = quiet_mode
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
-        # When False (default = historical behavior), insert a static
-        # "summary unavailable" placeholder and drop the middle window.
+        # When False (default = historical behavior), insert a deterministic
+        # "summary unavailable" fallback handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
         self.context_length = get_model_context_length(
@@ -910,6 +940,68 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = self.summary_model
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
+
+    def _build_deterministic_fallback_handoff(self, turns: List[Dict[str, Any]]) -> str:
+        """Build a bounded, redacted handoff without calling an LLM.
+
+        This is used only after summary generation fails and the compressor is
+        about to replace a middle window. It preserves concrete state from the
+        exact dropped turns: user asks, tool activity, path mentions, and the
+        last few turns. It should be small enough to fit as an emergency
+        continuity receipt, not a second summarizer.
+        """
+        recent_user: list[str] = []
+        recent_actions: list[str] = []
+        recent_turns: list[str] = []
+        files: list[str] = []
+
+        path_pattern = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+        for msg in turns:
+            role = msg.get("role", "unknown")
+            text = _compact_fallback_text(msg.get("content"))
+            if text:
+                for path in path_pattern.findall(text):
+                    if path not in files and len(files) < 12:
+                        files.append(path)
+            tool_names = _extract_tool_names(msg)
+            if role == "user" and text:
+                recent_user.append(text)
+            if role == "assistant" and tool_names:
+                recent_actions.append("tool calls: " + ", ".join(tool_names))
+            elif role == "tool" and text:
+                recent_actions.append(text)
+            if text or tool_names:
+                label = role.upper()
+                if tool_names:
+                    line = f"{label}: tool calls: {', '.join(tool_names)}"
+                else:
+                    line = f"{label}: {text}"
+                recent_turns.append(line)
+
+        def _bullets(items: list[str], *, limit: int) -> list[str]:
+            trimmed = [item for item in items if item]
+            return [f"- {item}" for item in trimmed[-limit:]] or ["- None captured."]
+
+        sections = [
+            "## Pre-compaction Fallback Handoff",
+            "Summary generation failed, so this deterministic handoff was captured before dropping the middle window. Treat it as incomplete but concrete source context.",
+            "",
+            "### Recent User Requests in Dropped Window",
+            *_bullets(recent_user, limit=4),
+            "",
+            "### Recent Tool / Execution State in Dropped Window",
+            *_bullets(recent_actions, limit=8),
+            "",
+            "### File/Path Mentions",
+            *_bullets(files, limit=8),
+            "",
+            "### Last Dropped Turns",
+            *_bullets(recent_turns, limit=10),
+        ]
+        text = "\n".join(sections).strip()
+        if len(text) > _FALLBACK_HANDOFF_MAX_CHARS:
+            text = text[: _FALLBACK_HANDOFF_MAX_CHARS - 40].rstrip() + "\n...[fallback handoff truncated]"
+        return text
 
     def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
         """Generate a structured summary of conversation turns.
@@ -1608,11 +1700,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         #   True  → ABORT compression entirely. Return messages unchanged
         #           and set _last_compress_aborted=True so callers can warn
         #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the legacy fallback path below: insert
-        #           a static "summary unavailable" placeholder and drop the
-        #           middle window.  Records _last_summary_fallback_used /
-        #           _last_summary_dropped_count for gateway hygiene to
-        #           surface a warning.
+        #   False → Fall through to the default fallback path below: insert
+        #           a deterministic "summary unavailable" fallback handoff
+        #           and drop the middle window. Records
+        #           _last_summary_fallback_used / _last_summary_dropped_count
+        #           for gateway hygiene to surface a warning.
         # Default is False (historical behavior).
         if not summary and self.abort_on_summary_failure:
             n_skipped = compress_end - compress_start
@@ -1643,21 +1735,25 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
-        # is False (the default).  Insert a static placeholder so the model
-        # knows context was lost rather than silently dropping everything.
+        # Default fallback path: LLM summary failed and abort_on_summary_failure
+        # is False. Include a deterministic handoff from the exact dropped
+        # window so fallback compaction preserves actionable state, not only
+        # the fact that context was lost.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
+                logger.warning("Summary generation failed — inserting deterministic fallback handoff")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
+            fallback_handoff = self._build_deterministic_fallback_handoff(turns_to_summarize)
             summary = (
                 f"{SUMMARY_PREFIX}\n"
                 f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+                f"removed to free context space but could not be summarized by the LLM. "
+                f"A bounded deterministic pre-compaction handoff from the dropped window "
+                f"is included below. Continue based on the recent messages below, this "
+                f"fallback handoff, and the current state of any files or resources.\n\n"
+                f"{fallback_handoff}"
             )
 
         _merge_summary_into_tail = False
