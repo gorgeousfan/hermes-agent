@@ -351,6 +351,9 @@ class SessionDB:
             dim = emb.get("dimension")
             if dim:
                 self._embedding_dim = int(dim)
+            # Explicit enabled switch: defaults to False (opt-in)
+            if self._embedding_base_url:
+                self._embedding_enabled = bool(emb.get("enabled", False))
         except Exception as e:
             logger.debug("Failed to load embedding config: %s", e)
 
@@ -363,6 +366,7 @@ class SessionDB:
         self._embedding_model = "Qwen3-Embedding-0.6B"
         self._embedding_api_key = None
         self._embedding_dim = 1024
+        self._embedding_enabled = False
         self._try_load_embedding_config()
 
         self._lock = threading.Lock()
@@ -1591,7 +1595,7 @@ class SessionDB:
 
         # Compute embedding outside the write txn (I/O operation)
         embed_text = (content or "").strip()
-        message_embedding = self._compute_embedding(embed_text) if self._embedding_base_url else None
+        message_embedding = self._compute_embedding(embed_text) if self._embedding_enabled else None
 
         def _do(conn):
             cursor = conn.execute(
@@ -2448,7 +2452,7 @@ class SessionDB:
                     matches = [dict(row) for row in cursor.fetchall()]
 
         # ── Vector fallback: if FTS returned nothing, try pure cosine search ──
-        if not matches and self._embedding_base_url:
+        if not matches and self._embedding_enabled:
             try:
                 query_embed = self._compute_embedding(query)
                 if query_embed:
