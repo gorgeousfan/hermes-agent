@@ -668,6 +668,11 @@ def ensure_installed(*, log_failures: bool = True):
     return None  # Not available yet; commands will fail-open until ready
 
 
+def is_installing() -> bool:
+    """True if a background installation is currently in progress."""
+    return _install_thread is not None and _install_thread.is_alive()
+
+
 # ---------------------------------------------------------------------------
 # Main API
 # ---------------------------------------------------------------------------

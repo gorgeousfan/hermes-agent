@@ -3718,7 +3718,9 @@ def mount_spa(application: FastAPI):
             WEB_DIST.resolve()
         ):
             return JSONResponse({"error": "not found"}, status_code=404)
-        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        # Support both standard X-Forwarded-Prefix and HA-specific X-Ingress-Path
+        raw_prefix = request.headers.get("x-forwarded-prefix") or request.headers.get("x-ingress-path")
+        prefix = _normalise_prefix(raw_prefix)
         css = css_path.read_text()
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
@@ -3731,7 +3733,9 @@ def mount_spa(application: FastAPI):
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
-        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        # Support both standard X-Forwarded-Prefix and HA-specific X-Ingress-Path
+        raw_prefix = request.headers.get("x-forwarded-prefix") or request.headers.get("x-ingress-path")
+        prefix = _normalise_prefix(raw_prefix)
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (
