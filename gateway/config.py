@@ -779,7 +779,9 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
-                    if plat_name == Platform.SLACK.value and "enabled" in plat_block:
+                    if "enabled" in plat_block:
+                        # Preserve explicit enable/disable from platforms.<name>.enabled
+                        # so env/plugin auto-enable passes do not override user intent.
                         merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
                     if merged_extra:
@@ -876,6 +878,9 @@ def load_gateway_config() -> GatewayConfig:
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
+                    # Remember explicit enable/disable so the later plugin auto-enable
+                    # pass does not resurrect a platform the user deliberately turned off.
+                    extra["_enabled_explicit"] = True
                 if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
@@ -1261,8 +1266,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if discord_token:
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
-        config.platforms[Platform.DISCORD].enabled = True
-        config.platforms[Platform.DISCORD].token = discord_token
+        discord_config = config.platforms[Platform.DISCORD]
+        discord_enabled_was_explicit = bool(discord_config.extra.get("_enabled_explicit", False))
+        if not (discord_enabled_was_explicit and not discord_config.enabled):
+            discord_config.enabled = True
+        # Preserve the token even when explicitly disabled so standalone send/status
+        # can still inspect credentials without waking the gateway adapter.
+        discord_config.token = discord_token
     
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
@@ -1827,7 +1837,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform = Platform(entry.name)
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+            platform_cfg = config.platforms[platform]
+            enabled_was_explicit = bool(platform_cfg.extra.pop("_enabled_explicit", False))
+            if enabled_was_explicit and not platform_cfg.enabled:
+                logger.debug("Plugin platform %s explicitly disabled; skipping auto-enable", entry.name)
+                continue
+            platform_cfg.enabled = True
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:
