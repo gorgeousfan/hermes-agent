@@ -294,12 +294,16 @@ class TestCLIStatusBar:
         )
         cli_obj._status_bar_visible = True
 
-        frags = cli_obj._get_status_bar_fragments()
+        # Mock terminal width wide enough to avoid trimming with provider display
+        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=200):
+            frags = cli_obj._get_status_bar_fragments()
         frag_texts = [text for _, text in frags]
 
-        assert "🗜️ 7" in frag_texts
-        frag_styles = {text: style for style, text in frags}
-        assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
+        assert any("🗜️ 7" in t for t in frag_texts), f"🗜️ 7 not found in {frag_texts}"
+        # Compression style check: find fragment containing 🗜️ and verify its style
+        for style, text in frags:
+            if "🗜️" in text:
+                assert style == "class:status-bar-warn", f"Expected warn style for compression fragment, got {style}"
 
     def test_compression_count_absent_from_fragments_when_zero(self):
         cli_obj = _attach_agent(
