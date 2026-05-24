@@ -49,7 +49,7 @@ class RateLimitBucket:
     @property
     def remaining_seconds_now(self) -> float:
         """Estimated seconds remaining until reset, adjusted for elapsed time."""
-        elapsed = time.time() - self.captured_at
+        elapsed = time.monotonic() - self.captured_at
         return max(0.0, self.reset_seconds - elapsed)
 
 
@@ -72,7 +72,7 @@ class RateLimitState:
     def age_seconds(self) -> float:
         if not self.has_data:
             return float("inf")
-        return time.time() - self.captured_at
+        return time.monotonic() - self.captured_at
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -106,7 +106,7 @@ def parse_rate_limit_headers(
     if not has_any:
         return None
 
-    now = time.time()
+    now = time.monotonic()
 
     def _bucket(resource: str, suffix: str = "") -> RateLimitBucket:
         # e.g. resource="requests", suffix="" -> per-minute
