@@ -11449,17 +11449,24 @@ class HermesCLI:
                 except Exception:
                     pass
                 agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
+                persist_user_message = message if _voice_prefix else None
+                # Prepend pending model switch note so the model knows about the switch.
+                # The note is API-call-local only: persist the clean user text so
+                # session transcripts, /resume history, exports, and search do not
+                # present runtime metadata as something the user actually said.
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
+                    persist_user_message = message
                     self._pending_model_switch_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
-                # one-shot queue pattern as the model-switch note above.
+                # one-shot queue pattern as the model-switch note above; also
+                # API-call-local for transcript cleanliness.
                 _srn = getattr(self, '_pending_skills_reload_note', None)
                 if _srn:
                     agent_message = _srn + "\n\n" + agent_message
+                    persist_user_message = message
                     self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
@@ -11467,7 +11474,7 @@ class HermesCLI:
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=persist_user_message,
                     )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
