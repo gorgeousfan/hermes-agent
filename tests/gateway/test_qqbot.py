@@ -193,6 +193,94 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
 
+class TestVoiceAttachmentTempCleanup:
+    """Regression tests for wav_path cleanup in _stt_voice_attachment.
+
+    The function downloads QQ voice attachments, writes them to a NamedTemporaryFile
+    with delete=False, and calls a self-hosted STT service. Before the fix, the
+    temp WAV was only unlinked on the success path; if the STT call raised an
+    httpx error or IOError, the outer except swallowed the exception but left
+    the WAV behind, leaking one temp file per failed transcription.
+    """
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def _setup_download_mocks(self, adapter, audio_data: bytes = b"RIFF" + b"\x00" * 100):
+        """Wire up the http_client + url_safety mocks for a successful download path."""
+        response = mock.MagicMock()
+        response.content = audio_data
+        response.headers = {"content-type": "audio/wav"}
+        response.raise_for_status = mock.MagicMock()
+
+        adapter._http_client = mock.AsyncMock()
+        adapter._http_client.get = mock.AsyncMock(return_value=response)
+
+    def test_temp_wav_cleaned_up_on_stt_failure(self, tmp_path, monkeypatch):
+        """If _call_stt raises httpx.HTTPStatusError, wav_path must still be unlinked."""
+        import httpx
+
+        adapter = self._make_adapter()
+        self._setup_download_mocks(adapter)
+
+        captured: dict = {}
+
+        async def fake_call_stt(path: str) -> str:
+            captured["wav_path"] = path
+            assert os.path.exists(path), "wav_path should exist before STT call"
+            request = httpx.Request("POST", "http://stt.local")
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError("STT down", request=request, response=response)
+
+        adapter._call_stt = fake_call_stt
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "https://example.com/voice.wav",
+                    "audio/wav",
+                    "voice.wav",
+                    voice_wav_url="https://example.com/voice.wav",
+                )
+            )
+
+        assert transcript is None
+        assert "wav_path" in captured, "STT must have been called"
+        assert not os.path.exists(captured["wav_path"]), (
+            f"Temp WAV {captured['wav_path']} should have been cleaned up after STT failure"
+        )
+
+    def test_temp_wav_cleaned_up_on_stt_success(self):
+        """Sanity check: cleanup still happens on the happy path."""
+        adapter = self._make_adapter()
+        self._setup_download_mocks(adapter)
+
+        captured: dict = {}
+
+        async def fake_call_stt(path: str) -> str:
+            captured["wav_path"] = path
+            return "hello world"
+
+        adapter._call_stt = fake_call_stt
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "https://example.com/voice.wav",
+                    "audio/wav",
+                    "voice.wav",
+                    voice_wav_url="https://example.com/voice.wav",
+                )
+            )
+
+        assert transcript == "hello world"
+        assert "wav_path" in captured
+        assert not os.path.exists(captured["wav_path"]), (
+            f"Temp WAV {captured['wav_path']} should have been cleaned up after STT success"
+        )
+
+
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling
 # ---------------------------------------------------------------------------

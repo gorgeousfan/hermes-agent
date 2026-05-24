@@ -1843,6 +1843,7 @@ class QQAdapter(BasePlatformAdapter):
                 return None
 
             # 3. Convert to wav (skip if we already have a pre-converted WAV)
+            wav_path: Optional[str] = None
             if is_pre_wav:
                 import tempfile
 
@@ -1865,15 +1866,18 @@ class QQAdapter(BasePlatformAdapter):
                     )
                     return None
 
-            # 4. Call STT API
-            logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
-            transcript = await self._call_stt(wav_path)
-
-            # 5. Cleanup temp file
+            # 4. Call STT API. Guarantee wav_path cleanup via try/finally -
+            # the previous flow only unlinked on the success path, leaking
+            # the temp WAV whenever _call_stt raised (e.g. transient httpx
+            # errors caught by the outer except).
             try:
-                os.unlink(wav_path)
-            except OSError:
-                pass
+                logger.debug("[%s] STT: calling ASR on %s", self._log_tag, wav_path)
+                transcript = await self._call_stt(wav_path)
+            finally:
+                try:
+                    os.unlink(wav_path)
+                except OSError:
+                    pass
 
             if transcript:
                 logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
