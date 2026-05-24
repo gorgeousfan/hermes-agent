@@ -840,7 +840,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
-                if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
+                if plat in {Platform.TELEGRAM, Platform.MATRIX} and "observe_unmentioned_group_messages" in platform_cfg:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
@@ -1109,6 +1109,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(matrix_cfg, dict):
                 if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
                     os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+                if "observe_unmentioned_group_messages" in matrix_cfg and not os.getenv("MATRIX_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+                    os.environ["MATRIX_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(matrix_cfg["observe_unmentioned_group_messages"]).lower()
                 frc = matrix_cfg.get("free_response_rooms")
                 if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
                     if isinstance(frc, list):

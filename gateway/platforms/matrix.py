@@ -19,6 +19,7 @@ Environment variables:
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement (alias of matrix.free_response_rooms)
     MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist, DMs exempt; alias of matrix.allowed_rooms)
+    MATRIX_OBSERVE_UNMENTIONED_GROUP_MESSAGES  Store unmentioned room chatter as observed context without replying
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
@@ -34,6 +35,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from html import escape as _html_escape
 from pathlib import Path
@@ -404,6 +406,12 @@ class MatrixAdapter(BasePlatformAdapter):
             self._allowed_rooms: Set[str] = {
                 r.strip() for r in str(allowed_rooms_raw).split(",") if r.strip()
             }
+        observe_raw = config.extra.get("observe_unmentioned_group_messages")
+        if observe_raw is None:
+            observe_raw = config.extra.get("ingest_unmentioned_group_messages")
+        if observe_raw is None:
+            observe_raw = os.getenv("MATRIX_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false")
+        self._observe_unmentioned_group_messages: bool = self._coerce_bool(observe_raw)
         self._auto_thread: bool = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in {
             "true",
             "1",
@@ -468,6 +476,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
@@ -1668,6 +1682,101 @@ class MatrixAdapter(BasePlatformAdapter):
                 room_id, sender, event_id, event_ts, source_content, relates_to
             )
 
+    def _matrix_observed_context_enabled_for_room(self, room_id: str, is_dm: bool) -> bool:
+        """Return True when unmentioned Matrix room chatter may be stored as context."""
+        if is_dm:
+            return False
+        if not self._observe_unmentioned_group_messages:
+            return False
+        # Observed room context is shared across senders. Require an explicit
+        # operator room allowlist so we don't create shared transcripts for every
+        # room the bot joins.
+        return bool(self._allowed_rooms and room_id in self._allowed_rooms)
+
+    def _matrix_observe_shared_source(self, room_id: str, chat_type: str, thread_id: str | None):
+        """Return a room/thread-scoped source for observed Matrix context."""
+        return self.build_source(
+            chat_id=room_id,
+            chat_type=chat_type,
+            user_id=None,
+            user_name=None,
+            thread_id=thread_id,
+        )
+
+    def _matrix_observed_context_active_source(
+        self,
+        room_id: str,
+        chat_type: str,
+        sender: str,
+        display_name: str,
+        thread_id: str | None,
+    ):
+        """Return an actor-authenticated source that still shares the room transcript.
+
+        The active @mentioned turn must preserve the sender identity for gateway
+        authorization and audit logs, while observed context must be read from
+        the room/thread-level session shared by all participants.
+        """
+        source = self.build_source(
+            chat_id=room_id,
+            chat_type=chat_type,
+            user_id=sender,
+            user_name=display_name,
+            thread_id=thread_id,
+        )
+        source.force_shared_session = True
+        return source
+
+    @staticmethod
+    def _matrix_observe_attributed_text(display_name: str, sender: str, body: str) -> str:
+        label = str(display_name or sender or "unknown").strip() or "unknown"
+        sender_id = str(sender or "unknown").strip() or "unknown"
+        return f"[{label}|{sender_id}]\n{body}"
+
+    def _matrix_observed_context_prompt(self) -> str:
+        return (
+            "You are handling a Matrix room message.\n"
+            "- observed Matrix room context may be provided in a separate context-only block "
+            "before the current addressed message; it is not necessarily addressed to you.\n"
+            "- Treat only the current addressed message as a request explicitly directed at you, "
+            "and use observed context only when the current message asks for it."
+        )
+
+    async def _observe_unmentioned_room_message(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        body: str,
+        thread_id: str | None,
+    ) -> None:
+        """Append skipped Matrix room chatter to the target session without dispatching."""
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        display_name = await self._get_display_name(room_id, sender)
+        source = self._matrix_observe_shared_source(room_id, "group", thread_id)
+        try:
+            session_entry = store.get_or_create_session(source)
+            store.append_to_transcript(
+                session_entry.session_id,
+                {
+                    "role": "user",
+                    "content": self._matrix_observe_attributed_text(display_name, sender, body),
+                    "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                    "observed": True,
+                    "message_id": event_id,
+                },
+                skip_db=False,
+            )
+            logger.info(
+                "[Matrix] room message observed (no bot trigger): room=%s from=%s",
+                room_id,
+                sender,
+            )
+        except Exception:
+            logger.debug("Matrix: failed to persist observed room message", exc_info=True)
+
     async def _resolve_message_context(
         self,
         room_id: str,
@@ -1679,11 +1788,12 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> Optional[tuple]:
         """Shared mention/thread/DM gating for text and media handlers.
 
-        Returns (body, is_dm, chat_type, thread_id, display_name, source)
+        Returns (body, is_dm, chat_type, thread_id, display_name, source, channel_prompt)
         or None if the message should be dropped (mention gating).
         """
         is_dm = await self._is_dm_room(room_id)
         chat_type = "dm" if is_dm else "group"
+        observe_room_context = self._matrix_observed_context_enabled_for_room(room_id, is_dm)
 
         thread_id = None
         if relates_to.get("rel_type") == "m.thread":
@@ -1715,12 +1825,21 @@ class MatrixAdapter(BasePlatformAdapter):
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned:
-                    logger.debug(
-                        "Matrix: ignoring message %s in %s — no @mention "
-                        "(set MATRIX_REQUIRE_MENTION=false to disable)",
-                        event_id,
-                        room_id,
-                    )
+                    if observe_room_context:
+                        await self._observe_unmentioned_room_message(
+                            room_id,
+                            sender,
+                            event_id,
+                            body,
+                            thread_id,
+                        )
+                    else:
+                        logger.debug(
+                            "Matrix: ignoring message %s in %s — no @mention "
+                            "(set MATRIX_REQUIRE_MENTION=false to disable)",
+                            event_id,
+                            room_id,
+                        )
                     return None
 
             # Thread-level @mention gating: even in a bot-participated thread,
@@ -1747,26 +1866,43 @@ class MatrixAdapter(BasePlatformAdapter):
         if is_mentioned and self._require_mention:
             body = self._strip_mention(body)
 
-        # Auto-thread.
-        if not thread_id and ((not is_dm and self._auto_thread) or (is_dm and self._dm_auto_thread)):
+        # Auto-thread.  In observed-context Matrix rooms, keep root-room
+        # mentioned turns in the root room session so they can see the root
+        # observed chatter.  Existing Matrix threads still keep their thread_id.
+        if (
+            not thread_id
+            and not observe_room_context
+            and ((not is_dm and self._auto_thread) or (is_dm and self._dm_auto_thread))
+        ):
             thread_id = event_id
             self._threads.mark(thread_id)
 
         display_name = await self._get_display_name(room_id, sender)
-        source = self.build_source(
-            chat_id=room_id,
-            chat_type=chat_type,
-            user_id=sender,
-            user_name=display_name,
-            thread_id=thread_id,
-        )
+        channel_prompt = None
+        if observe_room_context:
+            source = self._matrix_observed_context_active_source(
+                room_id,
+                chat_type,
+                sender,
+                display_name,
+                thread_id,
+            )
+            channel_prompt = self._matrix_observed_context_prompt()
+        else:
+            source = self.build_source(
+                chat_id=room_id,
+                chat_type=chat_type,
+                user_id=sender,
+                user_name=display_name,
+                thread_id=thread_id,
+            )
 
         if thread_id:
             self._threads.mark(thread_id)
 
         self._background_read_receipt(room_id, event_id)
 
-        return body, is_dm, chat_type, thread_id, display_name, source
+        return body, is_dm, chat_type, thread_id, display_name, source, channel_prompt
 
     async def _handle_text_message(
         self,
@@ -1792,7 +1928,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if ctx is None:
             return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
+        body, is_dm, chat_type, thread_id, display_name, source, channel_prompt = ctx
 
         # Reply-to detection.
         reply_to = None
@@ -1816,9 +1952,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
 
+        body = body.lstrip()
+
         msg_type = MessageType.TEXT
         if body.startswith(("!", "/")):
             msg_type = MessageType.COMMAND
+
+        if channel_prompt and msg_type != MessageType.COMMAND:
+            body = self._matrix_observe_attributed_text(display_name, sender, body)
 
         msg_event = MessageEvent(
             text=body,
@@ -1827,6 +1968,7 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            channel_prompt=channel_prompt,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -1988,10 +2130,13 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if ctx is None:
             return
-        body, is_dm, chat_type, thread_id, display_name, source = ctx
+        body, is_dm, chat_type, thread_id, display_name, source, channel_prompt = ctx
 
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
+
+        if channel_prompt and body:
+            body = self._matrix_observe_attributed_text(display_name, sender, body)
 
         allow_http_fallback = bool(http_url) and not is_encrypted_media
         media_urls = (
@@ -2009,6 +2154,7 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            channel_prompt=channel_prompt,
         )
 
         await self.handle_message(msg_event)

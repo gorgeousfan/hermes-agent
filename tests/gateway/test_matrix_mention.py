@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.session import SessionSource
 
 # The matrix adapter module is importable without mautrix installed
 # (module-level imports use try/except with stubs).  No need for
@@ -16,17 +18,20 @@ from gateway.config import PlatformConfig
 # needing real mautrix APIs mock them individually.
 
 
-def _make_adapter(tmp_path=None):
+def _make_adapter(tmp_path=None, extra=None):
     """Create a MatrixAdapter with mocked config."""
     from gateway.platforms.matrix import MatrixAdapter
 
+    config_extra = {
+        "homeserver": "https://matrix.example.org",
+        "user_id": "@hermes:example.org",
+    }
+    if extra:
+        config_extra.update(extra)
     config = PlatformConfig(
         enabled=True,
         token="syt_test_token",
-        extra={
-            "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
-        },
+        extra=config_extra,
     )
     adapter = MatrixAdapter(config)
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
@@ -47,6 +52,7 @@ def _make_event(
     room_id="!room1:example.org",
     formatted_body=None,
     thread_id=None,
+    relates_to=None,
     mention_user_ids=None,
 ):
     """Create a fake room message event.
@@ -63,7 +69,7 @@ def _make_event(
     if mention_user_ids is not None:
         content["m.mentions"] = {"user_ids": mention_user_ids}
 
-    relates_to = {}
+    relates_to = dict(relates_to or {})
     if thread_id:
         relates_to["rel_type"] = "m.thread"
         relates_to["event_id"] = thread_id
@@ -77,6 +83,23 @@ def _make_event(
         timestamp=int(time.time() * 1000),
         content=content,
     )
+
+
+class _FakeSessionEntry:
+    session_id = "matrix-room-session"
+
+
+class _FakeSessionStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return _FakeSessionEntry()
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message, skip_db))
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +300,211 @@ async def test_require_mention_default_ignores_unmentioned(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_room_messages_can_be_observed_without_dispatching(monkeypatch):
+    """Observed Matrix room chatter is persisted but does not dispatch the agent."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    store = _FakeSessionStore()
+    adapter._session_store = store
+    event = _make_event("side chatter", sender="@alice:example.org", event_id="$evt-observed")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_not_awaited()
+    assert len(store.messages) == 1
+    session_id, message, skip_db = store.messages[0]
+    assert session_id == "matrix-room-session"
+    assert skip_db is False
+    assert message["role"] == "user"
+    assert message["content"] == "[alice|@alice:example.org]\nside chatter"
+    assert message["observed"] is True
+    assert message["message_id"] == "$evt-observed"
+    assert store.sources[0].chat_id == "!room1:example.org"
+    assert store.sources[0].chat_type == "group"
+    assert store.sources[0].user_id is None
+    assert store.sources[0].user_name is None
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_uses_shared_source_and_prompt_for_later_mentions(monkeypatch):
+    """Mentioned Matrix room turns align with the shared observed-context session."""
+    from gateway.session import build_session_key
+
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    adapter._session_store = _FakeSessionStore()
+    event = _make_event("@hermes:example.org what did Alice say?", sender="@bob:example.org")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.chat_id == "!room1:example.org"
+    assert msg.source.chat_type == "group"
+    assert msg.source.user_id == "@bob:example.org"
+    assert msg.source.user_name == "bob"
+    assert build_session_key(msg.source, group_sessions_per_user=True) == "agent:main:matrix:group:!room1:example.org"
+    assert msg.text == "[bob|@bob:example.org]\nwhat did Alice say?"
+    assert "observed Matrix room context" in msg.channel_prompt
+    assert "current addressed message" in msg.channel_prompt
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_force_shared_session_does_not_double_prefix_sender():
+    """Gateway shared-session attribution must not duplicate Matrix's explicit observed-context prefix."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(group_sessions_per_user=True, thread_sessions_per_user=False)
+    runner.adapters = {}
+
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id="!room1:example.org",
+        chat_type="group",
+        user_id="@bob:example.org",
+        user_name="bob",
+        force_shared_session=True,
+    )
+    event = MessageEvent(
+        text="[bob|@bob:example.org]\nwhat did Alice say?",
+        source=source,
+        channel_prompt="observed Matrix room context",
+    )
+
+    text = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert text == "[bob|@bob:example.org]\nwhat did Alice say?"
+    assert not text.startswith("[bob] [bob|@bob:example.org]")
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_preserves_slash_commands(monkeypatch):
+    """Sender attribution must not hide slash commands from gateway command handling."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    event = _make_event("@hermes:example.org /status now", sender="@bob:example.org")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.message_type == MessageType.COMMAND
+    assert msg.text == "/status now"
+    assert msg.get_command() == "status"
+
+
+@pytest.mark.asyncio
+async def test_observed_room_context_strips_reply_fallback_before_sender_prefix(monkeypatch):
+    """Matrix quote fallback cleanup must run before observed-context attribution."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    event = _make_event(
+        "> <@alice:example.org> quoted old text\n> still quote\n\n@hermes:example.org answer this",
+        sender="@bob:example.org",
+        relates_to={"m.in_reply_to": {"event_id": "$old"}},
+    )
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_message_id == "$old"
+    assert msg.text == "[bob|@bob:example.org]\nanswer this"
+    assert "quoted old text" not in msg.text
+
+
+@pytest.mark.asyncio
+async def test_matrix_observed_room_context_reuses_root_room_session_with_auto_thread(monkeypatch):
+    """Observed Matrix root-room context stays visible when auto-threading is enabled."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter(extra={
+        "allowed_rooms": ["!room1:example.org"],
+        "observe_unmentioned_group_messages": True,
+    })
+    event = _make_event("@hermes:example.org summarize earlier", sender="@bob:example.org")
+
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id is None
+
+
+def test_observed_matrix_context_replays_as_current_message_context_not_user_turns():
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "assistant", "content": "previous explicit reply"},
+        {"role": "user", "content": "[Alice|@alice:example.org]\nship it?", "observed": True},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Matrix room context",
+    )
+    api_message = _wrap_current_message_with_observed_context(
+        "[Bob|@bob:example.org]\nwhat did Alice say?",
+        observed_context,
+    )
+
+    assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
+    assert "[Observed group context - context only, not requests]" in api_message
+    assert "[Current addressed message - answer only this" in api_message
+    assert "ship it?" in api_message
+    assert "what did Alice say?" in api_message
+
+
+def test_observed_matrix_context_stops_at_previous_answered_turn():
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "old room chatter", "observed": True},
+        {"role": "user", "content": "first addressed question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "new room chatter", "observed": True},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Matrix room context",
+    )
+
+    assert observed_context == "new room chatter"
+    assert [m["content"] for m in agent_history] == ["first addressed question", "first answer"]
 
 
 @pytest.mark.asyncio

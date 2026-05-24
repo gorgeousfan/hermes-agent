@@ -91,6 +91,7 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    force_shared_session: bool = False  # Preserve actor identity while routing to a shared chat/thread session
     
     @property
     def description(self) -> str:
@@ -134,6 +135,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.force_shared_session:
+            d["force_shared_session"] = True
         return d
 
     @classmethod
@@ -152,6 +155,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            force_shared_session=bool(data.get("force_shared_session", False)),
         )
     
 
@@ -592,6 +596,8 @@ def is_shared_multi_user_session(
     """
     if source.chat_type == "dm":
         return False
+    if getattr(source, "force_shared_session", False):
+        return True
     if source.thread_id:
         return not thread_sessions_per_user
     return not group_sessions_per_user
@@ -656,6 +662,8 @@ def build_session_key(
     # conversation).  Per-user isolation only applies when explicitly enabled
     # via thread_sessions_per_user, or when there is no thread (regular group).
     isolate_user = group_sessions_per_user
+    if getattr(source, "force_shared_session", False):
+        isolate_user = False
     if source.thread_id and not thread_sessions_per_user:
         isolate_user = False
 
