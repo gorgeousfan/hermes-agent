@@ -232,11 +232,14 @@ def _load_nexus_bootstrap_env() -> bool:
     try:
         with urlopen(req, timeout=15) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+    except (HTTPError, URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         print(
             "  Nexus vault bootstrap: configured but unavailable; using local fallback.",
             file=sys.stderr,
         )
+        return False
+
+    if not isinstance(payload, dict):
         return False
 
     secrets = payload.get("secrets")
@@ -252,7 +255,10 @@ def _load_nexus_bootstrap_env() -> bool:
         name = key.strip()
         if not any(name.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
             continue
-        os.environ[name] = value
+        try:
+            os.environ[name] = value
+        except ValueError:
+            continue
         _SECRET_SOURCES[name] = "Nexus vault"
         loaded.append(name)
 
@@ -302,7 +308,10 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _load_nexus_bootstrap_env()
+    try:
+        _load_nexus_bootstrap_env()
+    except Exception:  # noqa: BLE001 — Nexus bootstrap must not block startup
+        pass
     _apply_external_secret_sources(home_path)
 
     return loaded
