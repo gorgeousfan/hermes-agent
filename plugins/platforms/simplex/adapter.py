@@ -125,14 +125,21 @@ class SimplexAdapter(BasePlatformAdapter):
 
         extra = getattr(config, "extra", {}) or {}
         self.ws_url = extra.get("ws_url", "ws://127.0.0.1:5225").rstrip("/")
+        self.chat_db_path = extra.get("chat_db", os.path.expanduser("~/.simplex/simplex_v1_chat.db"))
+        self.chat_db_path = extra.get("chat_db", os.path.expanduser("~/.simplex/simplex_v1_chat.db"))
 
         # Running state
         self._ws = None  # websockets connection
         self._ws_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+        self._poll_task: Optional[asyncio.Task] = None
+        self._last_seen_item: Dict[int, int] = {}
+        self._poll_task: Optional[asyncio.Task] = None
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._last_ws_activity = 0.0
+        self._last_seen_item: Dict[int, int] = {}  # contact_id -> last processed chat_item_id
+        self._contact_names: Dict[str, str] = {}  # contact_id_str -> display_name (for sending)
 
         # Track sent correlation IDs to filter echoes
         self._pending_corr_ids: set = set()
@@ -172,6 +179,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._last_ws_activity = time.time()
         self._ws_task = asyncio.create_task(self._ws_listener())
         self._health_task = asyncio.create_task(self._health_monitor())
+        self._poll_task = asyncio.create_task(self._db_poll_loop())
 
         logger.info("SimpleX: connected to %s", self.ws_url)
         return True
@@ -191,6 +199,13 @@ class SimplexAdapter(BasePlatformAdapter):
             self._health_task.cancel()
             try:
                 await self._health_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._poll_task:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
             except asyncio.CancelledError:
                 pass
 
@@ -288,6 +303,94 @@ class SimplexAdapter(BasePlatformAdapter):
                         pass
 
     # ------------------------------------------------------------------
+    # Database polling — fallback for when the daemon doesn't push events
+    # ------------------------------------------------------------------
+
+    async def _db_poll_loop(self) -> None:
+        """Periodically check the daemon's SQLite database for new messages.
+
+        The simplex-chat daemon v6.5.1.1 does not push incoming-message
+        events over the WebSocket.  This poll loop reads ``chat_items``
+        directly from the daemon's SQLite database every *POLL_INTERVAL*
+        seconds and forwards new ``rcv_new`` items as ``MessageEvent``.
+        """
+        POLL_INTERVAL = 3.0
+        import sqlite3
+
+        while self._running:
+            await asyncio.sleep(POLL_INTERVAL)
+            if not self._running:
+                break
+
+            try:
+                db_path = self.chat_db_path
+                if not os.path.isfile(db_path):
+                    continue
+
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+
+                cur.execute("""
+                    SELECT ci.chat_item_id, ci.contact_id, ci.item_text,
+                           ci.item_ts, c.local_display_name
+                    FROM chat_items ci
+                    JOIN contacts c ON ci.contact_id = c.contact_id
+                    WHERE ci.item_sent = 0
+                      AND ci.item_status = 'rcv_new'
+                      AND c.contact_status = 'active'
+                    ORDER BY ci.chat_item_id ASC
+                    LIMIT 10
+                """)
+
+                rows = cur.fetchall()
+                conn.close()
+
+                for row in rows:
+                    item_id = row["chat_item_id"]
+                    contact_id = row["contact_id"]
+
+                    text = row["item_text"] or ""
+                    display_name = row["local_display_name"] or str(contact_id)
+                    ts_str = row["item_ts"] or ""
+
+                    try:
+                        timestamp = datetime.fromisoformat(
+                            ts_str.replace("Z", "+00:00")
+                        )
+                    except (ValueError, AttributeError):
+                        timestamp = datetime.now(tz=timezone.utc)
+
+                    source = self.build_source(
+                        chat_id=str(contact_id),
+                        chat_name=display_name,
+                        chat_type="dm",
+                        user_id=str(contact_id),
+                        user_name=display_name,
+                    )
+
+                    event_obj = MessageEvent(
+                        source=source,
+                        text=text,
+                        message_type=MessageType.TEXT,
+                        media_urls=[],
+                        media_types=[],
+                        timestamp=timestamp,
+                        raw_message=None,
+                    )
+
+                    self._last_seen_item[contact_id] = item_id
+                    self._contact_names[str(contact_id)] = display_name
+                    logger.info(
+                        "SimpleX poll: new msg from contact %s (item %d): %.60s",
+                        display_name, item_id, text,
+                    )
+                    await self.handle_message(event_obj)
+
+            except Exception:
+                logger.debug("SimpleX poll: DB read error (transient)", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Inbound event handling
     # ------------------------------------------------------------------
 
@@ -302,10 +405,13 @@ class SimplexAdapter(BasePlatformAdapter):
             return
 
         if resp_type == "newChatItem":
-            await self._handle_new_chat_item(event)
+            # Unwrap from resp envelope — daemon nests chatItem inside resp
+            payload = event.get("resp", event)
+            await self._handle_new_chat_item(payload)
         elif resp_type == "newChatItems":
             # Batch variant — process each item
-            items = event.get("chatItems") or []
+            payload = event.get("resp", event)
+            items = payload.get("chatItems") or []
             for item_wrapper in items:
                 await self._handle_new_chat_item(item_wrapper)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
@@ -508,7 +614,10 @@ class SimplexAdapter(BasePlatformAdapter):
             group_id = chat_id[6:]
             cmd_str = f"#[{group_id}] {content}"
         else:
-            cmd_str = f"@[{chat_id}] {content}"
+            # Use display name if known — daemon requires it,
+            # numeric contact ID alone (`@5`) does not work.
+            display_name = self._contact_names.get(chat_id, chat_id)
+            cmd_str = f"@{display_name} {content}"
 
         payload = {
             "corrId": corr_id,
@@ -643,7 +752,7 @@ async def _standalone_send(
             group_id = chat_id[6:]
             cmd_str = f"#[{group_id}] {message}"
         else:
-            cmd_str = f"@[{chat_id}] {message}"
+            cmd_str = f"@{chat_id} {message}"
 
         payload = {
             "corrId": f"hermes-snd-{int(time.time() * 1000)}",
