@@ -32,6 +32,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
@@ -103,6 +104,7 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
+_local_model_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -433,11 +435,16 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
+        # Double-checked locking: avoid holding the lock for every call once
+        # the model is loaded, but prevent duplicate downloads/loads when
+        # multiple threads race on first use (or on model switch).
         if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = _load_local_whisper_model(model_name)
-            _local_model_name = model_name
+            with _local_model_lock:
+                # Re-check after acquiring — another thread may have loaded it.
+                if _local_model is None or _local_model_name != model_name:
+                    logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
+                    _local_model = _load_local_whisper_model(model_name)
+                    _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
@@ -465,11 +472,12 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
                 "evicting cached model and retrying on CPU (int8).",
                 exc,
             )
-            _local_model = None
-            _local_model_name = None
-            from faster_whisper import WhisperModel
-            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            _local_model_name = model_name
+            with _local_model_lock:
+                _local_model = None
+                _local_model_name = None
+                from faster_whisper import WhisperModel
+                _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+                _local_model_name = model_name
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
             transcript = " ".join(segment.text.strip() for segment in segments)
 
