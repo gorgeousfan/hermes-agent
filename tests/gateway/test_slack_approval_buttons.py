@@ -236,6 +236,83 @@ class TestSlackApprovalAction:
         update_kwargs = mock_client.chat_update.call_args[1]
         assert "Denied by alice" in update_kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_approval_action_honors_config_allow_from(self):
+        adapter = _make_adapter()
+        adapter.config.extra["allow_from"] = ["U_ALLOWED"]
+        adapter._approval_resolved["2.3"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "2.3", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"id": "U_DENIED", "name": "mallory"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch.dict(os.environ, {"SLACK_ALLOWED_USERS": ""}), \
+             patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+        mock_client.chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_approval_action_allows_config_allow_from_user(self):
+        adapter = _make_adapter()
+        adapter.config.extra["allow_from"] = ["U_ALLOWED"]
+        adapter._approval_resolved["2.4"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "2.4", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"id": "U_ALLOWED", "name": "alice"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch.dict(os.environ, {"SLACK_ALLOWED_USERS": ""}), \
+             patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        mock_resolve.assert_called_once_with("session-key", "once")
+        mock_client.chat_update.assert_called_once()
+
+
+class TestSlackSlashConfirmAction:
+    """Test slash-confirm Block Kit authorization."""
+
+    @pytest.mark.asyncio
+    async def test_slash_confirm_action_honors_config_allow_from(self):
+        adapter = _make_adapter()
+        adapter.config.extra["allow_from"] = ["U_ALLOWED"]
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "3.4", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"id": "U_DENIED", "name": "mallory"},
+        }
+        action = {"action_id": "hermes_confirm_once", "value": "session-key|confirm-id"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch.dict(os.environ, {"SLACK_ALLOWED_USERS": ""}), \
+             patch("tools.slash_confirm.resolve", new_callable=AsyncMock) as mock_resolve:
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+        mock_client.chat_update.assert_not_called()
+
 
 # ===========================================================================
 # _fetch_thread_context

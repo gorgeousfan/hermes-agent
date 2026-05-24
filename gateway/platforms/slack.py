@@ -349,6 +349,31 @@ class SlackAdapter(BasePlatformAdapter):
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
+    @staticmethod
+    def _coerce_user_allowlist(raw: Any) -> set:
+        """Normalize Slack user allowlist config/env values."""
+        if raw is None:
+            return set()
+        if isinstance(raw, (list, tuple, set, frozenset)):
+            items = raw
+        else:
+            items = str(raw).split(",")
+        return {str(uid).strip() for uid in items if str(uid).strip()}
+
+    def _is_interactive_user_authorized(self, user_id: str) -> bool:
+        """Return whether a Slack interactive button caller is allowed."""
+        normalized_user_id = str(user_id or "").strip()
+        allowed_ids = self._coerce_user_allowlist(
+            os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        )
+        if not allowed_ids:
+            allowed_ids = self._coerce_user_allowlist(
+                getattr(self.config, "extra", {}).get("allow_from")
+            )
+        if not allowed_ids:
+            return True
+        return "*" in allowed_ids or normalized_user_id in allowed_ids
+
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
         if response is None or not hasattr(response, "get"):
@@ -2396,15 +2421,12 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = body.get("user", {}).get("id", "")
 
         # Authorization — reuse the exec-approval allowlist.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
-                    user_name, user_id,
-                )
-                return
+        if not self._is_interactive_user_authorized(user_id):
+            logger.warning(
+                "[Slack] Unauthorized slash-confirm click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
 
         # Parse session_key|confirm_id back out
         if "|" not in value:
@@ -2496,15 +2518,12 @@ class SlackAdapter(BasePlatformAdapter):
         # Only authorized users may click approval buttons.  Button clicks
         # bypass the normal message auth flow in gateway/run.py, so we must
         # check here as well.
-        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
-        if allowed_csv:
-            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-            if "*" not in allowed_ids and user_id not in allowed_ids:
-                logger.warning(
-                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
-                    user_name, user_id,
-                )
-                return
+        if not self._is_interactive_user_authorized(user_id):
+            logger.warning(
+                "[Slack] Unauthorized approval click by %s (%s) - ignoring",
+                user_name, user_id,
+            )
+            return
 
         # Map action_id to approval choice
         choice_map = {
