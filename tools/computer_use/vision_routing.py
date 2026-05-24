@@ -76,8 +76,26 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
-def _lookup_supports_vision(provider: str, model: str) -> Optional[bool]:
-    """Return models.dev ``supports_vision`` for *(provider, model)* or None."""
+def _lookup_supports_vision(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Optional[bool]:
+    """Return ``supports_vision`` for *(provider, model)* or None.
+
+    Checks the user's config.yaml override first (parity with
+    ``agent.image_routing._lookup_supports_vision``), then falls back to
+    models.dev metadata.
+    """
+    try:
+        from agent.image_routing import _supports_vision_override
+        override = _supports_vision_override(cfg, provider, model)
+        if override is not None:
+            return override
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "computer_use vision_routing: config override lookup failed: %s", exc
+        )
     if not provider or not model:
         return None
     try:
@@ -141,7 +159,7 @@ def should_route_capture_to_aux_vision(
     if accepts_tool_image is None or accepts_tool_image is False:
         return True
 
-    supports_vision = _lookup_supports_vision(provider, model)
+    supports_vision = _lookup_supports_vision(provider, model, cfg)
     if supports_vision is True:
         return False
     return True
