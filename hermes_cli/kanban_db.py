@@ -3030,6 +3030,23 @@ def complete_task(
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
+    # Finishing the last child can unblock deferred scratch cleanup on a done
+    # parent that had to keep its workspace alive for downstream work.
+    try:
+        parent_rows = conn.execute(
+            """
+            SELECT DISTINCT l.parent_id
+              FROM task_links l
+              JOIN tasks p ON p.id = l.parent_id
+             WHERE l.child_id = ?
+               AND p.status = 'done'
+            """,
+            (task_id,),
+        ).fetchall()
+        for row in parent_rows:
+            _cleanup_workspace(conn, row["parent_id"])
+    except Exception:
+        pass
     return True
 
 
@@ -3055,6 +3072,19 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
         if kind != "scratch" or not path:
+            return
+        active_child = conn.execute(
+            """
+            SELECT 1
+              FROM task_links l
+              JOIN tasks c ON c.id = l.child_id
+             WHERE l.parent_id = ?
+               AND c.status NOT IN ('done', 'archived', 'gave_up')
+             LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if active_child:
             return
         import shutil
         wp = Path(path)
