@@ -183,6 +183,31 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
+export const cleanDarkTheme: DashboardTheme = {
+  name: "clean-dark",
+  label: "Clean Dark",
+  description: "Clean dark minimal — no background image, just crisp text on black",
+  palette: {
+    background: { hex: "#0d1117", alpha: 1 },
+    midground: { hex: "#c9d1d9", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(88, 166, 255, 0.12)",
+    noiseOpacity: 0,
+  },
+  assets: {
+    bg: "none",
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    baseSize: "15px",
+    lineHeight: "1.6",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.375rem",
+  },
+};
+
 /**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
@@ -212,4 +237,5 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  "clean-dark": cleanDarkTheme,
 };
