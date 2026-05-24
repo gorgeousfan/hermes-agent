@@ -32,6 +32,10 @@ class TestTipsCorpus:
         for i, tip in enumerate(TIPS):
             assert tip == tip.strip(), f"Tip {i} has leading/trailing whitespace"
 
+    def test_multiline_tip_mentions_ctrl_j(self):
+        multiline_tips = [tip for tip in TIPS if "multi-line input" in tip]
+        assert any("Ctrl+J" in tip for tip in multiline_tips)
+
 
 class TestGetRandomTip:
     """Validate the get_random_tip() function."""

@@ -226,6 +226,16 @@ class TestPromptToolkitTerminalCompatibility:
             assert bindings[("c-m",)] is submit_handler
             assert ("c-j",) not in bindings
 
+        # macOS: c-j must stay free because Ctrl+J is Danny's required
+        # multiline shortcut in the MacBook Hermes CLI.
+        with _patch.object(_sys, "platform", "darwin"), \
+             _patch.dict(_os.environ, {}, clear=True):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
     def test_cpr_warning_callback_is_disabled(self):
         from cli import _disable_prompt_toolkit_cpr_warning
 

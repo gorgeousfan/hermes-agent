@@ -2387,16 +2387,17 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 def _preserve_ctrl_enter_newline() -> bool:
     """Detect environments where Ctrl+Enter must produce a newline, not submit.
 
-    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
-    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
-    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit, so we keep
-    that binding for those.
+    Native macOS, native Windows, WSL, SSH sessions, and Windows Terminal all
+    need c-j kept free for the newline handler. On Danny's MacBook, Ctrl+J is
+    the required multiline shortcut. On Windows/WSL/SSH, Ctrl+Enter often arrives
+    as bare LF (c-j). Binding c-j to submit in these contexts makes the intended
+    newline keystroke submit instead. Local POSIX TTYs that deliver Enter as LF
+    (docker exec, some thin PTYs without SSH) still need c-j bound to submit, so
+    we keep that binding for those.
 
     See issue #22379.
     """
-    if sys.platform == "win32":
+    if sys.platform in {"darwin", "win32"}:
         return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
         return True
@@ -5893,7 +5894,7 @@ class HermesCLI:
                 )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
-        _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
+        _cprint(f"  {_DIM}Multi-line: Ctrl+J or Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
