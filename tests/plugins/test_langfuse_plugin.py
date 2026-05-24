@@ -845,3 +845,21 @@ class TestSerializeAssistantMessageReasoning:
 
         out = mod._serialize_assistant_message(_Msg())
         assert out["reasoning"] == "top-level wins"
+
+    def test_falsy_non_string_reasoning_is_not_overwritten(self):
+        """Only ``None`` or blank strings trigger the fallback — a provider
+        that deliberately surfaces a falsy non-string structure (e.g. an
+        empty dict from a typed payload) must be preserved verbatim rather
+        than silently overwritten by ``reasoning_content``."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = {}  # falsy but explicitly set by provider
+            reasoning_content = "should NOT replace the empty-dict payload"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        # ``_safe_value`` serialises the empty dict; the key point is the
+        # ``reasoning_content`` fallback did not fire.
+        assert out["reasoning"] == {}

@@ -469,6 +469,17 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     return serialized
 
 
+def _reasoning_is_blank(value: Any) -> bool:
+    # Only `None` and empty/whitespace strings should trigger the fallback —
+    # never overwrite a legitimately falsy non-string payload (`0`, `False`,
+    # `{}`, `[]`) the provider may have placed in `reasoning` deliberately.
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
 def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     # Mirrors agent.agent_runtime_helpers.extract_reasoning so the Langfuse
     # observation shows whichever reasoning surface the provider actually
@@ -479,9 +490,9 @@ def _serialize_assistant_message(message: Any) -> dict[str, Any]:
     # `reasoning_details` branch, OpenRouter-routed traffic still records
     # `reasoning: None` even though the structured payload is present.
     reasoning = getattr(message, "reasoning", None)
-    if not reasoning:
+    if _reasoning_is_blank(reasoning):
         reasoning = getattr(message, "reasoning_content", None)
-    if not reasoning:
+    if _reasoning_is_blank(reasoning):
         details = getattr(message, "reasoning_details", None)
         if isinstance(details, list):
             parts: list[str] = []
