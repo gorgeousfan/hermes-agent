@@ -201,6 +201,133 @@ class TestCmdUpdateBranchFallback:
             assert "API keys require manual entry" in captured.out
 
 
+class TestCmdUpdateStaleRefRecovery:
+    """cmd_update auto-recovers when ``git fetch`` fails because a
+    remote-tracking ref points at a missing object.
+
+    When a remote branch is force-pushed or a dependabot/PR ref is rewritten
+    upstream, ~/.hermes/hermes-agent/.git/refs/remotes/origin/... can become
+    stale and the next ``git fetch`` aborts with ``fatal: bad object
+    refs/remotes/origin/...``. Previously the user had to run
+    ``git update-ref -d`` (or ``git remote prune origin``) by hand for each
+    broken ref. ``cmd_update`` now does ``git remote prune origin`` once
+    and retries the fetch transparently.
+    """
+
+    @staticmethod
+    def _stale_fetch_then_clean(retry_succeeds=True):
+        """Build a subprocess.run side_effect that simulates the recovery flow.
+
+        First ``git fetch origin``  -> exits 128 with a bad-object stderr.
+        ``git remote prune origin`` -> exits 0.
+        Second ``git fetch origin`` -> exits 0 (or 128 if retry_succeeds=False).
+        Everything else uses the standard helper.
+        """
+        normal = _make_run_side_effect(branch="main", verify_ok=True, commit_count="1")
+        state = {"fetch_calls": 0, "prune_calls": 0}
+        stale_err = (
+            "error: refs/remotes/origin/dependabot/github_actions/"
+            "actions/setup-python-6.2.0 does not point to a valid object!\n"
+            "fatal: bad object refs/remotes/origin/dependabot/"
+            "github_actions/actions/setup-python-6.2.0\n"
+        )
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "fetch" in joined and "origin" in joined and "rev-parse" not in joined:
+                state["fetch_calls"] += 1
+                if state["fetch_calls"] == 1:
+                    return subprocess.CompletedProcess(cmd, 128, stdout="", stderr=stale_err)
+                # second fetch
+                if retry_succeeds:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr=stale_err)
+            if "remote" in joined and "prune" in joined and "origin" in joined:
+                state["prune_calls"] += 1
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="* [pruned] origin/dependabot/...\n", stderr=""
+                )
+            return normal(cmd, **kwargs)
+
+        return side_effect, state
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_auto_prunes_and_retries_on_bad_object(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        side_effect, state = self._stale_fetch_then_clean(retry_succeeds=True)
+        mock_run.side_effect = side_effect
+
+        cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        # Recovery banner shown.
+        assert "stale remote-tracking ref" in captured.out
+        assert "git remote prune origin" in captured.out
+        assert "Stale refs cleaned up" in captured.out
+        # Should not surface the generic failure path.
+        assert "Failed to fetch updates from origin" not in captured.out
+
+        # Exactly one prune, two fetches (initial + retry), in that order.
+        assert state["prune_calls"] == 1
+        assert state["fetch_calls"] == 2
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_falls_through_to_manual_message_when_prune_does_not_help(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        side_effect, state = self._stale_fetch_then_clean(retry_succeeds=False)
+        mock_run.side_effect = side_effect
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(mock_args)
+        assert exc_info.value.code == 1
+
+        captured = capsys.readouterr()
+        # Prune is attempted but the retry still fails — user is told
+        # exactly what to run manually, not just "Failed to fetch".
+        assert state["prune_calls"] == 1
+        assert state["fetch_calls"] == 2
+        assert "stale remote refs" in captured.out
+        assert "git remote prune origin && git fetch origin" in captured.out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_does_not_prune_on_unrelated_fetch_failure(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """Network / auth failures must not trigger the prune branch."""
+        normal = _make_run_side_effect(branch="main", verify_ok=True, commit_count="1")
+        state = {"fetch_calls": 0, "prune_calls": 0}
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "fetch" in joined and "origin" in joined and "rev-parse" not in joined:
+                state["fetch_calls"] += 1
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="",
+                    stderr="fatal: unable to access 'https://github.com/...': "
+                           "Could not resolve host: github.com\n",
+                )
+            if "remote" in joined and "prune" in joined and "origin" in joined:
+                state["prune_calls"] += 1
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return normal(cmd, **kwargs)
+
+        mock_run.side_effect = side_effect
+
+        with pytest.raises(SystemExit):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr()
+        # Network error path — no prune attempted, no retry.
+        assert state["prune_calls"] == 0
+        assert state["fetch_calls"] == 1
+        assert "Network error" in captured.out
+
+
 class TestCmdUpdateProfileSkillSync:
     """cmd_update syncs bundled skills to all profiles, including the active one.
 
