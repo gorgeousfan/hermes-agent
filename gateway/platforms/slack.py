@@ -303,6 +303,7 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    MAX_SECTION_TEXT_LENGTH = 2900  # Slack hard limit per section block text is 3000; leave 100-char margin
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -755,6 +756,47 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    async def _safe_post_message(self, client: Any, **kwargs: Any) -> Any:
+        """Thin wrapper around chat_postMessage that surfaces error details.
+
+        On SlackApiError: logs the Slack error code, text length, block count,
+        and the longest section-block text length so silent failures become
+        visible in logs.  Re-raises so callers can handle or propagate.
+        """
+        try:
+            return await client.chat_postMessage(**kwargs)
+        except Exception as exc:
+            text_len = len(kwargs.get("text") or "")
+            blocks = kwargs.get("blocks") or []
+            blocks_count = len(blocks)
+            # Find the longest section block text to surface the likely culprit.
+            max_section_len = 0
+            for block in blocks:
+                if block.get("type") == "section":
+                    section_text = block.get("text", {}).get("text", "") or ""
+                    if len(section_text) > max_section_len:
+                        max_section_len = len(section_text)
+
+            # Try to extract the Slack API error code from SlackApiError.
+            try:
+                error_code = exc.response["error"]  # type: ignore[attr-defined]
+            except (AttributeError, TypeError, KeyError):
+                error_code = None
+
+            if error_code is not None:
+                logger.warning(
+                    "[Slack] chat_postMessage failed: error_code=%s text_len=%d "
+                    "blocks_count=%d max_section_len=%d",
+                    error_code, text_len, blocks_count, max_section_len,
+                )
+            else:
+                logger.warning(
+                    "[Slack] chat_postMessage failed: %s text_len=%d "
+                    "blocks_count=%d max_section_len=%d",
+                    exc, text_len, blocks_count, max_section_len,
+                )
+            raise
+
     async def send(
         self,
         chat_id: str,
@@ -803,7 +845,9 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                last_result = await self._safe_post_message(
+                    self._get_client(chat_id), **kwargs
+                )
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -2309,7 +2353,9 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
-            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            result = await self._safe_post_message(
+                self._get_client(chat_id), **kwargs
+            )
             msg_ts = result.get("ts", "")
             if msg_ts:
                 self._approval_resolved[msg_ts] = False
@@ -2323,23 +2369,40 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a Block Kit three-option slash-command confirmation prompt."""
+        """Send a Block Kit three-option slash-command confirmation prompt.
+
+        The section block's text field is capped at MAX_SECTION_TEXT_LENGTH to
+        stay inside Slack's 3000-char-per-text-element limit.  When the message
+        body exceeds that budget, only the first chunk goes into the button
+        block; the remainder is posted as plain-text threaded replies with
+        ``[i/N continued]`` markers so no content is silently dropped.
+        """
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
         try:
-            body = message[:2900] + "..." if len(message) > 2900 else message
             thread_ts = self._resolve_thread_ts(None, metadata)
             # Encode session_key and confirm_id into the button value so the
             # callback handler can resolve without extra bookkeeping.
             value = f"{session_key}|{confirm_id}"
+
+            # Reserve room for the "*{title}*\n\n" wrapper inside the section.
+            title_str = title or "Confirm"
+            header = f"*{title_str}*\n\n"
+            max_body_in_section = self.MAX_SECTION_TEXT_LENGTH - len(header)
+
+            # Split the message body using the base chunker so code-block
+            # boundaries are preserved across continuation messages.
+            body_chunks = self.truncate_message(message, max_body_in_section)
+            # The first chunk goes into the section block alongside the buttons.
+            first_body = body_chunks[0]
 
             blocks = [
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{title or 'Confirm'}*\n\n{body}",
+                        "text": f"{header}{first_body}",
                     },
                 },
                 {
@@ -2371,14 +2434,37 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"{title or 'Confirm'}: {body[:100]}",
+                "text": f"{title_str}: {first_body[:100]}",
                 "blocks": blocks,
             }
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
-            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
-            return SendResult(success=True, message_id=result.get("ts", ""), raw_response=result)
+            result = await self._safe_post_message(
+                self._get_client(chat_id), **kwargs
+            )
+            msg_ts = result.get("ts", "")
+
+            # Post overflow chunks as plain-text threaded replies.
+            if len(body_chunks) > 1:
+                # Determine thread to reply under: prefer explicit thread_ts,
+                # else the just-posted message itself.
+                reply_thread = thread_ts or msg_ts
+                total = len(body_chunks)
+                for idx, continuation in enumerate(body_chunks[1:], start=2):
+                    marker = f"[{idx}/{total} continued]\n"
+                    follow_kwargs: Dict[str, Any] = {
+                        "channel": chat_id,
+                        "text": marker + continuation,
+                        "mrkdwn": True,
+                    }
+                    if reply_thread:
+                        follow_kwargs["thread_ts"] = reply_thread
+                    await self._safe_post_message(
+                        self._get_client(chat_id), **follow_kwargs
+                    )
+
+            return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
             logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
@@ -2473,7 +2559,9 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_ts = message.get("thread_ts") or msg_ts
                 if thread_ts:
                     post_kwargs["thread_ts"] = thread_ts
-                await self._get_client(channel_id).chat_postMessage(**post_kwargs)
+                await self._safe_post_message(
+                    self._get_client(channel_id), **post_kwargs
+                )
             logger.info(
                 "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
                 session_key, choice, user_name,
