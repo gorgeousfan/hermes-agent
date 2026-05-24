@@ -29,6 +29,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -165,6 +166,375 @@ def _gateway_provider_error_reply(text: str) -> str:
         "⚠️ The model provider failed after retries. I kept raw provider details "
         "out of chat; check gateway logs for diagnostics."
     )
+
+
+def _parse_modelroute_args(raw_args: str) -> tuple[str, str]:
+    """Parse `/modelroute <task_class> <message>` arguments."""
+    parts = str(raw_args or "").strip().split(maxsplit=1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        raise ValueError("Usage: /modelroute <task_class> <prompt>")
+    return parts[0].strip(), parts[1].strip()
+
+
+def _format_modelroute_result(payload: Dict[str, Any]) -> str:
+    """Render selected-route dispatch output for operator-facing chat."""
+    telemetry = payload.get("telemetry") if isinstance(payload, dict) else {}
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    ok = bool(payload.get("ok")) if isinstance(payload, dict) else False
+    selected_model = str(payload.get("selected_model") or "unknown")
+    transport = str(payload.get("transport") or "unknown")
+    elapsed = telemetry.get("elapsed_sec")
+    fallback = "true" if telemetry.get("fallback_used") else "false"
+    task_class = str(telemetry.get("task_class") or payload.get("task_class") or "unknown")
+    evidence = str(telemetry.get("evidence") or "")
+    lines = [
+        "MODEL_ROUTE_TELEMETRY",
+        f"status={'ok' if ok else 'blocked_exact'}",
+        f"task_class={task_class}",
+        f"selected_model={selected_model}",
+        f"transport={transport}",
+        f"fallback_used={fallback}",
+    ]
+    if elapsed is not None:
+        lines.append(f"elapsed_sec={elapsed}")
+    if evidence:
+        lines.append(f"evidence={evidence}")
+    if not ok:
+        lines.append(f"blocker={payload.get('blocker') or 'model_route_dispatch_failed'}")
+    text = str(payload.get("text") or "").strip()
+    if text:
+        lines.extend(["", text])
+    return "\n".join(lines)
+
+
+def _find_modelroute_repo_root() -> Path:
+    """Find the GodMode workspace that owns the route selector scripts."""
+    env_root = os.getenv("HERMES_MODEL_ROUTE_REPO_ROOT", "").strip()
+    candidates = []
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    here = Path(__file__).resolve()
+    candidates.extend([Path.cwd(), *here.parents, Path("/Users/agentmoney/godmode-workspace")])
+    for candidate in candidates:
+        script = candidate / "scripts" / "runtime" / "run_selected_model_route.py"
+        policy = candidate / "runtime" / "configs" / "model-route-policy.yaml"
+        if script.exists() and policy.exists():
+            return candidate.resolve()
+    raise FileNotFoundError("model_route_repo_root_not_found")
+
+
+async def _run_modelroute_subprocess(task_class: str, message: str) -> Dict[str, Any]:
+    """Call the workspace route dispatcher without shell expansion."""
+    repo_root = _find_modelroute_repo_root()
+    script = repo_root / "scripts" / "runtime" / "run_selected_model_route.py"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(script),
+        "--repo-root",
+        str(repo_root),
+        "--task-class",
+        task_class,
+        "--message-stdin",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(repo_root),
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(str(message).encode("utf-8")),
+            timeout=360,
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await proc.wait()
+        except Exception:
+            logger.debug("Timed-out modelroute subprocess cleanup failed", exc_info=True)
+        raise
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+    try:
+        payload = json.loads(out) if out else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if proc.returncode != 0:
+        payload.setdefault("ok", False)
+        payload.setdefault("blocker", err or out or f"model_route_dispatch_exit_{proc.returncode}")
+    return payload
+
+
+_TELEGRAM_AUTO_ROUTE_ALLOWED_MODES = {"off", "shadow", "active"}
+_TELEGRAM_AUTO_ROUTE_CONFIDENCE_FLOOR = 0.72
+_TELEGRAM_AUTO_ROUTE_ACTIVE_TASK_TO_LANE = {
+    # Active v1 is intentionally limited to text-only, low-risk lanes already
+    # proven through /modelroute. Tool/web/media/build/Mac/private routes stay
+    # on the normal Hermes executive path until they have separate proof.
+    "cheap_summary_or_draft": "free_utility_general",
+    "untrusted_web_or_prompt_injection": "untrusted_quarantine",
+}
+
+
+def _get_nested_config_value(config: Any, *keys: str, default: Any = None) -> Any:
+    """Read nested config from dicts or dataclass/object config containers."""
+    current = config
+    for key in keys:
+        if current is None:
+            return default
+        if isinstance(current, dict):
+            current = current.get(key, default)
+        else:
+            current = getattr(current, key, default)
+    return current
+
+
+def _telegram_auto_route_config(config: Any) -> Dict[str, Any]:
+    """Return Telegram auto-route config with fail-closed defaults.
+
+    Supported config shape::
+
+        telegram:
+          auto_route:
+            mode: off|shadow|active
+            rollback_force_default: false
+
+    Invalid/unknown modes degrade to ``off`` so a bad config cannot silently
+    reroute ordinary Telegram messages.
+    """
+    raw = _get_nested_config_value(config, "telegram", "auto_route", default={})
+    if not isinstance(raw, dict):
+        raw = {}
+    mode = str(raw.get("mode") or "off").strip().lower()
+    if mode not in _TELEGRAM_AUTO_ROUTE_ALLOWED_MODES:
+        mode = "off"
+    rollback = str(raw.get("rollback_force_default") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if rollback:
+        mode = "off"
+    try:
+        raw_confidence_floor = (
+            _TELEGRAM_AUTO_ROUTE_CONFIDENCE_FLOOR
+            if "confidence_floor" not in raw
+            else raw.get("confidence_floor")
+        )
+        if raw_confidence_floor is None or isinstance(raw_confidence_floor, bool):
+            raise ValueError("confidence_floor_invalid")
+        confidence_floor = float(raw_confidence_floor)
+        if not math.isfinite(confidence_floor) or confidence_floor < 0 or confidence_floor > 1:
+            raise ValueError("confidence_floor_out_of_range")
+    except (TypeError, ValueError, OverflowError):
+        # Bad experimental config must not break live Telegram dispatch. Keep
+        # mode fail-closed while preserving the default floor for diagnostics.
+        mode = "off"
+        confidence_floor = _TELEGRAM_AUTO_ROUTE_CONFIDENCE_FLOOR
+    return {
+        "mode": mode,
+        "rollback_force_default": rollback,
+        "confidence_floor": confidence_floor,
+    }
+
+
+def _classify_telegram_auto_route(event: Any) -> Dict[str, Any]:
+    """Deterministic v1 Telegram dispatch classifier for shadow calibration.
+
+    This is deliberately signal-driven, not prompt-mutation routing. It does
+    not call an LLM, does not dispatch tools, and does not store raw user text
+    in telemetry. The output is a route *recommendation* used first for shadow
+    evidence before any active rollout.
+    """
+    text = str(getattr(event, "text", "") or "")
+    lowered = text.lower()
+    media_types = [str(item).lower() for item in (getattr(event, "media_types", []) or [])]
+    media_urls = [str(item) for item in (getattr(event, "media_urls", []) or [])]
+
+    task_class = "ordinary_chat"
+    route = "hermes_default"
+    confidence = 0.55
+    reason = "default_ordinary_message"
+    needs_web = False
+    needs_tools = False
+    needs_openclaw = False
+    privacy_level = "normal"
+    premium_allowed = True
+
+    hard_stop_terms = ("send money", "place order", "buy stock", "sell stock", "real money", "public gateway", "expose port", "password", "2fa", "credit card")
+    web_terms = ("latest", "current", "today", "right now", "web research", "search the web", "look up", "news", "version", "release notes")
+    build_terms = ("patch", "fix", "test", "repo", "commit", "build", "debug", "implement", "gateway", "hermes", "openclaw", "clawrouter", "modelroute")
+    untrusted_terms = ("untrusted", "prompt injection", "jailbreak", "webpage says", "ignore previous instructions")
+    private_terms = ("private", "local only", "sensitive", "secret", "keychain", "token")
+    openclaw_terms = ("openclaw", "clawrouter", "blockrun", "model status", "infer hub")
+    mac_terms = ("use this mac", "screen", "screenshot", "system settings", "click", "desktop control", "control my mac", "mac control")
+    summary_terms = ("summarize", "summary", "draft", "rewrite", "format this", "clean this up")
+
+    if media_types or media_urls:
+        task_class = "media_or_screenshot_analysis"
+        route = "hermes_media_vision"
+        confidence = 0.9
+        reason = "media_attachment_present"
+        needs_tools = True
+    elif any(term in lowered for term in hard_stop_terms):
+        task_class = "approval_or_hard_stop"
+        route = "hermes_governed_gate"
+        confidence = 0.88
+        reason = "hard_stop_signal"
+        needs_tools = True
+    elif any(term in lowered for term in untrusted_terms):
+        task_class = "untrusted_web_or_prompt_injection"
+        route = "untrusted_quarantine"
+        confidence = 0.86
+        reason = "untrusted_content_signal"
+        premium_allowed = False
+    elif any(term in lowered for term in private_terms):
+        task_class = "local_private_general"
+        route = "local_private_general"
+        confidence = 0.82
+        reason = "private_or_local_signal"
+        privacy_level = "private"
+        premium_allowed = False
+    elif any(term in lowered for term in web_terms):
+        task_class = "current_web_research"
+        route = "hermes_web_research"
+        confidence = 0.84
+        reason = "current_information_signal"
+        needs_web = True
+        needs_tools = True
+    elif any(term in lowered for term in mac_terms):
+        task_class = "mac_control"
+        route = "hermes_macos_computer_use"
+        confidence = 0.82
+        reason = "mac_control_signal"
+        needs_tools = True
+    elif any(term in lowered for term in openclaw_terms):
+        task_class = "openclaw_specialist"
+        route = "openclaw_specialist"
+        confidence = 0.82
+        reason = "openclaw_signal"
+        needs_openclaw = True
+        needs_tools = True
+    elif any(term in lowered for term in build_terms):
+        task_class = "build_completion"
+        route = "hermes_gpt55_tools"
+        confidence = 0.8
+        reason = "build_completion_signal"
+        needs_tools = True
+    elif any(term in lowered for term in summary_terms):
+        task_class = "cheap_summary_or_draft"
+        route = "free_utility_general"
+        confidence = 0.76
+        reason = "cheap_text_utility_signal"
+        premium_allowed = False
+
+    return {
+        "schema_version": 1,
+        "task_class": task_class,
+        "confidence": round(confidence, 2),
+        "route": route,
+        "reason": reason,
+        "premium_allowed": premium_allowed,
+        "privacy_level": privacy_level,
+        "needs_web": needs_web,
+        "needs_tools": needs_tools,
+        "needs_openclaw": needs_openclaw,
+        "fallback_if_uncertain": "hermes_default",
+        "message_chars": len(text),
+        "media_count": len(media_types) + len(media_urls),
+    }
+
+
+def _append_telegram_auto_route_shadow_telemetry(
+    event: Any,
+    decision: Dict[str, Any],
+    mode: str,
+    *,
+    dispatch_altered: bool = False,
+) -> Optional[Path]:
+    """Append sanitized Telegram auto-route shadow telemetry to repo evidence."""
+    try:
+        repo_root = _find_modelroute_repo_root()
+        out_dir = repo_root / "evidence" / "runtime_health" / "telegram_auto_route"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "shadow.jsonl"
+        source = getattr(event, "source", None)
+        record = {
+            "schema_version": 1,
+            "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "source": "telegram",
+            "mode": mode,
+            "dispatch_altered": bool(dispatch_altered),
+            "chat_type": str(getattr(source, "chat_type", "") or ""),
+            "thread_id_present": bool(getattr(source, "thread_id", None)),
+            "message_id_present": bool(getattr(event, "message_id", None)),
+            "decision": decision,
+            "raw_text_recorded": False,
+        }
+        with out_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        return out_path
+    except Exception:
+        logger.debug("Telegram auto-route shadow telemetry append failed", exc_info=True)
+        return None
+
+
+def _maybe_record_telegram_auto_route_shadow(config: Any, event: Any) -> Optional[Dict[str, Any]]:
+    """Record ordinary Telegram message route recommendation in shadow mode."""
+    source = getattr(event, "source", None)
+    if _gateway_platform_value(getattr(source, "platform", None)) != "telegram":
+        return None
+    # GatewayConfig intentionally normalizes away unknown top-level config
+    # keys. Read the raw config.yaml dict for the experimental telegram.auto_route
+    # block while still accepting dicts directly in tests.
+    route_config_source = config if isinstance(config, dict) else _load_gateway_config()
+    route_cfg = _telegram_auto_route_config(route_config_source)
+    mode = route_cfg["mode"]
+    if mode != "shadow":
+        return None
+    decision = _classify_telegram_auto_route(event)
+    decision["confidence_floor"] = route_cfg["confidence_floor"]
+    decision["above_confidence_floor"] = bool(decision["confidence"] >= route_cfg["confidence_floor"])
+    evidence_path = _append_telegram_auto_route_shadow_telemetry(event, decision, mode)
+    if evidence_path is not None:
+        decision["evidence_path"] = str(evidence_path)
+    return decision
+
+
+def _telegram_auto_route_active_lane(decision: Dict[str, Any]) -> Optional[str]:
+    """Return the proven model-route lane eligible for active v1 dispatch."""
+    task_class = str(decision.get("task_class") or "")
+    lane = _TELEGRAM_AUTO_ROUTE_ACTIVE_TASK_TO_LANE.get(task_class)
+    if not lane:
+        return None
+    if bool(decision.get("needs_web")) or bool(decision.get("needs_tools")) or bool(decision.get("needs_openclaw")):
+        return None
+    if int(decision.get("media_count") or 0) > 0:
+        return None
+    return lane
+
+
+def _telegram_auto_route_active_plan(config: Any, event: Any) -> Optional[Dict[str, Any]]:
+    """Plan a safe active auto-route dispatch, or return None to use Hermes default."""
+    source = getattr(event, "source", None)
+    if _gateway_platform_value(getattr(source, "platform", None)) != "telegram":
+        return None
+    route_config_source = config if isinstance(config, dict) else _load_gateway_config()
+    route_cfg = _telegram_auto_route_config(route_config_source)
+    if route_cfg["mode"] != "active":
+        return None
+    text = str(getattr(event, "text", "") or "")
+    if not text.strip():
+        return None
+    decision = _classify_telegram_auto_route(event)
+    decision["confidence_floor"] = route_cfg["confidence_floor"]
+    decision["above_confidence_floor"] = bool(decision["confidence"] >= route_cfg["confidence_floor"])
+    if not decision["above_confidence_floor"]:
+        return None
+    lane = _telegram_auto_route_active_lane(decision)
+    if not lane:
+        return None
+    decision["active_modelroute_lane"] = lane
+    return {"lane": lane, "decision": decision, "message": text}
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -7322,6 +7692,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "modelroute":
+            return await self._handle_modelroute_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
@@ -7592,6 +7965,11 @@ class GatewayRunner:
                 return self._telegram_topic_root_lobby_message()
             return None
 
+        # Telegram auto-route v1 starts as shadow-only evidence collection.
+        # It must not alter ordinary dispatch until active routing has its own
+        # tests and live three-receipt proof.
+        _maybe_record_telegram_auto_route_shadow(self.config, event)
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -7604,6 +7982,9 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
+            _active_auto_route_reply = await self._maybe_dispatch_telegram_auto_route_active(event)
+            if _active_auto_route_reply is not None:
+                return _active_auto_route_reply
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
@@ -9962,6 +10343,106 @@ class GatewayRunner:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    async def _dispatch_modelroute(self, *, task_class: str, message: str) -> Dict[str, Any]:
+        """Dispatch one prompt through the evidence-backed external route selector."""
+        return await _run_modelroute_subprocess(task_class, message)
+
+    async def _maybe_dispatch_telegram_auto_route_active(self, event: MessageEvent) -> Optional[str]:
+        """Actively route a narrow, proven subset of ordinary Telegram messages.
+
+        This is a gateway turn-boundary alternate response path. It does not
+        mutate AIAgent/provider state and deliberately falls back to the normal
+        Hermes path on uncertainty or route failure.
+        """
+        plan = _telegram_auto_route_active_plan(self.config, event)
+        if not plan:
+            return None
+        decision = dict(plan["decision"])
+        lane = str(plan["lane"])
+        result: Dict[str, Any]
+        try:
+            result = await self._dispatch_modelroute(task_class=lane, message=str(plan["message"]))
+        except asyncio.TimeoutError:
+            decision["active_dispatch_status"] = "timeout"
+            _append_telegram_auto_route_shadow_telemetry(event, decision, "active", dispatch_altered=True)
+            return None
+        except Exception as exc:
+            decision["active_dispatch_status"] = f"exception:{type(exc).__name__}"
+            _append_telegram_auto_route_shadow_telemetry(event, decision, "active", dispatch_altered=True)
+            logger.debug("Telegram auto-route active dispatch failed", exc_info=True)
+            return None
+        if not result.get("ok", False):
+            decision["active_dispatch_status"] = "not_ok"
+            _append_telegram_auto_route_shadow_telemetry(event, decision, "active", dispatch_altered=True)
+            return None
+        decision["active_dispatch_status"] = "ok"
+        result_telemetry = result.get("telemetry")
+        telemetry = result_telemetry if isinstance(result_telemetry, dict) else {}
+        decision["selected_model_present"] = bool(result.get("selected_model"))
+        decision["transport"] = str(result.get("transport") or "")
+        decision["fallback_used"] = bool(telemetry.get("fallback_used", False))
+        _append_telegram_auto_route_shadow_telemetry(event, decision, "active", dispatch_altered=True)
+        reply = _format_modelroute_result(result)
+        reply = _sanitize_gateway_final_response(getattr(getattr(event, "source", None), "platform", None), reply)
+        self._persist_telegram_auto_route_turn(event, reply)
+        return reply
+
+    def _persist_telegram_auto_route_turn(self, event: MessageEvent, reply: str) -> None:
+        """Persist successful active auto-route turns in the normal gateway transcript.
+
+        The active route path intentionally bypasses AIAgent execution, but it
+        should not bypass Hermes session ownership. Persisting the user turn and
+        route reply keeps follow-up continuity and session search consistent.
+        """
+        try:
+            source = getattr(event, "source", None)
+            if source is None or getattr(self, "session_store", None) is None:
+                return
+            session_entry = self.session_store.get_or_create_session(source)
+            user_text = str(getattr(event, "text", "") or "")
+            if user_text:
+                self.session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {
+                        "role": "user",
+                        "content": user_text,
+                        "platform_message_id": getattr(event, "message_id", None),
+                    },
+                )
+            self.session_store.append_to_transcript(
+                session_entry.session_id,
+                {"role": "assistant", "content": str(reply or "")},
+            )
+            self.session_store.update_session(session_entry.session_key)
+        except Exception:
+            logger.debug("Telegram auto-route transcript persistence failed", exc_info=True)
+
+    async def _handle_modelroute_command(self, event: MessageEvent) -> str:
+        """Handle /modelroute: explicit selected-route dispatch with telemetry."""
+        try:
+            task_class, message = _parse_modelroute_args(event.get_command_args())
+        except ValueError as exc:
+            return str(exc)
+        try:
+            result = await self._dispatch_modelroute(task_class=task_class, message=message)
+        except asyncio.TimeoutError:
+            result = {
+                "ok": False,
+                "selected_model": "unknown",
+                "transport": "unknown",
+                "blocker": "model_route_dispatch_timeout_360s",
+                "telemetry": {"task_class": task_class, "fallback_used": False},
+            }
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "selected_model": "unknown",
+                "transport": "unknown",
+                "blocker": f"model_route_dispatch_exception:{type(exc).__name__}",
+                "telemetry": {"task_class": task_class, "fallback_used": False},
+            }
+        return _format_modelroute_result(result)
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -10328,12 +10809,13 @@ class GatewayRunner:
         Same surface as the CLI handler in cli.py:
             /codex-runtime                  — show current state
             /codex-runtime auto             — Hermes default runtime
-            /codex-runtime codex_app_server — codex subprocess runtime
+            /codex-runtime codex_app_server — delegated Codex worker runtime available
             /codex-runtime on / off         — synonyms
 
         On change, the cached agent for this session is evicted so the next
-        message creates a fresh AIAgent with the new api_mode wired in
-        (avoids prompt-cache invalidation mid-session)."""
+        message creates a fresh AIAgent. Operator turns still stay on the
+        Hermes runtime loop unless an explicit worker-delegation context is
+        active."""
         from hermes_cli import codex_runtime_switch as crs
 
         raw_args = event.get_command_args().strip() if event else ""
