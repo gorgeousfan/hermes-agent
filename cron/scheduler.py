@@ -666,7 +666,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-        runtime_adapter = (adapters or {}).get(platform)
+        # DingTalk is excluded: live adapter uses session_webhook which can't render
+        # GFM tables and has no Markdown fallback; standalone path uses dws send-by-bot.
+        if platform == Platform.DINGTALK:
+            runtime_adapter = None
+        else:
+            runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             send_metadata = {"thread_id": thread_id} if thread_id else None

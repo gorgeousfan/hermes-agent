@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import ssl
 import time
 from email.utils import formatdate
@@ -1510,22 +1511,67 @@ async def _send_homeassistant(token, extra, chat_id, message):
 
 
 async def _send_dingtalk(extra, chat_id, message):
-    """Send via DingTalk robot webhook.
+    """Send via DingTalk robot using `dws chat message send-by-bot`, with webhook fallback.
 
-    Note: The gateway's DingTalk adapter uses per-session webhook URLs from
-    incoming messages (dingtalk-stream SDK).  For cross-platform send_message
-    delivery we use a static robot webhook URL instead, which must be
-    configured via ``DINGTALK_WEBHOOK_URL`` env var or ``webhook_url`` in the
-    platform's extra config.
+    Prefers the official DingTalk CLI (`dws`) which sends as the bot identity
+    with full Markdown rendering support.  Falls back to the legacy robot
+    webhook (plain text, no Markdown) if `dws` is not installed or fails.
+
+    The robot_code is resolved from config.extra.robot_code, then
+    DINGTALK_CLIENT_ID env var.
     """
+    import subprocess
+
+    robot_code = extra.get("robot_code") or os.getenv("DINGTALK_CLIENT_ID", "")
+    if not robot_code:
+        return {"error": "DingTalk not configured. Set DINGTALK_CLIENT_ID or robot_code in dingtalk platform extra config."}
+
+    # --- Try dws send-by-bot first (Markdown + bot identity) ---
+    dws = shutil.which("dws")
+    if dws:
+        title = "Hermes"
+        first_line = (message.split("\n")[0] or "").strip()
+        if first_line.startswith("#"):
+            title = first_line.lstrip("#").strip()
+
+        cmd = [
+            dws, "chat", "message", "send-by-bot",
+            "--robot-code", robot_code,
+            "--group", chat_id,
+            "--title", title,
+            "--text", message,
+            "--format", "json",
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0:
+                try:
+                    data = json.loads(result.stdout)
+                    if data.get("success"):
+                        return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
+                except json.JSONDecodeError:
+                    pass
+            logger.warning(
+                "dws send-by-bot failed, falling back to webhook: %s",
+                result.stderr[:200] if result.stderr else result.stdout[:200],
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("dws send-by-bot timed out, falling back to webhook")
+        except Exception:
+            logger.debug("dws send-by-bot error, falling back to webhook", exc_info=True)
+
+    # --- Fallback: legacy robot webhook (plain text, no Markdown) ---
     try:
         import httpx
     except ImportError:
-        return {"error": "httpx not installed"}
+        return {"error": "dws CLI not found and httpx not installed"}
+
     try:
         webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
         if not webhook_url:
-            return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
+            return {"error": "dws CLI not available and DingTalk webhook not configured"}
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 webhook_url,
