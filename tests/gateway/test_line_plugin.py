@@ -629,10 +629,14 @@ class TestAdapterInit:
         monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
         monkeypatch.setenv("LINE_ALLOWED_USERS", "U1, U2,U3")
         monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
+        monkeypatch.setenv("LINE_REQUIRE_PREFIX_GROUPS", "C3")
+        monkeypatch.setenv("LINE_GROUP_PREFIXES", "Hermes:, Joi:")
         from gateway.config import PlatformConfig
         ad = LineAdapter(PlatformConfig(enabled=True))
         assert ad.allowed_users == {"U1", "U2", "U3"}
         assert ad.allowed_groups == {"C1"}
+        assert ad.require_prefix_groups == {"C3"}
+        assert ad.group_prefixes == ["Hermes:", "Joi:"]
 
     def test_get_chat_info_infers_type_from_prefix(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
@@ -642,3 +646,59 @@ class TestAdapterInit:
         assert asyncio.run(ad.get_chat_info("U123"))["type"] == "dm"
         assert asyncio.run(ad.get_chat_info("C123"))["type"] == "group"
         assert asyncio.run(ad.get_chat_info("R123"))["type"] == "channel"
+
+
+    def test_prefix_required_group_ignores_unprefixed_messages(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Cprefix")
+        monkeypatch.setenv("LINE_REQUIRE_PREFIX_GROUPS", "Cprefix")
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "webhookEventId": "evt-prefix-ignore",
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "Cprefix", "userId": "U123"},
+            "message": {"type": "text", "id": "m1", "text": "hello"},
+        }
+
+        asyncio.run(ad._dispatch_event(event))
+
+        assert captured == []
+        assert "Cprefix" not in ad._reply_tokens
+
+    def test_prefix_required_group_dispatches_prefixed_message_without_prefix(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Cprefix")
+        monkeypatch.setenv("LINE_REQUIRE_PREFIX_GROUPS", "Cprefix")
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "webhookEventId": "evt-prefix-dispatch",
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "Cprefix", "userId": "U123"},
+            "message": {"type": "text", "id": "m1", "text": "Hermes: hello"},
+        }
+
+        asyncio.run(ad._dispatch_event(event))
+
+        assert len(captured) == 1
+        assert captured[0].text == "hello"
+        assert captured[0].source.chat_id == "Cprefix"

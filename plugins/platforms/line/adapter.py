@@ -610,6 +610,12 @@ def _csv_set(value: str) -> Set[str]:
     return {x.strip() for x in value.split(",") if x.strip()}
 
 
+def _csv_list(value: str) -> List[str]:
+    if not value:
+        return []
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
 def _truthy_env(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
     if v is None:
@@ -671,6 +677,12 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_groups = _csv_set(
             os.getenv("LINE_ALLOWED_GROUPS", "")
         ) | set(extra.get("allowed_groups", []))
+        self.require_prefix_groups = _csv_set(
+            os.getenv("LINE_REQUIRE_PREFIX_GROUPS", "")
+        ) | set(extra.get("require_prefix_groups", []))
+        self.group_prefixes = _csv_list(
+            os.getenv("LINE_GROUP_PREFIXES", "")
+        ) or list(extra.get("group_prefixes", [])) or ["Hermes:"]
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
@@ -954,6 +966,38 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        if chat_type == "group" and chat_id in self.require_prefix_groups:
+            if msg_type != "text":
+                self._reply_tokens.pop(chat_id, None)
+                logger.info(
+                    "LINE: ignoring non-text group message without prefix chat=%s user=%s type=%s",
+                    chat_id,
+                    user_id,
+                    msg_type,
+                )
+                return
+            matched_prefix = next(
+                (prefix for prefix in self.group_prefixes if text.startswith(prefix)),
+                "",
+            )
+            if not matched_prefix:
+                self._reply_tokens.pop(chat_id, None)
+                logger.info(
+                    "LINE: ignoring group message without required prefix chat=%s user=%s",
+                    chat_id,
+                    user_id,
+                )
+                return
+            text = text[len(matched_prefix):].lstrip()
+            if not text:
+                self._reply_tokens.pop(chat_id, None)
+                logger.info(
+                    "LINE: ignoring empty group message after required prefix chat=%s user=%s",
+                    chat_id,
+                    user_id,
+                )
+                return
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:
