@@ -630,6 +630,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/weixin',
         'user-guide/messaging/bluebubbles',
         'user-guide/messaging/qqbot',
+        'user-guide/messaging/trueconf',
         'user-guide/messaging/yuanbao',
         'user-guide/messaging/teams',
         'user-guide/messaging/teams-meetings',
