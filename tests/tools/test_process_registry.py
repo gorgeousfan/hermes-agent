@@ -295,6 +295,58 @@ class TestStdinHelpers:
         pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
+    def test_write_stdin_pty_mode_posix_encodes_to_bytes(self, registry):
+        """POSIX ptyprocess.PtyProcess.write() expects bytes."""
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry._IS_WINDOWS", False):
+            result = registry.write_stdin(s.id, "hello\n")
+
+        assert result["status"] == "ok"
+        pty.write.assert_called_once()
+        written = pty.write.call_args.args[0]
+        assert isinstance(written, bytes)
+        assert written == b"hello\n"
+
+    def test_write_stdin_pty_mode_windows_keeps_str(self, registry):
+        """Windows pywinpty.PtyProcess.write() is a PyO3 binding whose
+        signature is ``write(to_write: str) -> int`` — handing it bytes
+        raises ``"argument 'to_write': 'bytes' object cannot be converted
+        to 'PyString'"`` (#31675)."""
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry._IS_WINDOWS", True):
+            result = registry.write_stdin(s.id, "hello\n")
+
+        assert result["status"] == "ok"
+        pty.write.assert_called_once()
+        written = pty.write.call_args.args[0]
+        assert isinstance(written, str)
+        assert written == "hello\n"
+
+    def test_submit_stdin_pty_mode_windows_keeps_str(self, registry):
+        """submit_stdin delegates to write_stdin — verify the same str
+        contract holds on Windows for the trailing-newline path."""
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry._IS_WINDOWS", True):
+            result = registry.submit_stdin(s.id, "hello")
+
+        assert result["status"] == "ok"
+        pty.write.assert_called_once()
+        written = pty.write.call_args.args[0]
+        assert isinstance(written, str)
+        assert written == "hello\n"
+
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 

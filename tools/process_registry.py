@@ -1189,10 +1189,17 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle.  POSIX ``ptyprocess`` writes
+        # bytes; Windows ``pywinpty`` is a PyO3 binding whose ``write()``
+        # signature is ``write(to_write: str) -> int`` and raises
+        # ``"argument 'to_write': 'bytes' object cannot be converted to
+        # 'PyString'"`` if handed bytes (#31675).
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                if _IS_WINDOWS:
+                    pty_data = data if isinstance(data, str) else data.decode("utf-8", errors="replace")
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
