@@ -53,12 +53,13 @@ def test_all_34_profiles_register():
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 34, f"Expected 34 profiles, got {len(names)}: {names}"
+    assert len(names) == 35, f"Expected 35 profiles, got {len(names)}: {names}"
 
     # Spot-check representative providers from different categories
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
         "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "fireworks",
     ):
         assert required in names, f"Missing profile: {required}"
 
