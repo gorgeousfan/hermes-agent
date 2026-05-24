@@ -3858,27 +3858,27 @@ class AIAgent:
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
-        """Strip Codex Responses API fields from tool_calls for strict providers.
+        """Strip non-standard API fields (like Codex/Gemini extra fields) from tool_calls for strict providers.
 
-        Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
-        validate the Chat Completions schema and reject unknown fields (call_id,
-        response_item_id) with 400 or 422 errors. These fields are preserved in
-        the internal message history — this method only modifies the outgoing
-        API copy.
+        Providers like Mistral, Fireworks, DeepSeek on OpenRouter, and other strict
+        OpenAI-compatible APIs validate the Chat Completions schema and reject
+        unknown fields (call_id, response_item_id, extra_content) with 400 or 422
+        errors. These fields are preserved in the internal message history — this
+        method only modifies the outgoing API copy.
 
         Creates new tool_call dicts rather than mutating in-place, so the
-        original messages list retains call_id/response_item_id for Codex
+        original messages list retains non-standard fields for Codex
         Responses API compatibility (e.g. if the session falls back to a
         Codex provider later).
 
-        Fields stripped: call_id, response_item_id
+        Fields allowed: id, type, function
         """
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        _STRIP_KEYS = {"call_id", "response_item_id"}
+        _ALLOWED_KEYS = {"id", "type", "function"}
         api_msg["tool_calls"] = [
-            {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
+            {k: v for k, v in tc.items() if k in _ALLOWED_KEYS}
             if isinstance(tc, dict) else tc
             for tc in tool_calls
         ]

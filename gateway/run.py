@@ -594,9 +594,17 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
 # ---------------------------------------------------------------------------
 def _ensure_ssl_certs() -> None:
-    """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python."""
-    if "SSL_CERT_FILE" in os.environ:
-        return  # user already configured it
+    """Set SSL_CERT_FILE to a real CA bundle path for Python/httpx.
+
+    If SSL_CERT_FILE is already set but points to a missing file, ignore it and
+    recover instead of letting downstream client construction fail with
+    FileNotFoundError.
+    """
+    existing = os.environ.get("SSL_CERT_FILE")
+    if existing:
+        if os.path.exists(existing):
+            return  # user already configured a valid bundle
+        os.environ.pop("SSL_CERT_FILE", None)
 
     import ssl
 
@@ -610,8 +618,10 @@ def _ensure_ssl_certs() -> None:
     # 2. certifi (ships its own Mozilla bundle)
     try:
         import certifi
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
+        candidate = certifi.where()
+        if candidate and os.path.exists(candidate):
+            os.environ["SSL_CERT_FILE"] = candidate
+            return
     except ImportError:
         pass
 
