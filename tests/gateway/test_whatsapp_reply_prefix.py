@@ -88,6 +88,18 @@ class TestConfigYamlBridging:
 class TestAdapterInit:
     """Test that WhatsAppAdapter reads reply_prefix from config.extra."""
 
+    def test_bridge_port_default_avoids_common_dev_server_port(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        config = PlatformConfig(enabled=True)
+        adapter = WhatsAppAdapter(config)
+        assert adapter._bridge_port == WhatsAppAdapter.DEFAULT_BRIDGE_PORT == 3099
+
+    def test_bridge_port_override_is_preserved(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        config = PlatformConfig(enabled=True, extra={"bridge_port": 3000})
+        adapter = WhatsAppAdapter(config)
+        assert adapter._bridge_port == 3000
+
     def test_reply_prefix_from_extra(self):
         from gateway.platforms.whatsapp import WhatsAppAdapter
         config = PlatformConfig(enabled=True, extra={"reply_prefix": "Bot\\n"})
