@@ -655,6 +655,9 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+_GATEWAY_STARTUP_NOTIFICATION_DEBOUNCE_SECONDS = 300.0
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -4168,6 +4171,8 @@ class GatewayRunner:
             await self._send_home_channel_startup_notifications(
                 skip_targets=skip_home_targets,
             )
+        else:
+            await self._send_configured_gateway_startup_notifications()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -14191,16 +14196,31 @@ class GatewayRunner:
         self,
         *,
         skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        require_startup_opt_in: bool = False,
+        debounce_seconds: Optional[float] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured home channels that the gateway is back online.
 
         The notification is best-effort and sent once per connected platform
         home channel. ``skip_targets`` lets startup avoid duplicate messages
         when a more specific restart notification is queued for the same chat.
+        ``require_startup_opt_in`` is used for ordinary process starts so
+        upstream defaults do not spam every configured home channel.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
+
+        debounce_path = _hermes_home / ".startup_notify_last.json"
+        now = time.time()
+        last_sent: dict[str, Any] = {}
+        if debounce_seconds is not None:
+            try:
+                loaded = json.loads(debounce_path.read_text()) if debounce_path.exists() else {}
+                if isinstance(loaded, dict):
+                    last_sent = loaded
+            except Exception:
+                last_sent = {}
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
@@ -14214,10 +14234,33 @@ class GatewayRunner:
                     platform.value,
                 )
                 continue
+            if require_startup_opt_in and not getattr(
+                platform_cfg, "gateway_startup_notification", False
+            ):
+                logger.debug(
+                    "Home-channel startup notification skipped: %s has gateway_startup_notification=false",
+                    platform.value,
+                )
+                continue
 
             target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
             if target in skipped or target in delivered:
                 continue
+
+            target_key = "|".join(part if part is not None else "" for part in target)
+            if debounce_seconds is not None:
+                try:
+                    previous = float(last_sent.get(target_key, 0))
+                except (TypeError, ValueError):
+                    previous = 0.0
+                elapsed = now - previous
+                if 0 <= elapsed < debounce_seconds:
+                    logger.info(
+                        "Home-channel startup notification debounced for %s:%s",
+                        platform.value,
+                        home.chat_id,
+                    )
+                    continue
 
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
@@ -14235,6 +14278,8 @@ class GatewayRunner:
                     continue
 
                 delivered.add(target)
+                if debounce_seconds is not None:
+                    last_sent[target_key] = now
                 logger.info(
                     "Sent home-channel startup notification to %s:%s",
                     platform.value,
@@ -14248,7 +14293,30 @@ class GatewayRunner:
                     exc,
                 )
 
+        if debounce_seconds is not None and delivered:
+            try:
+                atomic_json_write(debounce_path, last_sent)
+            except Exception as exc:
+                logger.debug("Failed to persist startup notification debounce state: %s", exc)
+
         return delivered
+
+    async def _send_configured_gateway_startup_notifications(
+        self,
+        *,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> set[tuple[str, str, Optional[str]]]:
+        """Send opt-in home-channel notifications after ordinary gateway startup.
+
+        This covers external restarts (systemd, host backup windows, process
+        recovery) where no /restart marker exists. The per-target debounce keeps
+        crash loops from spamming operator chats.
+        """
+        return await self._send_home_channel_startup_notifications(
+            skip_targets=skip_targets,
+            require_startup_opt_in=True,
+            debounce_seconds=_GATEWAY_STARTUP_NOTIFICATION_DEBOUNCE_SECONDS,
+        )
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

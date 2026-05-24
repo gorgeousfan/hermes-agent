@@ -70,6 +70,19 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_gateway_startup_notification_defaults_false(self):
+        assert PlatformConfig().gateway_startup_notification is False
+        assert PlatformConfig.from_dict({}).gateway_startup_notification is False
+
+    def test_gateway_startup_notification_roundtrip_true(self):
+        pc = PlatformConfig(enabled=True, gateway_startup_notification=True)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.gateway_startup_notification is True
+
+    def test_gateway_startup_notification_coerces_quoted_true(self):
+        restored = PlatformConfig.from_dict({"gateway_startup_notification": "true"})
+        assert restored.gateway_startup_notification is True
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):

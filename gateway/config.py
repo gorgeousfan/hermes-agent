@@ -298,6 +298,12 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Whether to send a home-channel "gateway is back" notification on every
+    # gateway startup, not just after a Hermes-initiated /restart. Default
+    # False avoids noisy pings for normal deploys and public/end-user bots;
+    # operators can opt in for back-channel health notices.
+    gateway_startup_notification: bool = False
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -307,6 +313,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "gateway_startup_notification": self.gateway_startup_notification,
         }
         if self.token:
             result["token"] = self.token
@@ -330,6 +337,10 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        _gsn = data.get("gateway_startup_notification")
+        if _gsn is None:
+            _gsn = data.get("extra", {}).get("gateway_startup_notification")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -337,6 +348,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_startup_notification=_coerce_bool(_gsn, False),
             extra=data.get("extra", {}),
         )
 
@@ -868,6 +880,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "gateway_startup_notification" in platform_cfg:
+                    bridged["gateway_startup_notification"] = platform_cfg["gateway_startup_notification"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

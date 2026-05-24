@@ -337,6 +337,77 @@ async def test_send_home_channel_startup_notification_ignores_false_send_result(
     adapter.send.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_send_opt_in_gateway_startup_notification_to_home(
+    tmp_path, monkeypatch
+):
+    """External restarts can notify home channels when explicitly opted in."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_startup_notification = True
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_configured_gateway_startup_notifications()
+
+    assert delivered == {("telegram", "home-42", None)}
+    adapter.send.assert_called_once_with(
+        "home-42",
+        "♻️ Gateway online — Hermes is back and ready.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_opt_in_gateway_startup_notification_skips_by_default(
+    tmp_path, monkeypatch
+):
+    """Every-startup pings are opt-in so upstream defaults do not get noisy."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock()
+
+    delivered = await runner._send_configured_gateway_startup_notifications()
+
+    assert delivered == set()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_opt_in_gateway_startup_notification_debounces_target(
+    tmp_path, monkeypatch
+):
+    """Crash-loop protection: do not spam the same home target repeatedly."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run.time, "time", lambda: 1000.0)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_startup_notification = True
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    first = await runner._send_configured_gateway_startup_notifications()
+    second = await runner._send_configured_gateway_startup_notifications()
+
+    assert first == {("telegram", "home-42", None)}
+    assert second == set()
+    adapter.send.assert_called_once()
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 
