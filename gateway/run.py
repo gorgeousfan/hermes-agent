@@ -4132,7 +4132,10 @@ class GatewayRunner:
         # /restart requester already received a direct completion notice in the
         # same chat, skip the generic broadcast there to avoid duplicates while
         # still allowing a home-channel fallback when the direct send fails.
-        if restart_notification_pending or delivered_restart_target is not None:
+        if self._should_send_home_channel_startup_notifications(
+            restart_notification_pending=restart_notification_pending,
+            delivered_restart_target=delivered_restart_target,
+        ):
             skip_home_targets = (
                 {delivered_restart_target} if delivered_restart_target else None
             )
@@ -14219,6 +14222,25 @@ class GatewayRunner:
                 )
 
         return delivered
+
+    def _should_send_home_channel_startup_notifications(
+        self,
+        *,
+        restart_notification_pending: bool,
+        delivered_restart_target: Optional[tuple[str, str, Optional[str]]],
+    ) -> bool:
+        """Return whether this startup should emit home-channel online pings.
+
+        #19271 salvaged #18440 and intentionally tied the generic
+        home-channel "gateway online" message to /restart markers so ordinary
+        cold starts would stay quiet. Operators can now opt in to the same
+        thread-aware online ping for Docker/systemd/reboot starts via
+        ``gateway_startup_notification`` while keeping the default quiet.
+        """
+        if restart_notification_pending or delivered_restart_target is not None:
+            return True
+
+        return bool(getattr(self.config, "gateway_startup_notification", False))
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

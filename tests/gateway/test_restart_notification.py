@@ -33,6 +33,34 @@ def test_restart_notification_pending_true_with_marker(tmp_path, monkeypatch):
     assert gateway_run._restart_notification_pending() is True
 
 
+def test_home_channel_startup_notification_skipped_on_cold_start_by_default():
+    runner, _adapter = make_restart_runner()
+
+    assert runner._should_send_home_channel_startup_notifications(
+        restart_notification_pending=False,
+        delivered_restart_target=None,
+    ) is False
+
+
+def test_home_channel_startup_notification_runs_on_restart_marker():
+    runner, _adapter = make_restart_runner()
+
+    assert runner._should_send_home_channel_startup_notifications(
+        restart_notification_pending=True,
+        delivered_restart_target=None,
+    ) is True
+
+
+def test_home_channel_startup_notification_runs_on_opt_in_cold_start():
+    runner, _adapter = make_restart_runner()
+    runner.config.gateway_startup_notification = True
+
+    assert runner._should_send_home_channel_startup_notifications(
+        restart_notification_pending=False,
+        delivered_restart_target=None,
+    ) is True
+
+
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 
@@ -86,9 +114,15 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+    """Without systemd/container supervision, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    real_exists = gateway_run.os.path.exists
+    monkeypatch.setattr(
+        gateway_run.os.path,
+        "exists",
+        lambda path: False if path in {"/.dockerenv", "/run/.containerenv"} else real_exists(path),
+    )
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
