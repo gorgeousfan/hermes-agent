@@ -43,9 +43,27 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
-| **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
+| **Custom Endpoint** | `hermes model` → choose "Custom endpoint" for an OpenAI-compatible base URL (saved in `config.yaml`) |
 
 For the official API-key path, see the dedicated [Google Gemini guide](/docs/guides/google-gemini).
+
+:::tip Which custom option should I choose?
+**Custom Endpoint** means "generic OpenAI-compatible endpoint." Pick it for
+Ollama, vLLM, SGLang, llama.cpp, LM Studio, LiteLLM, or a hosted proxy that
+accepts OpenAI-style chat-completions requests. You will provide:
+
+- a base URL, usually ending in `/v1`
+- a model id from that server
+- an API key if the server requires one
+
+Named providers such as **Anthropic**, **Google / Gemini**, **AWS Bedrock**,
+**GitHub Copilot**, **DeepSeek**, **Kimi**, and **MiniMax** are direct provider
+integrations. Pick the named provider when you want Hermes to use
+provider-specific auth, native request formats, live model discovery, and
+capability metadata. Do not use Custom Endpoint for a native Anthropic, Gemini,
+Bedrock, or Copilot endpoint unless you are intentionally routing through an
+OpenAI-compatible proxy.
+:::
 
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.

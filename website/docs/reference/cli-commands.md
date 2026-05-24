@@ -161,7 +161,7 @@ Use this when you want to:
 - log into OAuth-backed providers (Anthropic, Copilot, Codex, Nous Portal)
 - enter or update API keys
 - pick from provider-specific model lists
-- configure a custom/self-hosted endpoint
+- configure a custom/self-hosted OpenAI-compatible endpoint
 - save the new default into config
 
 :::warning hermes model vs /model — know the difference
@@ -170,6 +170,14 @@ Use this when you want to:
 **`/model`** (typed inside an active Hermes chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys.
 
 **If you need to add a new provider:** Exit your Hermes session first (`Ctrl+C` or `/quit`), then run `hermes model` from your terminal prompt.
+:::
+
+:::tip Custom endpoint means OpenAI-compatible
+In `hermes model`, choose **Custom endpoint** for local or proxy servers that
+implement OpenAI-style `/v1/chat/completions`, such as Ollama, vLLM, SGLang,
+llama.cpp, LM Studio, or LiteLLM. Choose a named provider instead when the
+service has a native Hermes integration, such as Anthropic, Gemini, Bedrock,
+Copilot, DeepSeek, Kimi, or MiniMax.
 :::
 
 ### `/model` slash command (mid-session)
