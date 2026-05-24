@@ -14213,7 +14213,7 @@ class HermesCLI:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, _signal_handler)
             if hasattr(_signal, 'SIGHUP'):
-                _signal.signal(_signal.SIGHUP, _signal_handler)
+                _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)  # PATCHED 2026-05-13: macOS Terminal sends SIGHUP on resize, causes crash
 
             # Windows: install a SIGINT handler that absorbs the signal
             # instead of letting Python's default handler raise
@@ -14641,7 +14641,7 @@ def main(
         import signal as _signal
         _signal.signal(_signal.SIGTERM, _signal_handler_q)
         if hasattr(_signal, "SIGHUP"):
-            _signal.signal(_signal.SIGHUP, _signal_handler_q)
+            _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)  # PATCHED 2026-05-13: macOS Terminal sends SIGHUP on resize, causes crash
     except Exception:
         pass  # signal handler may fail in restricted environments
     
