@@ -355,6 +355,7 @@ export const tr: Translations = {
       tts: "Metinden Konuşmaya",
       stt: "Konuşmadan Metne",
       logging: "Günlükleme",
+      telegram: "Telegram",
       discord: "Discord",
       auxiliary: "Yardımcı",
     },

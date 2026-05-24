@@ -355,6 +355,7 @@ export const en: Translations = {
       tts: "Text-to-Speech",
       stt: "Speech-to-Text",
       logging: "Logging",
+      telegram: "Telegram",
       discord: "Discord",
       auxiliary: "Auxiliary",
     },
