@@ -3,11 +3,7 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  ConfigFullResponse,
-  ConfigMtimeResponse,
-  ReloadMcpResponse
-} from '../gatewayTypes.js'
+import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   type ParsedVoiceRecordKey,
@@ -24,6 +20,8 @@ import {
 } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
+import { getVimEnabled, setVimEnabled, setVimMode } from './vimModeStore.js'
+import { resetVimState } from './vimMode.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -194,6 +192,23 @@ export const applyDisplay = (
     statusBar: normalizeStatusBar(d.tui_statusbar),
     streaming: d.streaming !== false
   })
+
+  // Restore TUI vim mode from config. Prefer the TUI-specific key so
+  // `/vim off` in TUI doesn't disable CLI vim mode; fall back to the
+  // shared legacy `vi_mode` for compatibility with existing configs.
+  const tuiViMode = d.tui_vi_mode ?? d.vi_mode
+  const enabled = !!tuiViMode
+  const previousEnabled = getVimEnabled()
+
+  // Only reset state when the effective enabled/disabled setting changes.
+  // Config mtime refreshes can happen for unrelated display changes; resetting
+  // on every refresh would unexpectedly clear yank/undo state and force modes
+  // while the user is editing.
+  if (enabled !== previousEnabled) {
+    setVimEnabled(enabled)
+    setVimMode(enabled ? 'normal' : 'insert')
+    resetVimState()
+  }
 }
 
 export function useConfigSync({

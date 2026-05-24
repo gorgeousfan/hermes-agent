@@ -1,10 +1,12 @@
-import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
+import type { ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { Box, Text, type ScrollBoxHandle } from '@hermes/ink'
 import unicodeSpinners from 'unicode-animations'
 
-import { $delegationState } from '../app/delegationStore.js'
+import { $vimEnabled, $vimMode } from '../app/vimModeStore.js'
 import type { IndicatorStyle } from '../app/interfaces.js'
+import { $delegationState } from '../app/delegationStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
@@ -299,6 +301,22 @@ export function StatusRule({
   const bar = usage.context_max ? ctxBar(pct) : ''
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
+  const vimEnabled = useStore($vimEnabled)
+  const vimModeVal = useStore($vimMode)
+
+  const vimIndicator = (): ReactNode | null => {
+    if (!vimEnabled) return null
+    const isNormal = vimModeVal === 'normal'
+    return (
+      <Text color={isNormal ? t.color.accent : t.color.muted}>
+        {' │ '}
+        <Text bold color={isNormal ? t.color.accent : t.color.muted}>
+          {isNormal ? 'NORMAL' : 'INSERT'}
+        </Text>
+      </Text>
+    )
+  }
+
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
@@ -332,6 +350,7 @@ export function StatusRule({
             </Text>
           ) : null}
           <SpawnHud t={t} />
+          {vimIndicator()}
           {voiceLabel ? (
             <Text
               color={
