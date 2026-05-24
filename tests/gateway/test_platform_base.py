@@ -1,5 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import json
+import urllib.error
 import os
 from unittest.mock import patch
 
@@ -14,6 +16,406 @@ from gateway.platforms.base import (
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource
+
+
+class _StubAdapter(BasePlatformAdapter):
+    """Minimal concrete adapter for BasePlatformAdapter behavior tests."""
+
+    def __init__(self):
+        from gateway.config import Platform, PlatformConfig
+
+        super().__init__(config=PlatformConfig(enabled=True, token="test"), platform=Platform.TELEGRAM)
+        self.sent = []
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, *a, **kw):
+        pass
+
+    async def get_chat_info(self, *a):
+        return {}
+
+    async def _send_with_retry(self, chat_id, content, **kwargs):
+        self.sent.append((chat_id, content, kwargs))
+        return None
+
+
+class _FakeHttpResponse:
+    def __init__(self, body=b'{"run_id":"run_123","status":"started"}', status=202):
+        self._body = body
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, limit=-1):
+        return self._body[:limit if limit and limit > 0 else None]
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_starts_api_run_without_waiting_for_completion(monkeypatch):
+    captured = []
+
+    def fake_urlopen(req, timeout=None):
+        call = {
+            "url": req.full_url,
+            "method": req.get_method(),
+            "timeout": timeout,
+            "headers": dict(req.header_items()),
+            "body": json.loads(req.data.decode("utf-8")) if req.data else None,
+        }
+        captured.append(call)
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_123" in req.full_url:
+            return _FakeHttpResponse(
+                body=json.dumps({
+                    "object": "hermes.run",
+                    "run_id": "run_123",
+                    "status": "completed",
+                    "output": "Mirrored answer from the WebUI run.",
+                }).encode("utf-8"),
+                status=200,
+            )
+        # POST /v1/runs
+        return _FakeHttpResponse()
+
+    monkeypatch.setenv("API_SERVER_KEY", "secret-test-key")
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок, проверь",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="702",
+        reply_to_text="Need approval?",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "20260524_142634_986d3f",
+        "webui_url": "https://hermes.example.com/session/20260524_142634_986d3f",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    assert [call["url"] for call in captured[:2]] == [
+        "http://127.0.0.1:18642/v1/sessions/20260524_142634_986d3f/steer",
+        "http://127.0.0.1:18642/v1/runs",
+    ]
+    assert captured[0]["timeout"] <= 5
+    assert captured[1]["timeout"] <= 15
+    assert captured[1]["headers"]["X-hermes-session-id"] == "20260524_142634_986d3f"
+    assert captured[1]["headers"]["Authorization"] == "Bearer secret-test-key"
+    assert captured[1]["body"]["session_id"] == "20260524_142634_986d3f"
+    assert captured[1]["body"]["input"].startswith("[Telegram reply/follow-up to Hermes notification]")
+    # Polling fires for the fallback path and finishes on the first GET.
+    assert captured[2]["url"] == "http://127.0.0.1:18642/v1/runs/run_123"
+    assert captured[2]["method"] == "GET"
+    assert captured[2]["headers"]["Authorization"] == "Bearer secret-test-key"
+    assert len(adapter.sent) == 3
+    assert "Forwarding" in adapter.sent[0][1]
+    assert "started" in adapter.sent[1][1].lower()
+    assert "Mirrored answer from the WebUI run." in adapter.sent[2][1]
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_active_steer_skips_polling(monkeypatch):
+    """Active-steer path already streams through the WebUI; polling must not fire."""
+
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        assert req.full_url == "http://127.0.0.1:18642/v1/sessions/20260524_142634_986d3f/steer"
+        return _FakeHttpResponse(body=b'{"status":"accepted","run_id":"run_active"}')
+
+    monkeypatch.setenv("API_SERVER_KEY", "secret-test-key")
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок, продолжи",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="710",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "20260524_142634_986d3f",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    assert calls == ["http://127.0.0.1:18642/v1/sessions/20260524_142634_986d3f/steer"]
+    assert all("/v1/runs/" not in url for url in calls)
+    assert len(adapter.sent) == 2  # ack + accepted-into-active-run notice, no mirror.
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_fallback_mirrors_failed_run(monkeypatch):
+    """Failed origin run is surfaced to the Telegram chat with the error reason."""
+
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_fail" in req.full_url:
+            return _FakeHttpResponse(
+                body=json.dumps({
+                    "object": "hermes.run",
+                    "run_id": "run_fail",
+                    "status": "failed",
+                    "error": "model timed out",
+                }).encode("utf-8"),
+                status=200,
+            )
+        return _FakeHttpResponse(body=b'{"run_id":"run_fail","status":"started"}')
+
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок, продолжи",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="711",
+    )
+    route = {"kind": "webui_session", "api_session_id": "20260524_142634_986d3f"}
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    mirror = adapter.sent[-1][1]
+    assert "failed" in mirror.lower()
+    assert "model timed out" in mirror
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_fallback_mirrors_cancelled_run(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_cxl" in req.full_url:
+            return _FakeHttpResponse(
+                body=json.dumps({"status": "cancelled"}).encode("utf-8"),
+                status=200,
+            )
+        return _FakeHttpResponse(body=b'{"run_id":"run_cxl","status":"started"}')
+
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="712",
+    )
+    route = {"kind": "webui_session", "api_session_id": "sess_cxl"}
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    assert "cancelled" in adapter.sent[-1][1].lower()
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_fallback_polling_times_out(monkeypatch):
+    """Bounded polling: when the run never reaches a terminal status, we still
+    send a single follow-up pointing the user at the WebUI URL."""
+
+    poll_count = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_stuck" in req.full_url:
+            poll_count["n"] += 1
+            return _FakeHttpResponse(
+                body=json.dumps({"status": "running"}).encode("utf-8"),
+                status=200,
+            )
+        return _FakeHttpResponse(body=b'{"run_id":"run_stuck","status":"started"}')
+
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_WAIT_SECONDS", "0.5")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setenv("HERMES_WEBUI_PUBLIC_URL", "https://hermes.example.com")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="713",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "sess_stuck",
+        "webui_url": "https://hermes.example.com/chat?resume=sess_stuck",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    timeout_msg = adapter.sent[-1][1]
+    assert "still running" in timeout_msg
+    assert "https://hermes.example.com/chat?resume=sess_stuck" in timeout_msg
+    assert poll_count["n"] >= 2  # We actually polled more than once before giving up.
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_fallback_handles_waiting_for_approval(monkeypatch):
+    """waiting_for_approval is indefinite; emit one notice and stop polling."""
+
+    poll_count = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_appr" in req.full_url:
+            poll_count["n"] += 1
+            return _FakeHttpResponse(
+                body=json.dumps({"status": "waiting_for_approval"}).encode("utf-8"),
+                status=200,
+            )
+        return _FakeHttpResponse(body=b'{"run_id":"run_appr","status":"started"}')
+
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="714",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "sess_appr",
+        "webui_url": "https://hermes.example.com/chat?resume=sess_appr",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    final = adapter.sent[-1][1]
+    assert "approval" in final.lower()
+    assert "https://hermes.example.com/chat?resume=sess_appr" in final
+    assert poll_count["n"] == 1  # Exactly one GET; bail without further polling.
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_fallback_truncates_long_output(monkeypatch):
+    long_text = "X" * 5000
+
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_big" in req.full_url:
+            return _FakeHttpResponse(
+                body=json.dumps({"status": "completed", "output": long_text}).encode("utf-8"),
+                status=200,
+            )
+        return _FakeHttpResponse(body=b'{"run_id":"run_big","status":"started"}')
+
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="715",
+    )
+    route = {"kind": "webui_session", "api_session_id": "sess_big"}
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    mirror = adapter.sent[-1][1]
+    # Cap is 3500 chars of payload + small header; assert truncation happened
+    # and an ellipsis marker is present so the user knows it was cut.
+    assert "…" in mirror
+    assert len(mirror) < len(long_text) + 200
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_fallback_handles_missing_run(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
+        if "/v1/runs/run_404" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, "run swept", {}, None)
+        return _FakeHttpResponse(body=b'{"run_id":"run_404","status":"started"}')
+
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "0.05")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="716",
+    )
+    route = {"kind": "webui_session", "api_session_id": "sess_404"}
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    mirror = adapter.sent[-1][1]
+    assert "not found" in mirror.lower()
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_steers_active_api_session_before_starting_new_run(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append({
+            "url": req.full_url,
+            "timeout": timeout,
+            "headers": dict(req.header_items()),
+            "body": json.loads(req.data.decode("utf-8")),
+        })
+        assert req.full_url == "http://127.0.0.1:18642/v1/sessions/20260524_142634_986d3f/steer"
+        return _FakeHttpResponse(body=b'{"status":"accepted","run_id":"run_active"}')
+
+    monkeypatch.setenv("API_SERVER_KEY", "secret-test-key")
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок, правь",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="703",
+        reply_to_text="Need approval?",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "20260524_142634_986d3f",
+        "webui_url": "https://hermes.example.com/session/20260524_142634_986d3f",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    assert len(calls) == 1
+    assert calls[0]["headers"]["X-hermes-session-id"] == "20260524_142634_986d3f"
+    assert calls[0]["body"]["input"].startswith("[Telegram reply/follow-up to Hermes notification]")
+    assert len(adapter.sent) == 2
+    assert "Forwarding" in adapter.sent[0][1]
+    assert "active origin WebUI run" in adapter.sent[1][1]
+    assert "run_active" in adapter.sent[1][1]
 
 
 class TestSecretCaptureGuidance:

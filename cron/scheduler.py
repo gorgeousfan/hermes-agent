@@ -126,6 +126,50 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
+
+def _register_notification_route_from_send_result(
+    *,
+    platform_name: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    send_result,
+    job: dict,
+    origin: dict,
+) -> None:
+    """Record cron notification message ids so Telegram replies route to origin."""
+    if not send_result or not getattr(send_result, "success", True):
+        return
+    message_ids = []
+    message_id = getattr(send_result, "message_id", None)
+    if message_id is not None:
+        message_ids.append(str(message_id))
+    raw = getattr(send_result, "raw_response", None)
+    if isinstance(raw, dict):
+        for mid in raw.get("message_ids") or []:
+            if mid is not None:
+                message_ids.append(str(mid))
+    if not message_ids:
+        return
+    try:
+        from gateway.notification_routes import register_outbound_notification
+
+        route = {
+            "kind": "cron_delivery",
+            "job_id": job.get("id"),
+            "state": "delivered",
+            "source": origin,
+        }
+        register_outbound_notification(
+            platform=platform_name,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            message_ids=message_ids,
+            route=route,
+        )
+    except Exception as exc:
+        logger.debug("Job '%s': failed to register notification route: %s", job.get("id", "?"), exc)
+
+
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
@@ -695,7 +739,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 job["id"], platform_name, chat_id, err,
                             )
                             adapter_ok = False  # fall through to standalone path
-                        elif (
+                        else:
+                            _register_notification_route_from_send_result(
+                                platform_name=platform_name,
+                                chat_id=chat_id,
+                                thread_id=thread_id,
+                                send_result=send_result,
+                                job=job,
+                                origin=origin,
+                            )
+                        if (
                             send_result
                             and thread_id
                             and getattr(send_result, "raw_response", None)

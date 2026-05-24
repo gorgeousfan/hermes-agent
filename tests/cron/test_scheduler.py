@@ -788,6 +788,66 @@ class TestDeliverResultWrapping:
         assert "MEDIA:" not in text_sent
         assert "Report" in text_sent
 
+    def test_live_adapter_registers_notification_reply_route(self, tmp_path, monkeypatch):
+        """Cron live-adapter deliveries should register message_id -> origin routes."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+        import gateway.notification_routes as routes_mod
+        from gateway.notification_routes import resolve_exact_reply
+
+        monkeypatch.setattr(routes_mod, "_hermes_home", lambda: tmp_path)
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True, message_id="700", raw_response={})
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True, message_id="700", raw_response={}))
+            coro.close()
+            return future
+
+        job = {
+            "id": "route-job",
+            "name": "route job",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "thread_id": "24296",
+                "user_id": "456",
+                "user_name": "Alice",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            assert _deliver_result(
+                job,
+                "done",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            ) is None
+
+        resolved = resolve_exact_reply(
+            platform="telegram",
+            chat_id="123",
+            reply_to_message_id="700",
+            thread_id="24296",
+        )
+        assert resolved is not None
+        assert resolved["source"].chat_id == "123"
+        assert resolved["source"].thread_id == "24296"
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform

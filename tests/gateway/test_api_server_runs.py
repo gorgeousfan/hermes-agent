@@ -529,3 +529,41 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+def test_api_server_steer_active_session_targets_existing_agent():
+    from gateway.platforms.api_server import APIServerAdapter
+
+    adapter = APIServerAdapter.__new__(APIServerAdapter)
+    adapter._active_session_agents = {}
+    adapter._active_session_run_ids = {}
+
+    class Agent:
+        def __init__(self):
+            self.steered = []
+        def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    agent = Agent()
+    adapter._active_session_agents["sess-1"] = agent
+    adapter._active_session_run_ids["sess-1"] = "run_active"
+
+    accepted, run_id = adapter._steer_active_session("sess-1", "answer from telegram")
+
+    assert accepted is True
+    assert run_id == "run_active"
+    assert agent.steered == ["answer from telegram"]
+
+
+def test_api_server_steer_active_session_rejects_missing_session():
+    from gateway.platforms.api_server import APIServerAdapter
+
+    adapter = APIServerAdapter.__new__(APIServerAdapter)
+    adapter._active_session_agents = {}
+    adapter._active_session_run_ids = {}
+
+    accepted, run_id = adapter._steer_active_session("sess-1", "answer from telegram")
+
+    assert accepted is False
+    assert run_id is None

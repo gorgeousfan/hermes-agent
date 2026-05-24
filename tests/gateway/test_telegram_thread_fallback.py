@@ -169,6 +169,107 @@ def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
     assert build_session_key(event.source) == "agent:main:telegram:group:-100123:456"
 
 
+def test_reply_to_registered_notification_reroutes_to_origin_session(monkeypatch, tmp_path):
+    """Replying to a Hermes notification should use the recorded origin route.
+
+    Regression for tradebotint/hermes-agent#4: a reply in the delivery/home chat
+    must not create a fresh workflow keyed by the delivery chat when the outbound
+    notification message id is known to belong to a different origin session.
+    """
+    from gateway.platforms import telegram as telegram_mod
+    import gateway.notification_routes as routes_mod
+    from gateway.notification_routes import register_outbound_notification
+
+    monkeypatch.setattr(routes_mod, "_hermes_home", lambda: tmp_path)
+    register_outbound_notification(
+        platform="telegram",
+        chat_id="999",
+        message_ids=["700"],
+        route={
+            "kind": "background_process",
+            "session_key": "agent:main:telegram:dm:123:24296",
+            "source": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "thread_id": "24296",
+                "user_id": "456",
+                "user_name": "Alice",
+            },
+        },
+    )
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="continue there",
+        caption=None,
+        chat=SimpleNamespace(id=999, type=telegram_mod.ChatType.PRIVATE, title=None, full_name="Alice"),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=None,
+        is_topic_message=False,
+        reply_to_message=SimpleNamespace(message_id=700, text="Background process completed", caption=None),
+        message_id=701,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.reply_to_message_id == "700"
+    assert event.source.chat_id == "123"
+    assert event.source.chat_type == "dm"
+    assert event.source.thread_id == "24296"
+    assert event.source.user_id == "456"
+    assert build_session_key(event.source) == "agent:main:telegram:dm:123:24296"
+
+
+def test_recent_registered_notification_followup_reroutes_without_native_reply(monkeypatch, tmp_path):
+    """Fresh semantic follow-ups should continue the latest actionable origin."""
+    from gateway.platforms import telegram as telegram_mod
+    import gateway.notification_routes as routes_mod
+    from gateway.notification_routes import register_outbound_notification
+
+    monkeypatch.setattr(routes_mod, "_hermes_home", lambda: tmp_path)
+    register_outbound_notification(
+        platform="telegram",
+        chat_id="999",
+        message_ids=["700"],
+        route={
+            "kind": "background_process",
+            "session_key": "agent:main:telegram:dm:123:24296",
+            "source": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "thread_id": "24296",
+                "user_id": "456",
+                "user_name": "Alice",
+            },
+        },
+        ttl_seconds=1800,
+    )
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="ок, продолжай",
+        caption=None,
+        chat=SimpleNamespace(id=999, type=telegram_mod.ChatType.PRIVATE, title=None, full_name="Alice"),
+        from_user=SimpleNamespace(id=456, full_name="Alice"),
+        message_thread_id=None,
+        is_topic_message=False,
+        reply_to_message=None,
+        message_id=702,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.reply_to_message_id is None
+    assert event.source.chat_id == "123"
+    assert event.source.chat_type == "dm"
+    assert event.source.thread_id == "24296"
+    assert build_session_key(event.source) == "agent:main:telegram:dm:123:24296"
+
+
 def test_forum_group_topic_message_preserves_thread_session_key():
     """Real Telegram forum-topic messages should still route by topic id."""
     from gateway.platforms import telegram as telegram_mod

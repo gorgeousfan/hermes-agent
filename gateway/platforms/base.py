@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from utils import normalize_proxy_url
 
@@ -1081,6 +1081,11 @@ class MessageEvent:
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
+
+    # Metadata-only route for replies/follow-ups to outbound notifications.
+    # Used to bridge Telegram control replies into the originating WebUI/API
+    # session without treating the Telegram DM as the processing workspace.
+    notification_route: Optional[Dict[str, Any]] = None
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -3160,6 +3165,272 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    def _notification_route_webui_url(self, route: Dict[str, Any]) -> Optional[str]:
+        url = route.get("webui_url") if isinstance(route, dict) else None
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+        sid = (route.get("api_session_id") or route.get("session_id")) if isinstance(route, dict) else None
+        if not sid:
+            return None
+        try:
+            from gateway.notification_routes import build_webui_session_url
+            return build_webui_session_url(str(sid))
+        except Exception:
+            return None
+
+    async def _forward_notification_reply_to_api_session(self, event: MessageEvent, route: Dict[str, Any]) -> None:
+        """Forward a notification reply/follow-up into the origin WebUI/API session."""
+        api_session_id = str(route.get("api_session_id") or route.get("session_id") or "").strip()
+        if not api_session_id:
+            return
+        webui_url = self._notification_route_webui_url(route)
+        ack = "Forwarding reply to the origin WebUI chat."
+        if webui_url:
+            ack += f"\nChat: {webui_url}"
+        try:
+            await self._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=ack,
+                reply_to=_reply_anchor_for_event(event),
+                metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+            )
+        except Exception:
+            logger.debug("[%s] WebUI bridge ack failed", self.name, exc_info=True)
+
+        text = event.text or ""
+        if getattr(event, "reply_to_text", None):
+            text = f"[Telegram reply/follow-up to Hermes notification]\nReplying to: {event.reply_to_text[:500]}\n\n{text}"
+        else:
+            text = f"[Telegram semantic follow-up to Hermes notification]\n\n{text}"
+
+        def _post_origin_turn() -> tuple[bool, str, bool]:
+            import json as _json
+            import os as _os
+            import urllib.error as _urlerr
+            import urllib.request as _urlreq
+            api_key = (_os.getenv("API_SERVER_KEY") or _os.getenv("HERMES_API_SERVER_KEY") or "").strip()
+            port = (_os.getenv("API_SERVER_PORT") or "8642").strip()
+            headers = {"Content-Type": "application/json", "X-Hermes-Session-Id": api_session_id}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            def _request(url: str, payload: dict, timeout: float) -> tuple[int, str]:
+                data = _json.dumps(payload).encode("utf-8")
+                req = _urlreq.Request(url, data=data, headers=headers, method="POST")
+                with _urlreq.urlopen(req, timeout=timeout) as resp:
+                    body = resp.read(1000).decode("utf-8", "replace")
+                    status = int(getattr(resp, "status", 200) or 200)
+                    return status, body
+
+            steer_url = f"http://127.0.0.1:{port}/v1/sessions/{quote(api_session_id, safe='')}/steer"
+            try:
+                status, body = _request(steer_url, {"input": text}, timeout=5)
+                if 200 <= status < 300:
+                    return True, body, True
+            except _urlerr.HTTPError as exc:
+                if exc.code not in {404, 409}:
+                    body = exc.read(1000).decode("utf-8", "replace") if exc.fp else ""
+                    return False, f"HTTP {exc.code}: {body[:500]}", False
+            except Exception as exc:
+                return False, f"{type(exc).__name__}: {str(exc)[:500]}", False
+
+            runs_url = f"http://127.0.0.1:{port}/v1/runs"
+            try:
+                status, body = _request(
+                    runs_url,
+                    {"input": text, "session_id": api_session_id, "model": "Hermes Agent"},
+                    timeout=10,
+                )
+                return 200 <= status < 300, body, False
+            except _urlerr.HTTPError as exc:
+                body = exc.read(1000).decode("utf-8", "replace") if exc.fp else ""
+                return False, f"HTTP {exc.code}: {body[:500]}", False
+            except Exception as exc:
+                return False, f"{type(exc).__name__}: {str(exc)[:500]}", False
+
+        ok, detail, steered_active = await asyncio.to_thread(_post_origin_turn)
+        if ok:
+            run_id = ""
+            try:
+                parsed = __import__("json").loads(detail or "{}")
+                if isinstance(parsed, dict):
+                    run_id = str(parsed.get("run_id") or "").strip()
+            except Exception:
+                run_id = ""
+            if steered_active:
+                msg = "Reply delivered to the active origin WebUI run."
+            else:
+                msg = "Reply delivered to the origin WebUI chat and processing started."
+            if run_id:
+                msg += f"\nRun: `{run_id}`"
+            if webui_url:
+                msg += f"\nChat: {webui_url}"
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=msg,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+            except Exception:
+                logger.debug("[%s] WebUI bridge accepted ack failed", self.name, exc_info=True)
+            # Inactive WebUI session fallback: the open /chat?resume tab spawns
+            # its own PTY-backed agent and does NOT subscribe to runs created by
+            # other clients. Poll /v1/runs/{run_id} to terminal status and
+            # mirror the final assistant response back to the originating chat
+            # so the human sees the answer even when nothing is watching the
+            # WebUI session live. Active-steer already streams through the
+            # WebUI, so it does not need mirroring.
+            if not steered_active and run_id:
+                await self._poll_origin_run_and_mirror(
+                    event=event,
+                    run_id=run_id,
+                    webui_url=webui_url,
+                )
+        else:
+            logger.warning("[%s] WebUI bridge failed to start origin API run: %s", self.name, detail)
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content="Could not deliver the reply into the WebUI chat; check gateway/API logs.",
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+            except Exception:
+                pass
+
+    async def _poll_origin_run_and_mirror(
+        self,
+        *,
+        event: "MessageEvent",
+        run_id: str,
+        webui_url: Optional[str],
+    ) -> None:
+        """Poll a fallback /v1/runs run to completion and mirror its final response.
+
+        The fallback path (POST /v1/runs) creates a new run on an existing
+        WebUI session, but an already-open /chat?resume tab is a separate
+        PTY-backed agent process — it does not stream events from runs it did
+        not spawn. Without this mirror, the human who triggered the reply via
+        Telegram would only see the agent's answer after manually reloading
+        the WebUI session. This polls the API run and, on terminal status,
+        sends a single Telegram follow-up with the result.
+
+        Bounded by HERMES_NOTIFICATION_BRIDGE_WAIT_SECONDS (default 180,
+        clamp [0.5, 1800]) for total wait and
+        HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL (default 1.0,
+        clamp [0.05, 10.0]) for the initial poll interval (with mild
+        backoff, capped at 5s).
+        """
+        run_id = (run_id or "").strip()
+        if not run_id:
+            return
+        try:
+            timeout_s = float(os.getenv("HERMES_NOTIFICATION_BRIDGE_WAIT_SECONDS", "180") or "180")
+        except (TypeError, ValueError):
+            timeout_s = 180.0
+        timeout_s = max(0.5, min(timeout_s, 1800.0))
+        try:
+            interval_s = float(os.getenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "1") or "1")
+        except (TypeError, ValueError):
+            interval_s = 1.0
+        interval_s = max(0.05, min(interval_s, 10.0))
+
+        def _poll_once() -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+            import json as _json
+            import os as _os
+            import urllib.error as _urlerr
+            import urllib.request as _urlreq
+            api_key = (_os.getenv("API_SERVER_KEY") or _os.getenv("HERMES_API_SERVER_KEY") or "").strip()
+            port = (_os.getenv("API_SERVER_PORT") or "8642").strip()
+            headers = {"Accept": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            url = f"http://127.0.0.1:{port}/v1/runs/{quote(run_id, safe='')}"
+            try:
+                req = _urlreq.Request(url, headers=headers, method="GET")
+                with _urlreq.urlopen(req, timeout=5) as resp:
+                    body = resp.read(64000).decode("utf-8", "replace")
+                    try:
+                        parsed = _json.loads(body)
+                    except Exception:
+                        parsed = None
+                    status_code = int(getattr(resp, "status", 200) or 200)
+                    return status_code, parsed if isinstance(parsed, dict) else None
+            except _urlerr.HTTPError as exc:
+                return int(exc.code), None
+            except Exception:
+                return None, None
+
+        async def _send(content: str) -> None:
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=content,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+            except Exception:
+                logger.debug("[%s] WebUI bridge mirror send failed", self.name, exc_info=True)
+
+        deadline = time.monotonic() + timeout_s
+        final_payload: Optional[Dict[str, Any]] = None
+
+        while True:
+            status_code, payload = await asyncio.to_thread(_poll_once)
+            if status_code == 404:
+                await _send(
+                    f"Origin run `{run_id}` was not found; reply was queued — check the WebUI"
+                    + (f": {webui_url}" if webui_url else ".")
+                )
+                return
+            if status_code is not None and 200 <= status_code < 300 and payload is not None:
+                run_status = str(payload.get("status") or "").lower()
+                if run_status in {"completed", "failed", "cancelled"}:
+                    final_payload = payload
+                    break
+                if run_status == "waiting_for_approval":
+                    await _send(
+                        "Origin run is waiting for approval — open the WebUI to resolve"
+                        + (f": {webui_url}" if webui_url else ".")
+                    )
+                    return
+            if time.monotonic() >= deadline:
+                break
+            try:
+                await asyncio.sleep(min(interval_s, max(0.0, deadline - time.monotonic())))
+            except asyncio.CancelledError:
+                raise
+            interval_s = min(interval_s * 1.5, 5.0)
+
+        if final_payload is None:
+            await _send(
+                f"Origin run still running after {int(timeout_s)}s — open the WebUI to follow"
+                + (f": {webui_url}" if webui_url else ".")
+            )
+            return
+
+        status = str(final_payload.get("status") or "").lower()
+        if status == "completed":
+            output = str(final_payload.get("output") or "").strip()
+            if not output:
+                text = "Origin WebUI run completed (no textual response)."
+            else:
+                cap = 3500
+                if len(output) > cap:
+                    output = output[: cap - 1].rstrip() + "…"
+                text = f"Origin WebUI reply:\n\n{output}"
+        elif status == "failed":
+            err = str(final_payload.get("error") or "unknown error")
+            text = f"Origin WebUI run failed: {err[:1000]}"
+        elif status == "cancelled":
+            text = "Origin WebUI run was cancelled before completing."
+        else:
+            text = f"Origin WebUI run ended with status `{status}`."
+        if webui_url:
+            text += f"\nChat: {webui_url}"
+        await _send(text)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -3172,6 +3443,11 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
+
+        route = getattr(event, "notification_route", None)
+        if isinstance(route, dict) and (route.get("api_session_id") or route.get("kind") == "webui_session"):
+            asyncio.create_task(self._forward_notification_reply_to_api_session(event, route))
+            return
         
         session_key = build_session_key(
             event.source,

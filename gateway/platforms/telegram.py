@@ -5610,6 +5610,30 @@ class TelegramAdapter(BasePlatformAdapter):
                     or None
                 )
 
+        notification_route = None
+        try:
+            from gateway.notification_routes import resolve_notification_route_for_message
+
+            notification_route = resolve_notification_route_for_message(
+                platform="telegram",
+                chat_id=str(chat.id),
+                text=message.text or message.caption or "",
+                reply_to_message_id=reply_to_id,
+                thread_id=thread_id_str,
+            )
+            if notification_route is not None:
+                route_meta = notification_route.get("route") if isinstance(notification_route, dict) else None
+                if isinstance(route_meta, dict) and (route_meta.get("api_session_id") or route_meta.get("kind") == "webui_session"):
+                    # Preserve Telegram as the delivery source; BasePlatformAdapter
+                    # will bridge this turn into the recorded WebUI/API session.
+                    pass
+                else:
+                    routed_source = notification_route.get("source")
+                    if routed_source is not None:
+                        source = routed_source
+        except Exception as exc:
+            logger.debug("[%s] notification route resolution skipped: %s", self.name, exc)
+
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
@@ -5630,6 +5654,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            notification_route=(notification_route.get("route") if isinstance(notification_route, dict) else None),
             timestamp=message.date,
         )
 

@@ -690,6 +690,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # Active API/WebUI session -> current run/agent. Telegram notification
+        # replies use this to inject guidance into the origin process instead
+        # of spawning a competing run on the same session.
+        self._active_session_agents: Dict[str, Any] = {}
+        self._active_session_run_ids: Dict[str, str] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
@@ -2887,6 +2892,47 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
+    def _steer_active_session(self, session_id: str, text: str) -> tuple[bool, Optional[str]]:
+        """Inject text into the currently running API/WebUI agent for session_id."""
+        sid = str(session_id or "").strip()
+        if not sid or not text or not str(text).strip():
+            return False, None
+        agent = getattr(self, "_active_session_agents", {}).get(sid)
+        if agent is None:
+            return False, None
+        try:
+            accepted = bool(agent.steer(str(text)))
+        except Exception:
+            logger.exception("[api_server] active-session steer failed for %s", sid)
+            return False, None
+        if not accepted:
+            return False, None
+        return True, getattr(self, "_active_session_run_ids", {}).get(sid)
+
+    async def _handle_steer_session(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/steer — inject into active origin run."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info.get("session_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+        raw_input = body.get("input") or body.get("text") or body.get("message")
+        if not raw_input:
+            return web.json_response(_openai_error("Missing 'input' field"), status=400)
+        accepted, run_id = self._steer_active_session(session_id, str(raw_input))
+        if not accepted:
+            return web.json_response(
+                _openai_error(f"No active run for session: {session_id}", code="session_not_active"),
+                status=404,
+            )
+        return web.json_response(
+            {"object": "hermes.session.steer", "status": "accepted", "session_id": session_id, "run_id": run_id},
+            status=202,
+        )
+
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         auth_err = self._check_auth(request)
@@ -3011,6 +3057,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     gateway_session_key=gateway_session_key,
                 )
                 self._active_run_agents[run_id] = agent
+                self._active_session_agents[session_id] = agent
+                self._active_session_run_ids[session_id] = run_id
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -3163,6 +3211,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
+                if self._active_session_run_ids.get(session_id) == run_id:
+                    self._active_session_run_ids.pop(session_id, None)
+                    self._active_session_agents.pop(session_id, None)
                 self._run_approval_sessions.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_close())
@@ -3445,6 +3496,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
+            self._app.router.add_post("/v1/sessions/{session_id}/steer", self._handle_steer_session)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)

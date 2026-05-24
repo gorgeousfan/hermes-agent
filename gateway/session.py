@@ -325,6 +325,15 @@ def build_session_context_prompt(
             "current message's Slack block/attachment payload when available, but "
             "you still cannot call Slack APIs yourself."
         )
+    elif context.source.platform == Platform.TELEGRAM:
+        lines.append("")
+        lines.append(
+            "**Telegram routing notes:** You are running inside Telegram. Treat Telegram as a lightweight control inbox, not as the only workspace. "
+            "If the user message is a native reply or a short semantic follow-up to a recent Hermes status/notification/question (for example: ‘да’, ‘ок’, ‘продолжай’, ‘проверь’, ‘он точно?’, ‘проблем не будет?’), continue the originating task/process/chat rather than starting unrelated work in the Telegram DM. "
+            "If the message is a non-trivial standalone task, create or use a fresh WebUI chat/session for that task and send a concise Telegram status with a direct WebUI /session link and git/GitHub artifact links when available. "
+            "For key events, questions, approvals, blockers, and completion statuses, notify Telegram concisely and include direct links to the relevant WebUI chat/session and durable git/GitHub artifacts. "
+            "Do not rely only on Telegram native reply metadata: infer short semantic answers to your latest notification as continuation intent, but do not hijack long or unrelated new tasks into an old process."
+        )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
         # Discord tools loaded this session — i.e. the user opted into
