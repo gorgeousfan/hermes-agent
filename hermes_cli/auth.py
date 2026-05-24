@@ -698,7 +698,7 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     cached = state.get("detected_endpoint")
     if isinstance(cached, dict) and cached.get("base_url"):
         key_hash = cached.get("key_hash", "")
-        if key_hash == hashlib.sha256(api_key.encode()).hexdigest()[:16]:
+        if key_hash == hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]:
             logger.debug("Z.AI: using cached endpoint %s", cached["base_url"])
             return cached["base_url"]
 
@@ -706,7 +706,7 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     detected = detect_zai_endpoint(api_key)
     if detected and detected.get("base_url"):
         # Persist the detection result keyed on the API key hash.
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+        key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
         state["detected_endpoint"] = {
             "base_url": detected["base_url"],
             "endpoint_id": detected.get("id", ""),
@@ -6829,7 +6829,7 @@ def _minimax_pkce_pair() -> tuple:
     import secrets
     verifier = secrets.token_urlsafe(64)[:96]
     challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode()).digest()
+        hashlib.sha256(verifier.encode("utf-8")).digest()
     ).decode().rstrip("=")
     state = secrets.token_urlsafe(16)
     return verifier, challenge, state

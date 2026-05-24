@@ -250,7 +250,7 @@ def _cmd_test(args):
     import hmac
     import hashlib
     sig = "sha256=" + hmac.new(
-        secret.encode(), payload.encode(), hashlib.sha256
+        secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
     print(f"  Sending test POST to {url}")
@@ -258,7 +258,7 @@ def _cmd_test(args):
         import urllib.request
         req = urllib.request.Request(
             url,
-            data=payload.encode(),
+            data=payload.encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "X-Hub-Signature-256": sig,

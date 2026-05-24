@@ -1473,6 +1473,8 @@ class AIAgent:
             return "<entra-id-bearer>"
         if not key:
             return None
+        if not isinstance(key, str):
+            return repr(key)[:12]
         if len(key) <= 12:
             return "***"
         return f"{key[:8]}...{key[-4:]}"

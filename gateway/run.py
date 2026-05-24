@@ -14793,7 +14793,7 @@ class GatewayRunner:
         # (e.g. "eyJhbGci"), which can cause false cache hits across auth
         # switches if only the first few characters are considered.
         _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+        _api_key_fingerprint = hashlib.sha256(_api_key.encode("utf-8")).hexdigest() if _api_key else ""
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 
@@ -14813,7 +14813,7 @@ class GatewayRunner:
             sort_keys=True,
             default=str,
         )
-        return hashlib.sha256(blob.encode()).hexdigest()[:16]
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
