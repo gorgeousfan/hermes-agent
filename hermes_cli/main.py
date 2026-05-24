@@ -1352,13 +1352,18 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         npm = _node_bin("npm")
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
+        # Strip NODE_ENV so devDependencies (esbuild, typescript, …) install
+        # even when inherited from a production-mode parent (e.g. the bundled
+        # TUI launcher sets NODE_ENV=production on its node subprocess).
+        sub_env = {**os.environ, "CI": "1"}
+        sub_env.pop("NODE_ENV", None)
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(tui_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "CI": "1"},
+            env=sub_env,
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
@@ -6469,6 +6474,7 @@ def _run_npm_install_deterministic(
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -6480,6 +6486,9 @@ def _run_npm_install_deterministic(
     lockfile — repeatedly.
     """
     lockfile = cwd / "package-lock.json"
+    # Strip NODE_ENV so devDependencies (esbuild, etc.) are always installed
+    sub_env = dict(os.environ) if env is None else dict(env)
+    sub_env.pop("NODE_ENV", None)
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
@@ -6490,6 +6499,7 @@ def _run_npm_install_deterministic(
             encoding="utf-8",
             errors="replace",
             check=False,
+            env=sub_env,
         )
         if ci_result.returncode == 0:
             return ci_result
@@ -6504,6 +6514,7 @@ def _run_npm_install_deterministic(
         encoding="utf-8",
         errors="replace",
         check=False,
+        env=sub_env,
     )
 
 
