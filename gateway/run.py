@@ -7617,18 +7617,30 @@ class GatewayRunner:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
-            # If _run_agent replaced the sentinel with a real agent and
-            # then cleaned it up, this is a no-op.  If we exited early
-            # (exception, command fallthrough, etc.) the sentinel must
-            # not linger or the session would be permanently locked out.
-            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
-                self._release_running_agent_state(_quick_key)
-            else:
-                # Agent path already cleaned _running_agents; make sure
-                # the paired metadata dicts are gone too.
-                self._running_agents_ts.pop(_quick_key, None)
-                if hasattr(self, "_busy_ack_ts"):
-                    self._busy_ack_ts.pop(_quick_key, None)
+            # Unconditional release — covers all exit paths:
+            #
+            # (a) Normal path: _run_agent completed and already called
+            #     _release_running_agent_state(key, run_generation=N).
+            #     _release_running_agent_state is idempotent (pop on absent
+            #     key is harmless), so this is a safe no-op.
+            #
+            # (b) Early exit (exception, command fallthrough): the sentinel
+            #     is still in the slot; this clears it so the session isn't
+            #     permanently locked.
+            #
+            # (c) Zombie race (#28686): session_reset bumps the run
+            #     generation (N → N+1) while gen-N's _run_agent finally
+            #     runs. The generation guard in _release_running_agent_state
+            #     returns False, leaving the dead gen-N agent in the slot.
+            #     The outer finally's old sentinel-check was also False (slot
+            #     holds a real agent, not the sentinel), so it fell into the
+            #     else-branch which popped _running_agents_ts and _busy_ack_ts
+            #     but NOT _running_agents[key]. Every subsequent message to
+            #     the session hit the "agent busy" guard and was silently
+            #     dropped. The unconditional call here — without a
+            #     run_generation guard — always clears the slot, regardless
+            #     of which generation the slot currently holds.
+            self._release_running_agent_state(_quick_key)
 
     async def _prepare_inbound_message_text(
         self,
@@ -9079,6 +9091,15 @@ class GatewayRunner:
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
+        # Evict the stale agent slot immediately after bumping the generation.
+        # Without this, if the in-flight run's _release_running_agent_state
+        # was blocked by the generation guard (old gen != new gen), the slot
+        # retains the dead agent and the outer _process_message_or_command
+        # finally may also leave it in place — creating a zombie that silently
+        # drops all subsequent messages (#28686).  _release_running_agent_state
+        # is idempotent, so calling it here and again in the agent's own
+        # finally is safe.
+        self._release_running_agent_state(session_key)
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
