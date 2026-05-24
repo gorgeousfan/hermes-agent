@@ -2432,6 +2432,25 @@ class BasePlatformAdapter(ABC):
         one of them succeeds within the 5s platform-side window, the bubble
         stays visible across provider stalls / upstream API timeouts.
         """
+        # Optional configurable delay before showing typing indicator.
+        # Set per-platform via ``typing_indicator_delay`` (seconds) in
+        # the platform config.  0 = immediate (default, prior behavior).
+        _delay = float(
+            getattr(getattr(self, "config", None), "extra", {}).get(
+                "typing_indicator_delay", 0
+            )
+        )
+        if _delay > 0:
+            if stop_event is not None:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=_delay)
+                except asyncio.TimeoutError:
+                    pass  # delay elapsed, proceed to show typing
+                if stop_event.is_set():
+                    return
+            else:
+                await asyncio.sleep(_delay)
+
         # Bound each send_typing round-trip so the refresh cadence isn't
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
