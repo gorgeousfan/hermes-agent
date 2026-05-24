@@ -152,10 +152,22 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     out = kc.run_slash("create 'x' --assignee alice")
     import re
     tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
-    # Claim first so block() finds it running
+    # Claim first so block() finds it running. First-run human gates must use
+    # the explicit escape hatch, not the reviewer-handoff path.
     kc.run_slash(f"claim {tid}")
-    assert "Blocked" in kc.run_slash(f"block {tid} 'need decision'")
+    assert "Blocked" in kc.run_slash(f"block {tid} --human-gate 'need decision'")
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
+def test_run_slash_block_without_human_gate_preserves_review_prerequisite(kanban_home):
+    out = kc.run_slash("create 'x' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+
+    blocked = kc.run_slash(f"block {tid} 'implementation handoff parked as blocked'")
+
+    assert "requires at least 2 review_requested" in blocked
 
 
 def test_run_slash_json_output(kanban_home):
