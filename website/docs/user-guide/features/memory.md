@@ -207,8 +207,8 @@ See [Session Search Tool](/docs/user-guide/sessions#session-search-tool) for the
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  memory_char_limit: 2200   # ~800 tokens
-  user_char_limit: 1375     # ~500 tokens
+  memory_char_limit: 10000  # ~3600 tokens
+  user_char_limit: 5000     # ~1800 tokens
 ```
 
 ## External Memory Providers
