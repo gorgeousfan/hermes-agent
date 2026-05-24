@@ -1072,8 +1072,7 @@ class HonchoMemoryProvider(MemoryProvider):
           1. Observation is disabled for this peer
           2. Card hasn't accumulated yet (fresh peer, not enough dialectic
              cycles — dialectic cadence runs every N turns)
-          3. Self-hosted Honcho backend doesn't support peer cards
-             (honcho-ai server < 3.x)
+          3. Backend / SDK lookup path still isn't surfacing an existing card
         """
         cfg = self._config
         reasons: List[str] = []
@@ -1103,8 +1102,9 @@ class HonchoMemoryProvider(MemoryProvider):
         if not reasons:
             reasons.append(
                 "peer card has no facts yet — Honcho's dialectic layer builds "
-                "this over time from observed turns; self-hosted Honcho < 3.x "
-                "does not support peer cards at all"
+                "this over time from observed turns; some self-hosted Honcho "
+                "deployments or SDK versions may also expose peer cards "
+                "inconsistently"
             )
 
         return {

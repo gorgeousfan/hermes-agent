@@ -1017,7 +1017,14 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            if card or not target_peer_id or target_peer_id == observer_peer_id:
+                return card
+
+            # Some self-hosted / SDK combinations can return an empty card for
+            # observer->target lookups even though the target peer itself has a
+            # populated card. Fall back to the target peer's direct self-card.
+            return self._fetch_peer_card(target_peer_id)
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
