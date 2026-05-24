@@ -1314,7 +1314,7 @@ class TestSendTyping:
 
     @pytest.mark.asyncio
     async def test_stop_typing_handles_api_error_gracefully(self, adapter):
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
         adapter._app.client.assistant_threads_setStatus = AsyncMock(
             side_effect=Exception("missing_scope")
         )
@@ -1326,13 +1326,34 @@ class TestSendTyping:
             thread_ts="parent_ts",
             status="",
         )
-        assert "C123" not in adapter._active_status_threads
+        # Thread stays tracked when the clear fails so a later stop_typing
+        # can retry — the typing indicator is still set on Slack's side.
+        assert adapter._active_status_threads["C123"] == {"parent_ts"}
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_partial_failure_keeps_failed_thread_tracked(self, adapter):
+        """Mixed success/failure: cleared threads are discarded, failures stay tracked."""
+        adapter._active_status_threads["C123"] = {"thread_ok", "thread_fail"}
+
+        async def setstatus(channel_id, thread_ts, status):
+            if thread_ts == "thread_fail":
+                raise Exception("network blip")
+            return None
+
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(side_effect=setstatus)
+
+        await adapter.stop_typing("C123")
+
+        # Both threads were attempted.
+        assert adapter._app.client.assistant_threads_setStatus.call_count == 2
+        # Only the failed thread remains; the successful one was cleared.
+        assert adapter._active_status_threads["C123"] == {"thread_fail"}
 
     @pytest.mark.asyncio
     async def test_send_clears_status_after_final_post(self, adapter):
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
 
         result = await adapter.send("C123", "done", metadata={"thread_id": "parent_ts"})
 
@@ -1349,7 +1370,7 @@ class TestSendTyping:
     async def test_streaming_final_edit_clears_status(self, adapter):
         adapter._app.client.chat_update = AsyncMock()
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
 
         result = await adapter.edit_message(
             "C123",
@@ -1375,7 +1396,7 @@ class TestSendTyping:
     async def test_streaming_intermediate_edit_keeps_status(self, adapter):
         adapter._app.client.chat_update = AsyncMock()
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
 
         result = await adapter.edit_message(
             "C123",
@@ -1386,7 +1407,128 @@ class TestSendTyping:
 
         assert result.success
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
-        assert adapter._active_status_threads["C123"] == "parent_ts"
+        assert adapter._active_status_threads["C123"] == {"parent_ts"}
+
+    @pytest.mark.asyncio
+    async def test_send_typing_tracks_multiple_concurrent_threads(self, adapter):
+        """Two concurrent Assistant threads in the same chat must both be tracked.
+
+        Regression for #24117: when the same chat hosts overlapping
+        Assistant requests, the second send_typing must not overwrite the
+        first thread's tracked ts.
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.send_typing("C123", metadata={"thread_id": "thread_a"})
+        await adapter.send_typing("C123", metadata={"thread_id": "thread_b"})
+
+        assert adapter._active_status_threads["C123"] == {"thread_a", "thread_b"}
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_clears_only_targeted_thread(self, adapter):
+        """stop_typing with metadata must only clear that thread, not siblings.
+
+        Regression for #24117: clearing the newer thread's status must
+        not implicitly clear the older thread, otherwise the older
+        thread is left stuck in "is thinking…".
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"thread_a", "thread_b"}
+
+        await adapter.stop_typing("C123", metadata={"thread_id": "thread_b"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="thread_b",
+            status="",
+        )
+        assert adapter._active_status_threads["C123"] == {"thread_a"}
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_without_metadata_clears_all_tracked(self, adapter):
+        """stop_typing(chat_id) without metadata clears every tracked thread.
+
+        The legacy stop_typing(chat_id) path — used by base.py wiring that
+        doesn't have thread context — must still clear every status it
+        knows about, otherwise threads leak.
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"thread_a", "thread_b"}
+
+        await adapter.stop_typing("C123")
+
+        assert adapter._app.client.assistant_threads_setStatus.await_count == 2
+        called_thread_ts = {
+            c.kwargs["thread_ts"]
+            for c in adapter._app.client.assistant_threads_setStatus.await_args_list
+        }
+        assert called_thread_ts == {"thread_a", "thread_b"}
+        assert "C123" not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_send_clears_only_targeted_thread_among_concurrent(self, adapter):
+        """The send() finalize path must clear only its own thread's status.
+
+        Concurrent-thread regression for #24117: send() previously called
+        stop_typing(chat_id) which popped the dict, clearing whichever
+        thread_ts happened to be stored (often the wrong one).
+        """
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"thread_a", "thread_b"}
+
+        result = await adapter.send("C123", "done", metadata={"thread_id": "thread_a"})
+
+        assert result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="thread_a",
+            status="",
+        )
+        # thread_b must still be tracked — its own send hasn't completed yet.
+        assert adapter._active_status_threads["C123"] == {"thread_b"}
+
+    @pytest.mark.asyncio
+    async def test_send_failure_clears_thread_status(self, adapter):
+        """A failed send must not leave the Slack thread stuck in "is thinking…".
+
+        Regression for #24117: previously the exception path did not
+        clear the assistant status, so an upstream Slack post error
+        would leave the user staring at "is thinking…" indefinitely.
+        """
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=Exception("slack down")
+        )
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"thread_a"}
+
+        result = await adapter.send("C123", "done", metadata={"thread_id": "thread_a"})
+
+        assert not result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="thread_a",
+            status="",
+        )
+        assert "C123" not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
+    async def test_active_status_threads_bounded_per_chat(self, adapter):
+        """The per-chat tracking set is capped so missed clears don't leak.
+
+        If stop_typing is never called for some threads (e.g. crash, lost
+        metadata), the set could otherwise grow unboundedly.
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._ACTIVE_STATUS_THREADS_PER_CHAT_MAX = 4
+
+        for i in range(20):
+            await adapter.send_typing("C123", metadata={"thread_id": f"ts_{i}"})
+
+        # The most recently added thread is always retained.
+        tracked = adapter._active_status_threads["C123"]
+        assert len(tracked) <= 4
+        assert "ts_19" in tracked
 
 
 # ---------------------------------------------------------------------------
