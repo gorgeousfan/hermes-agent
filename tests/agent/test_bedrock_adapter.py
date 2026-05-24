@@ -891,6 +891,61 @@ class TestClientCache:
         assert len(_bedrock_control_client_cache) == 0
 
 
+class TestRequireBoto3LazyInstall:
+    """Regression: _require_boto3 must route through tools.lazy_deps.ensure.
+
+    Post-2026-05-12, boto3 lives in LAZY_DEPS["provider.bedrock"] rather
+    than [all]. Without this hop, fresh installs hit the manual-install
+    error on the very first Bedrock call even though lazy installs are
+    enabled. Mirrors the pattern in agent.anthropic_adapter.
+
+    Tests stub boto3 via sys.modules so they run in minimal CI environments
+    where the real boto3 isn't installed (per the 2026-05-12 policy that
+    removed it from [all]).
+    """
+
+    def _fake_boto3(self):
+        import types
+        return types.ModuleType("boto3")
+
+    def test_require_boto3_calls_ensure_provider_bedrock(self):
+        import sys
+        from agent import bedrock_adapter
+
+        calls = []
+
+        def fake_ensure(feature, prompt=True):
+            calls.append((feature, prompt))
+
+        fake = self._fake_boto3()
+        with patch.dict(sys.modules, {"boto3": fake}), \
+             patch("tools.lazy_deps.ensure", side_effect=fake_ensure):
+            result = bedrock_adapter._require_boto3()
+
+        assert result is fake
+        assert ("provider.bedrock", False) in calls, (
+            "_require_boto3 should call ensure('provider.bedrock', prompt=False); "
+            f"got {calls!r}"
+        )
+
+    def test_require_boto3_tolerates_ensure_failure(self):
+        # If ensure() raises (e.g. FeatureUnavailable because lazy installs
+        # are disabled, or offline), _require_boto3 must fall through to the
+        # normal import attempt rather than propagating.
+        import sys
+        from agent import bedrock_adapter
+
+        fake = self._fake_boto3()
+        with patch.dict(sys.modules, {"boto3": fake}), \
+             patch(
+                 "tools.lazy_deps.ensure",
+                 side_effect=RuntimeError("lazy installs disabled"),
+             ):
+            mod = bedrock_adapter._require_boto3()
+
+        assert mod is fake
+
+
 # ---------------------------------------------------------------------------
 # Streaming with callbacks
 # ---------------------------------------------------------------------------
