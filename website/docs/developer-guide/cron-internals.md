@@ -102,7 +102,7 @@ tick()
 
 ### Gateway Integration
 
-In gateway mode, the scheduler runs in a dedicated background thread (`_start_cron_ticker` in `gateway/run.py`) that calls `scheduler.tick()` every 60 seconds alongside message handling.
+In gateway mode, the scheduler runs in a dedicated background cron ticker thread (`_start_cron_ticker` in `gateway/run.py`) that calls `scheduler.tick()` on a periodic cycle alongside message handling. A watchdog thread monitors that ticker and restarts it automatically if it dies.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 

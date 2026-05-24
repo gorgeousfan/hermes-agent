@@ -17719,6 +17719,67 @@ class GatewayRunner:
         return response
 
 
+def _spawn_cron_ticker_thread(
+    stop_event: threading.Event,
+    adapters=None,
+    loop=None,
+    interval: int = 60,
+) -> threading.Thread:
+    """Start a cron ticker thread and return it."""
+    thread = threading.Thread(
+        target=_start_cron_ticker,
+        args=(stop_event,),
+        kwargs={"adapters": adapters, "loop": loop, "interval": interval},
+        daemon=True,
+        name="cron-ticker",
+    )
+    thread.start()
+    return thread
+
+
+def _cron_ticker_watchdog_step(
+    stop_event: threading.Event,
+    ticker_state: dict,
+    restart_ticker,
+) -> bool:
+    """Check whether the cron ticker is still alive and restart if needed.
+
+    Returns False when the watchdog should stop (shutdown requested), otherwise
+    True so the caller can keep monitoring.
+    """
+    if stop_event.is_set():
+        return False
+
+    ticker_thread = ticker_state.get("thread")
+    if ticker_thread is None or ticker_thread.is_alive():
+        return True
+
+    logger.critical("Cron ticker watchdog detected a dead ticker thread; restarting it")
+    new_thread = restart_ticker()
+    ticker_state["thread"] = new_thread
+    logger.info("Cron ticker watchdog restarted the cron ticker thread")
+    return True
+
+
+def _start_cron_ticker_watchdog(
+    stop_event: threading.Event,
+    ticker_state: dict,
+    restart_ticker,
+    check_interval: int = 30,
+):
+    """Monitor the cron ticker thread and restart it if it dies unexpectedly."""
+    logger.info("Cron ticker watchdog started (interval=%ds)", check_interval)
+    try:
+        while not stop_event.wait(timeout=check_interval):
+            _cron_ticker_watchdog_step(stop_event, ticker_state, restart_ticker)
+    except Exception as exc:
+        logger.critical("Cron ticker watchdog failed: %s", exc, exc_info=True)
+        stop_event.set()
+        os._exit(1)
+    finally:
+        logger.info("Cron ticker watchdog stopped")
+
+
 def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
@@ -18165,14 +18226,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
-    cron_thread = threading.Thread(
-        target=_start_cron_ticker,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+    event_loop = asyncio.get_running_loop()
+    cron_thread_state = {
+        "thread": _spawn_cron_ticker_thread(
+            cron_stop,
+            adapters=runner.adapters,
+            loop=event_loop,
+        ),
+    }
+    cron_watchdog_thread = threading.Thread(
+        target=_start_cron_ticker_watchdog,
+        args=(
+            cron_stop,
+            cron_thread_state,
+            lambda: _spawn_cron_ticker_thread(
+                cron_stop,
+                adapters=runner.adapters,
+                loop=event_loop,
+            ),
+        ),
+        kwargs={"check_interval": 30},
         daemon=True,
-        name="cron-ticker",
+        name="cron-ticker-watchdog",
     )
-    cron_thread.start()
+    cron_watchdog_thread.start()
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
@@ -18184,7 +18261,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Stop cron ticker cleanly
     cron_stop.set()
-    cron_thread.join(timeout=5)
+    cron_thread_state["thread"].join(timeout=5)
+    cron_watchdog_thread.join(timeout=5)
 
     # Close MCP server connections
     try:
