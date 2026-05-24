@@ -23,6 +23,28 @@ gateway:
   config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
   config_save_failed: "⚠️ 无法保存配置：{error}"
 
+  # /status 状态回调 — 长工具链处理期间在聊天中显示。
+  still_working: "⏳ 还在处理中...（{elapsed} 分钟已过{status}）"
+
+  # /steer 回复 — 用户设置引导提示时显示。
+  steer_agent_starting: "Agent 正在启动中 — /steer 已排队到下一轮。"
+  steer_no_agent: "没有活跃的 Agent — /steer 已排队到下一轮。"
+  steer_failed: "⚠️ 执行 /steer 失败：{exc}"
+  steer_queued: "⏩ /steer 已排队 — 下一轮工具调用后执行：'{preview}'"
+  steer_rejected: "/steer 被拒绝（内容为空）。"
+
+  # 命令因 Agent 正在运行被拒绝。
+  agent_running_switch_model: "Agent 正在运行中 — 请等待或先 /stop，然后再切换模型。"
+  agent_running_change_runtime: "Agent 正在运行中 — 请等待或先 /stop，然后再切换运行环境。"
+  agent_running_goal: "Agent 正在运行中 — 请在运行中使用 /goal status / pause / clear，或先 /stop 再设置新目标。"
+  agent_running_cmd_blocked: "⏳ Agent 正在运行中 — `/{cmd}` 不能在运行时执行。请等待当前响应完成或先 `/stop`。"
+
+  # 会话/配置错误消息。
+  session_not_found: "会话未找到：{session_id}"
+
+  # /goal 无目标时（含设置指引）。
+  no_active_goal_with_set: "没有活跃的目标。请使用 /goal <文本> 设置一个。"
+
   model:
     error_prefix:           "错误：{error}"
     switched:               "已切换模型为 `{model}`"
