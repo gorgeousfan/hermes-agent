@@ -124,7 +124,18 @@ _check_fn_cache_lock = threading.Lock()
 
 
 def _check_fn_cached(fn: Callable) -> bool:
-    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False.
+
+    Most checks probe slow external state and are safe to cache briefly. A few
+    checks depend on per-agent runtime scope (for example env vars injected by
+    the kanban dispatcher) and must be evaluated on every schema build; those
+    callables can set ``_hermes_check_fn_cacheable = False``.
+    """
+    if getattr(fn, "_hermes_check_fn_cacheable", True) is False:
+        try:
+            return bool(fn())
+        except Exception:
+            return False
     now = time.monotonic()
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)

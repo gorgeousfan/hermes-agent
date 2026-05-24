@@ -40,8 +40,9 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 
 
 def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
-    """Worker sessions get task lifecycle tools, not board-routing tools."""
+    """Generic worker sessions get lifecycle tools, not graph-routing tools."""
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -56,7 +57,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_comment",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -108,12 +109,15 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
-    assert {
+    restricted = {
         "kanban_list",
         "kanban_unblock",
-    }.isdisjoint(kanban), (
+        "kanban_create",
+        "kanban_link",
+    }
+    assert restricted.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & restricted}"
     )
 
 
@@ -142,18 +146,70 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
+def test_kanban_tool_visibility_does_not_leak_across_context_cache(monkeypatch, tmp_path):
+    """Orchestrator visibility must not be cached into worker schemas."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    requested = set(resolve_toolset("hermes-cli"))
+    orchestrator_schema = registry.get_definitions(requested, quiet=True)
+    orchestrator_names = {
+        s["function"].get("name") for s in orchestrator_schema if "function" in s
+    }
+    assert "kanban_create" in orchestrator_names
+    assert "kanban_link" in orchestrator_names
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    worker_schema = registry.get_definitions(requested, quiet=True)
+    worker_names = {
+        s["function"].get("name") for s in worker_schema if "function" in s
+    }
+    assert "kanban_show" in worker_names
+    assert "kanban_create" not in worker_names
+    assert "kanban_link" not in worker_names
+    assert "kanban_list" not in worker_names
+    assert "kanban_unblock" not in worker_names
+
+
+def test_create_rejects_unscoped_profile_without_kanban_toolset(monkeypatch, tmp_path):
+    """Direct handler calls still enforce the orchestrator toolset boundary."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    out = kt._handle_create({"title": "child", "assignee": "worker"})
+    assert "orchestrator-only" in json.loads(out).get("error", "")
+    with kb.connect() as conn:
+        assert kb.list_tasks(conn) == []
+
+
 # ---------------------------------------------------------------------------
 # Handler happy paths
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def worker_env(monkeypatch, tmp_path):
+def _make_worker_env(monkeypatch, tmp_path, *, profile: str):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
     after we've created the task."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setenv("HERMES_PROFILE", profile)
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
@@ -163,12 +219,37 @@ def worker_env(monkeypatch, tmp_path):
     kb.init_db()
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
+        tid = kb.create_task(conn, title="worker-test", assignee=profile)
         kb.claim_task(conn, tid)
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
     return tid
+
+
+@pytest.fixture
+def worker_env(monkeypatch, tmp_path):
+    return _make_worker_env(monkeypatch, tmp_path, profile="test-worker")
+
+
+@pytest.fixture
+def orchestrator_env(monkeypatch, tmp_path):
+    """Simulate an orchestrator profile with the kanban toolset enabled."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "kanban-orchestrator")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        return kb.create_task(conn, title="orchestrator-parent", assignee="worker")
 
 
 def test_show_defaults_to_env_task_id(worker_env):
@@ -196,7 +277,7 @@ def test_show_explicit_task_id(worker_env):
     assert d["task"]["id"] == other
 
 
-def test_list_filters_tasks(monkeypatch, worker_env):
+def test_list_filters_tasks(monkeypatch, orchestrator_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
@@ -227,21 +308,21 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert tenant_ids == [c]
 
 
-def test_list_rejects_invalid_status(monkeypatch, worker_env):
+def test_list_rejects_invalid_status(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     out = kt._handle_list({"status": "not-a-state"})
     assert "status must be one of" in json.loads(out).get("error", "")
 
 
-def test_list_rejects_bad_limit(monkeypatch, worker_env):
+def test_list_rejects_bad_limit(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_list({"limit": "nope"})).get("error")
     assert json.loads(kt._handle_list({"limit": 0})).get("error")
 
 
-def test_list_parses_include_archived_string_false(monkeypatch, worker_env):
+def test_list_parses_include_archived_string_false(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
@@ -262,7 +343,7 @@ def test_list_parses_include_archived_string_false(monkeypatch, worker_env):
     assert archived not in ids
 
 
-def test_list_parses_include_archived_string_true(monkeypatch, worker_env):
+def test_list_parses_include_archived_string_true(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
@@ -283,7 +364,7 @@ def test_list_parses_include_archived_string_true(monkeypatch, worker_env):
     assert archived in ids
 
 
-def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
+def test_list_rejects_bad_include_archived(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
@@ -566,13 +647,17 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
-    # Create a real child via the tool so it gets the worker-profile
-    # attribution the gate trusts.
-    child = json.loads(kt._handle_create({
-        "title": "real child", "assignee": "peer",
-    }))
-    assert child["ok"]
-    real_id = child["task_id"]
+    # Create a real linked child row. The created_cards gate trusts
+    # children already linked to the completing task, regardless of which
+    # orchestrator created them.
+    with kb.connect() as conn:
+        real_id = kb.create_task(
+            conn,
+            title="real child",
+            assignee="worker",
+            parents=[worker_env],
+            created_by="kanban-orchestrator",
+        )
 
     # First attempt mixes real + phantom — gate rejects.
     rejected = json.loads(kt._handle_complete({
@@ -747,12 +832,49 @@ def test_comment_schema_omits_author_override():
     assert "author" not in props
 
 
-def test_create_happy_path(worker_env):
+def test_create_rejects_dispatcher_worker(worker_env):
+    """Dispatcher-scoped workers cannot fan out the task graph.
+
+    Graph mutation is reserved for orchestrator contexts. Focused workers
+    should comment/block instead of spawning follow-up tasks.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "unauthorized child",
+        "assignee": "coder",
+        "parents": [worker_env],
+    })
+    err = json.loads(out).get("error", "")
+    assert "orchestrator-only" in err
+    with kb.connect() as conn:
+        rows = kb.list_tasks(conn)
+    assert [t.title for t in rows] == ["worker-test"]
+
+
+def test_link_rejects_dispatcher_worker(worker_env):
+    """Dispatcher-scoped workers cannot mutate dependency topology."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="A", assignee="x")
+        b = kb.create_task(conn, title="B", assignee="x")
+
+    out = kt._handle_link({"parent_id": a, "child_id": b})
+    err = json.loads(out).get("error", "")
+    assert "orchestrator-only" in err
+    with kb.connect() as conn:
+        assert b not in kb.child_ids(conn, a)
+
+
+def test_create_happy_path(orchestrator_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "child task",
-        "assignee": "peer",
-        "parents": [worker_env],
+        "assignee": "coder",
+        "parents": [orchestrator_env],
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -763,12 +885,12 @@ def test_create_happy_path(worker_env):
     try:
         child = kb.get_task(conn, d["task_id"])
         assert child.title == "child task"
-        assert child.assignee == "peer"
+        assert child.assignee == "coder"
     finally:
         conn.close()
 
 
-def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
+def test_create_stamps_session_id_from_env(monkeypatch, orchestrator_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``
     reads it and stamps the new task so clients can render a per-session
@@ -778,8 +900,8 @@ def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "from chat",
-        "assignee": "peer",
-        "parents": [worker_env],
+        "assignee": "coder",
+        "parents": [orchestrator_env],
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -791,7 +913,7 @@ def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
         conn.close()
 
 
-def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
+def test_create_session_id_arg_overrides_env(monkeypatch, orchestrator_env):
     """An explicit ``session_id`` arg from the model wins over the env
     propagation. Edge case but exercised: a tool call could carry a
     different session id (e.g. cross-session linking) and the explicit
@@ -801,8 +923,8 @@ def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "explicit override",
-        "assignee": "peer",
-        "parents": [worker_env],
+        "assignee": "coder",
+        "parents": [orchestrator_env],
         "session_id": "explicit-arg",
     })
     d = json.loads(out)
@@ -815,7 +937,7 @@ def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
         conn.close()
 
 
-def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
+def test_create_session_id_absent_when_env_unset(monkeypatch, orchestrator_env):
     """No env var, no arg → session_id stays NULL. Important for backwards
     compatibility: pre-ACP-propagation hosts and CLI-driven creates must
     not accidentally inherit a stale id."""
@@ -824,8 +946,8 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "no session",
-        "assignee": "peer",
-        "parents": [worker_env],
+        "assignee": "coder",
+        "parents": [orchestrator_env],
     })
     d = json.loads(out)
     assert d["ok"] is True
@@ -837,29 +959,29 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
         conn.close()
 
 
-def test_create_rejects_no_title(worker_env):
+def test_create_rejects_no_title(orchestrator_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")
     assert json.loads(kt._handle_create({"title": "   ", "assignee": "x"})).get("error")
 
 
-def test_create_rejects_no_assignee(worker_env):
+def test_create_rejects_no_assignee(orchestrator_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"title": "t"})).get("error")
 
 
-def test_create_rejects_non_list_parents(worker_env):
+def test_create_rejects_non_list_parents(orchestrator_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({"title": "t", "assignee": "a", "parents": 42})
     assert json.loads(out).get("error")
 
 
-def test_create_parses_triage_string_false(worker_env):
+def test_create_parses_triage_string_false(orchestrator_env):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "not triage",
-        "assignee": "peer",
+        "assignee": "coder",
         "triage": "false",
     })
     d = json.loads(out)
@@ -872,12 +994,12 @@ def test_create_parses_triage_string_false(worker_env):
         conn.close()
 
 
-def test_create_parses_triage_string_true(worker_env):
+def test_create_parses_triage_string_true(orchestrator_env):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "needs triage",
-        "assignee": "peer",
+        "assignee": "coder",
         "triage": "true",
     })
     d = json.loads(out)
@@ -890,7 +1012,7 @@ def test_create_parses_triage_string_true(worker_env):
         conn.close()
 
 
-def test_create_rejects_bad_triage(worker_env):
+def test_create_rejects_bad_triage(orchestrator_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
         "title": "bad triage",
@@ -900,22 +1022,22 @@ def test_create_rejects_bad_triage(worker_env):
     assert "triage must be" in json.loads(out).get("error", "")
 
 
-def test_create_accepts_string_parent(worker_env):
+def test_create_accepts_string_parent(orchestrator_env):
     """Convenience: a single parent id as string is coerced to [id]."""
     from tools import kanban_tools as kt
     out = kt._handle_create({
-        "title": "t", "assignee": "a", "parents": worker_env,
+        "title": "t", "assignee": "coder", "parents": orchestrator_env,
     })
     assert json.loads(out)["ok"]
 
 
-def test_create_accepts_skills_list(worker_env):
+def test_create_accepts_skills_list(orchestrator_env):
     """Tool writes the per-task skills through to the kernel."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "skilled",
-        "assignee": "linguist",
+        "assignee": "coder",
         "skills": ["translation", "github-code-review"],
     })
     d = json.loads(out)
@@ -925,13 +1047,13 @@ def test_create_accepts_skills_list(worker_env):
     assert task.skills == ["translation", "github-code-review"]
 
 
-def test_create_accepts_skills_string(worker_env):
+def test_create_accepts_skills_string(orchestrator_env):
     """Convenience: a single skill name as string is coerced to [name]."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     out = kt._handle_create({
         "title": "one-skill",
-        "assignee": "a",
+        "assignee": "coder",
         "skills": "translation",
     })
     d = json.loads(out)
@@ -941,7 +1063,7 @@ def test_create_accepts_skills_string(worker_env):
     assert task.skills == ["translation"]
 
 
-def test_create_rejects_non_list_skills(worker_env):
+def test_create_rejects_non_list_skills(orchestrator_env):
     """skills: 42 must be rejected, not silently dropped."""
     from tools import kanban_tools as kt
     out = kt._handle_create({
@@ -950,7 +1072,7 @@ def test_create_rejects_non_list_skills(worker_env):
     assert json.loads(out).get("error")
 
 
-def test_link_happy_path(worker_env):
+def test_link_happy_path(orchestrator_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -964,19 +1086,19 @@ def test_link_happy_path(worker_env):
     assert d["ok"] is True
 
 
-def test_link_rejects_self_reference(worker_env):
+def test_link_rejects_self_reference(orchestrator_env):
     from tools import kanban_tools as kt
-    out = kt._handle_link({"parent_id": worker_env, "child_id": worker_env})
+    out = kt._handle_link({"parent_id": orchestrator_env, "child_id": orchestrator_env})
     assert json.loads(out).get("error")
 
 
-def test_link_rejects_missing_args(worker_env):
+def test_link_rejects_missing_args(orchestrator_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_link({"parent_id": "x"})).get("error")
     assert json.loads(kt._handle_link({"child_id": "y"})).get("error")
 
 
-def test_link_rejects_cycle(worker_env):
+def test_link_rejects_cycle(orchestrator_env):
     """A → B, then try to link B → A."""
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
@@ -990,7 +1112,7 @@ def test_link_rejects_cycle(worker_env):
     assert json.loads(out).get("error")
 
 
-def test_unblock_happy_path(monkeypatch, worker_env):
+def test_unblock_happy_path(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
@@ -1013,10 +1135,10 @@ def test_unblock_happy_path(monkeypatch, worker_env):
         conn.close()
 
 
-def test_unblock_rejects_non_blocked_task(monkeypatch, worker_env):
+def test_unblock_rejects_non_blocked_task(monkeypatch, orchestrator_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
-    out = kt._handle_unblock({"task_id": worker_env})
+    out = kt._handle_unblock({"task_id": orchestrator_env})
     assert json.loads(out).get("error")
 
 
@@ -1039,18 +1161,19 @@ def test_worker_lifecycle_through_tools(worker_env):
         "body": "note: using stdlib sqlite3 bindings",
     }))["ok"]
 
-    # 4. spawn a child task for follow-up
-    child_out = json.loads(kt._handle_create({
+    # 4. generic workers do not spawn follow-up cards; they record handoff
+    # information in comments/metadata and then complete or block.
+    denied = json.loads(kt._handle_create({
         "title": "write integration test",
         "assignee": "qa",
         "parents": [worker_env],
     }))
-    assert child_out["ok"]
+    assert denied.get("error")
 
     # 5. complete with structured handoff
     comp = json.loads(kt._handle_complete({
-        "summary": "implemented + spawned QA follow-up",
-        "metadata": {"child_task": child_out["task_id"]},
+        "summary": "implemented; QA follow-up noted in comments, not spawned",
+        "metadata": {"follow_up": "write integration test"},
     }))
     assert comp["ok"]
 
@@ -1063,13 +1186,9 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert parent.current_run_id is None
         run = kb.latest_run(conn, worker_env)
         assert run.outcome == "completed"
-        assert run.metadata == {"child_task": child_out["task_id"]}
-        # Child is todo (parent just finished, but recompute_ready may
-        # have promoted it — complete_task runs recompute internally).
-        child = kb.get_task(conn, child_out["task_id"])
-        assert child.status == "ready", (
-            f"child should be ready after parent done, got {child.status}"
-        )
+        assert run.metadata == {"follow_up": "write integration test"}
+        # No child task was created by the denied follow-up attempt.
+        assert len([t for t in kb.list_tasks(conn) if t.title == "write integration test"]) == 0
         # Comment is visible
         assert len(kb.list_comments(conn, worker_env)) == 1
         # Heartbeat event recorded
@@ -1142,6 +1261,8 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "orchestrator-only graph-routing" in prompt
+    assert "Record follow-up work" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 
@@ -1170,9 +1291,9 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
 # kanban_unblock) must refuse to operate
 # on any OTHER task id, even if the caller supplies an explicit `task_id`
-# argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create / kanban_link on other tasks, so those
-# are unrestricted.
+# argument. Workers legitimately call kanban_show / kanban_comment on other
+# tasks, while graph tools (kanban_create / kanban_link) are limited to the
+# orchestrator graph-routing surface.
 #
 # Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
 # exempt — their job is routing, and they sometimes close out child
@@ -1409,6 +1530,7 @@ def multi_board_env(monkeypatch, tmp_path):
     """
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Make sure neither HERMES_KANBAN_DB nor HERMES_KANBAN_BOARD pin a
     # board — the test is specifically about the per-call override.

@@ -77,22 +77,30 @@ def _check_kanban_mode() -> bool:
 
 
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock) are intentionally
-    hidden from task workers.
+    """Board-routing tools are intentionally hidden from task workers.
 
     Dispatcher-spawned workers should close their own task via the
-    lifecycle tools (complete/block/heartbeat), not enumerate or unblock
-    board state. Profiles that explicitly opt into the kanban toolset
-    and are NOT scoped to a single task are the orchestrator surface.
+    lifecycle tools (complete/block/heartbeat), not enumerate, create,
+    unblock, or rewire board state. Profiles that explicitly opt into the
+    kanban toolset and are NOT scoped to a single task are the orchestrator
+    surface.
     """
     if os.environ.get("HERMES_KANBAN_TASK"):
         return False
     return _profile_has_kanban_toolset()
 
 
+# Kanban availability checks depend on per-agent environment injected by the
+# dispatcher, so the registry must not reuse a cached orchestrator result for a
+# later worker context in the same long-lived process.
+setattr(_check_kanban_mode, "_hermes_check_fn_cacheable", False)
+setattr(_check_kanban_orchestrator_mode, "_hermes_check_fn_cacheable", False)
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _default_task_id(arg: Optional[str]) -> Optional[str]:
     """Resolve ``task_id`` arg or fall back to the env var the dispatcher set."""
@@ -209,17 +217,23 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
 
     The check_fn (`_check_kanban_orchestrator_mode`) keeps these tools
     out of the worker schema entirely, but in case a stale registration
-    or test harness routes a worker to one of them anyway, return a
+    or test harness routes a caller to one of them anyway, return a
     structured tool_error so the model gets a clear refusal instead of
-    silently mutating board state from a worker context.
+    silently mutating board state from a non-orchestrator context.
     """
+    if _check_kanban_orchestrator_mode():
+        return None
     if os.environ.get("HERMES_KANBAN_TASK"):
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
             "kanban_comment for their assigned task."
         )
-    return None
+    return tool_error(
+        f"{tool_name} is orchestrator-only; enable the kanban toolset from "
+        "an unscoped orchestrator profile before mutating board topology."
+    )
+
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -637,11 +651,15 @@ def _handle_comment(args: dict, **kw) -> str:
 
 
 def _handle_create(args: dict, **kw) -> str:
-    """Create a child task. Orchestrator workers use this to fan out.
+    """Create a child task from an orchestrator context.
 
     ``parents`` can be a list of task ids; dependency-gated promotion
-    works as usual.
+    works as usual. Dispatcher-scoped workers are denied by policy and
+    should comment/block instead of growing the graph.
     """
+    guard = _require_orchestrator_tool("kanban_create")
+    if guard:
+        return guard
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -750,6 +768,9 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
+    guard = _require_orchestrator_tool("kanban_link")
+    if guard:
+        return guard
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     if not parent_id or not child_id:
@@ -1047,12 +1068,10 @@ KANBAN_COMMENT_SCHEMA = {
 KANBAN_CREATE_SCHEMA = {
     "name": "kanban_create",
     "description": (
-        "Create a new kanban task, optionally as a child of the current "
-        "one (pass the current task id in ``parents``). Used by "
-        "orchestrator workers to fan out — decompose work into child "
-        "tasks with specific assignees, link them into a pipeline, "
-        "then complete your own task. The dispatcher picks up the new "
-        "tasks on its next tick and spawns the assigned profiles."
+        "Create a new kanban task, optionally as a child of an existing "
+        "task (pass parent task ids in ``parents``). This is an "
+        "orchestrator-only graph-routing tool; dispatcher-scoped workers "
+        "should add a comment or block instead of spawning follow-up tasks."
     ),
     "parameters": {
         "type": "object",
@@ -1197,7 +1216,8 @@ KANBAN_LINK_SCHEMA = {
     "description": (
         "Add a parent→child dependency edge after both tasks already "
         "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "are 'done'. Cycles and self-links are rejected. This is an "
+        "orchestrator-only graph-routing tool."
     ),
     "parameters": {
         "type": "object",
@@ -1274,7 +1294,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_CREATE_SCHEMA,
     handler=_handle_create,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="➕",
 )
 
@@ -1292,6 +1312,6 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_LINK_SCHEMA,
     handler=_handle_link,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="🔗",
 )
