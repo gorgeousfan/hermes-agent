@@ -976,7 +976,9 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
-def _extract_text(item_list: List[Dict[str, Any]]) -> str:
+def _extract_text(
+    item_list: List[Dict[str, Any]], *, skip_voice_text: bool = False
+) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -997,11 +999,12 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
                 if parts:
                     return f"[引用: {' | '.join(parts)}]\n{text}".strip()
             return text
-    for item in item_list:
-        if item.get("type") == ITEM_VOICE:
-            voice_text = str((item.get("voice_item") or {}).get("text") or "")
-            if voice_text:
-                return voice_text
+    if not skip_voice_text:
+        for item in item_list:
+            if item.get("type") == ITEM_VOICE:
+                voice_text = str((item.get("voice_item") or {}).get("text") or "")
+                if voice_text:
+                    return voice_text
     return ""
 
 
@@ -1225,6 +1228,16 @@ class WeixinAdapter(BasePlatformAdapter):
             or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
             default=False,
         )
+        # When True, ignore Tencent Cloud's pre-baked voice_item.text and route
+        # the raw audio through Hermes' own STT pipeline. Tencent STT defaults
+        # to zh/en and garbles other languages, so non-Chinese users want this
+        # on. Off by default to preserve current behavior for Chinese users.
+        self._prefer_local_voice_stt = _coerce_bool(
+            extra.get("prefer_local_voice_stt")
+            if extra.get("prefer_local_voice_stt") is not None
+            else os.getenv("WEIXIN_PREFER_LOCAL_VOICE_STT"),
+            default=False,
+        )
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1390,7 +1403,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         # Secondary content-fingerprint dedup for text messages
         item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
+        text = _extract_text(item_list, skip_voice_text=self._prefer_local_voice_stt)
         if text:
             content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
             if self._dedup.is_duplicate(content_key):
@@ -1529,7 +1542,7 @@ class WeixinAdapter(BasePlatformAdapter):
     async def _download_voice(self, item: Dict[str, Any]) -> Optional[str]:
         voice_item = item.get("voice_item") or {}
         media = voice_item.get("media") or {}
-        if voice_item.get("text"):
+        if voice_item.get("text") and not self._prefer_local_voice_stt:
             return None
         try:
             data = await _download_and_decrypt_media(

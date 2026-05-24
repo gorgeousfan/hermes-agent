@@ -883,3 +883,173 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+class TestWeixinPreferLocalVoiceStt:
+    """Regression tests for Issue #27300 — Tencent Cloud's voice_item.text
+    is non-Chinese-language-hostile (it transcribes Russian/Arabic/etc. as
+    garbled English/Chinese). Operators can opt into routing the raw audio
+    through Hermes' own STT pipeline instead.
+    """
+
+    @staticmethod
+    def _voice_message() -> dict:
+        return {
+            "from_user_id": "wxid_user_ru",
+            "message_id": "voice-msg-1",
+            "item_list": [
+                {
+                    "type": weixin.ITEM_VOICE,
+                    "voice_item": {
+                        "text": "garbled tencent transcription",
+                        "media": {
+                            "encrypt_query_param": "eq",
+                            "aes_key": "ZmFrZQ==",
+                            "full_url": "https://cdn.example.com/v",
+                        },
+                    },
+                }
+            ],
+        }
+
+    def test_default_extract_text_returns_tencent_voice_text(self):
+        # Baseline (no opt-in): _extract_text returns Tencent's voice text so
+        # the message reaches the agent as garbled text. This is the current
+        # international-user-hostile behavior — the test pins it so the fix's
+        # opt-in stays opt-in.
+        item_list = self._voice_message()["item_list"]
+        assert weixin._extract_text(item_list) == "garbled tencent transcription"
+
+    def test_skip_voice_text_drops_tencent_voice_text(self):
+        item_list = self._voice_message()["item_list"]
+        assert weixin._extract_text(item_list, skip_voice_text=True) == ""
+
+    def test_extract_text_still_returns_real_text_items_when_skipping_voice(self):
+        # The skip flag only suppresses voice-item fallback. A real text item
+        # adjacent to a voice item must still come through.
+        item_list = [
+            {"type": weixin.ITEM_TEXT, "text_item": {"text": "hello"}},
+            {
+                "type": weixin.ITEM_VOICE,
+                "voice_item": {"text": "ignored"},
+            },
+        ]
+        assert weixin._extract_text(item_list, skip_voice_text=True) == "hello"
+
+    def test_download_voice_skips_audio_when_feature_off_and_tencent_text_present(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        # Feature off by default — Tencent's text wins, audio not fetched.
+        assert adapter._prefer_local_voice_stt is False
+
+        with patch.object(
+            weixin, "_download_and_decrypt_media", new_callable=AsyncMock
+        ) as download_mock:
+            result = asyncio.run(
+                adapter._download_voice(self._voice_message()["item_list"][0])
+            )
+
+        assert result is None
+        download_mock.assert_not_awaited()
+
+    def test_download_voice_fetches_audio_when_feature_on_even_with_tencent_text(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "prefer_local_voice_stt": True,
+                },
+            )
+        )
+        adapter._poll_session = object()
+
+        with patch.object(
+            weixin, "_download_and_decrypt_media", new_callable=AsyncMock
+        ) as download_mock, patch.object(
+            weixin, "cache_audio_from_bytes", return_value="/tmp/voice.silk"
+        ) as cache_mock:
+            download_mock.return_value = b"silk-bytes"
+            result = asyncio.run(
+                adapter._download_voice(self._voice_message()["item_list"][0])
+            )
+
+        assert result == "/tmp/voice.silk"
+        download_mock.assert_awaited_once()
+        cache_mock.assert_called_once_with(b"silk-bytes", ".silk")
+
+    def test_env_var_enables_feature(self):
+        with patch.dict(os.environ, {"WEIXIN_PREFER_LOCAL_VOICE_STT": "1"}, clear=False):
+            adapter = WeixinAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="test-token",
+                    extra={"account_id": "test-account"},
+                )
+            )
+        assert adapter._prefer_local_voice_stt is True
+
+    def test_extra_false_overrides_env_true(self):
+        # Explicit extra:false must win over env:true (config locality).
+        with patch.dict(os.environ, {"WEIXIN_PREFER_LOCAL_VOICE_STT": "1"}, clear=False):
+            adapter = WeixinAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    token="test-token",
+                    extra={
+                        "account_id": "test-account",
+                        "prefer_local_voice_stt": False,
+                    },
+                )
+            )
+        assert adapter._prefer_local_voice_stt is False
+
+    def test_process_message_with_feature_on_routes_audio_to_media(self):
+        # End-to-end: inbound voice message with Tencent text becomes a
+        # text-empty event whose media_urls contains the decrypted audio path,
+        # so the downstream agent / media pipeline can run local STT on it.
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="test-token",
+                extra={
+                    "account_id": "test-account",
+                    "prefer_local_voice_stt": True,
+                },
+            )
+        )
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        with patch.object(
+            weixin, "_download_and_decrypt_media", new_callable=AsyncMock
+        ) as download_mock, patch.object(
+            weixin, "cache_audio_from_bytes", return_value="/tmp/voice.silk"
+        ):
+            download_mock.return_value = b"silk-bytes"
+            asyncio.run(adapter._process_message(self._voice_message()))
+
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args[0][0]
+        assert event.text == ""
+        assert "/tmp/voice.silk" in event.media_urls
+        assert "audio/silk" in event.media_types
+
+    def test_process_message_with_feature_off_uses_tencent_text(self):
+        # Baseline: with feature off, the existing behavior must be preserved
+        # — Tencent's text becomes the message text and no audio is fetched.
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        with patch.object(
+            weixin, "_download_and_decrypt_media", new_callable=AsyncMock
+        ) as download_mock:
+            asyncio.run(adapter._process_message(self._voice_message()))
+
+        download_mock.assert_not_awaited()
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args[0][0]
+        assert event.text == "garbled tencent transcription"
+        assert event.media_urls == []
