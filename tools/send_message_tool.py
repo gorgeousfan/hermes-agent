@@ -16,6 +16,7 @@ from email.utils import formatdate
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
+from gateway.telegram_ids import normalize_telegram_chat_id, parse_telegram_username_target
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # because the API requires a conversation ID. To DM a user you must first call
 # conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
 # through to channel-name resolution, which only matches by name and fails.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
@@ -346,6 +347,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        username = parse_telegram_username_target(target_ref)
+        if username:
+            return username, None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -866,7 +870,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
-        int_chat_id = int(chat_id)
+        api_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
@@ -905,7 +909,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
-                    chat_id=int_chat_id, text=formatted,
+                    chat_id=api_chat_id, text=formatted,
                     parse_mode=send_parse_mode, **text_kwargs
                 )
             except Exception as md_error:
@@ -920,7 +924,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     text_kwargs.pop("message_thread_id", None)
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
-                        chat_id=int_chat_id, text=formatted,
+                        chat_id=api_chat_id, text=formatted,
                         parse_mode=send_parse_mode, **text_kwargs
                     )
                 elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
@@ -939,7 +943,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         plain = message
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
-                        chat_id=int_chat_id, text=plain,
+                        chat_id=api_chat_id, text=plain,
                         parse_mode=None, **text_kwargs
                     )
                 else:
@@ -959,23 +963,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(
-                                chat_id=int_chat_id, photo=f, **media_kwargs
+                                chat_id=api_chat_id, photo=f, **media_kwargs
                             )
                         elif ext in _VIDEO_EXTS:
                             last_msg = await bot.send_video(
-                                chat_id=int_chat_id, video=f, **media_kwargs
+                                chat_id=api_chat_id, video=f, **media_kwargs
                             )
                         elif ext in _VOICE_EXTS and is_voice:
                             last_msg = await bot.send_voice(
-                                chat_id=int_chat_id, voice=f, **media_kwargs
+                                chat_id=api_chat_id, voice=f, **media_kwargs
                             )
                         elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
                             last_msg = await bot.send_audio(
-                                chat_id=int_chat_id, audio=f, **media_kwargs
+                                chat_id=api_chat_id, audio=f, **media_kwargs
                             )
                         else:
                             last_msg = await bot.send_document(
-                                chat_id=int_chat_id, document=f, **media_kwargs
+                                chat_id=api_chat_id, document=f, **media_kwargs
                             )
                     except Exception as media_err:
                         if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
@@ -990,23 +994,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             media_kwargs.pop("message_thread_id", None)
                             if ext in _IMAGE_EXTS and not force_document:
                                 last_msg = await bot.send_photo(
-                                    chat_id=int_chat_id, photo=f, **media_kwargs
+                                    chat_id=api_chat_id, photo=f, **media_kwargs
                                 )
                             elif ext in _VIDEO_EXTS:
                                 last_msg = await bot.send_video(
-                                    chat_id=int_chat_id, video=f, **media_kwargs
+                                    chat_id=api_chat_id, video=f, **media_kwargs
                                 )
                             elif ext in _VOICE_EXTS and is_voice:
                                 last_msg = await bot.send_voice(
-                                    chat_id=int_chat_id, voice=f, **media_kwargs
+                                    chat_id=api_chat_id, voice=f, **media_kwargs
                                 )
                             elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
                                 last_msg = await bot.send_audio(
-                                    chat_id=int_chat_id, audio=f, **media_kwargs
+                                    chat_id=api_chat_id, audio=f, **media_kwargs
                                 )
                             else:
                                 last_msg = await bot.send_document(
-                                    chat_id=int_chat_id, document=f, **media_kwargs
+                                    chat_id=api_chat_id, document=f, **media_kwargs
                                 )
                         else:
                             raise
