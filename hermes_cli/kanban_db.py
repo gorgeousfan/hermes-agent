@@ -1884,19 +1884,38 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
+        parent_status = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+        ).fetchone()["status"]
+        child = conn.execute(
+            "SELECT status, claim_lock FROM tasks WHERE id = ?", (child_id,)
+        ).fetchone()
+        if parent_status != "done":
+            child_status = child["status"]
+            child_claim_lock = child["claim_lock"]
+            if child_status == "ready" and not child_claim_lock:
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
+                _append_event(
+                    conn,
+                    child_id,
+                    "depromoted",
+                    {
+                        "reason": "linked under unfinished parent",
+                        "parent_id": parent_id,
+                    },
+                )
+            elif child_status in {"running", "blocked", "done", "gave_up", "archived"} or child_claim_lock:
+                raise ValueError(
+                    f"cannot link {child_id} under unfinished parent {parent_id}: "
+                    f"child already started (status={child_status})"
+                )
         conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
-            )
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},

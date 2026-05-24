@@ -223,6 +223,42 @@ def test_link_demotes_ready_child_to_todo_when_parent_not_done(kanban_home):
         assert kb.get_task(conn, b).status == "ready"
         kb.link_tasks(conn, a, b)
         assert kb.get_task(conn, b).status == "todo"
+        assert [e.kind for e in kb.list_events(conn, b)][-2:] == ["depromoted", "linked"]
+
+
+def test_link_rejects_running_child_when_parent_not_done(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", assignee="worker")
+        assert kb.claim_task(conn, child) is not None
+
+        with pytest.raises(ValueError, match="child already started"):
+            kb.link_tasks(conn, parent, child)
+
+        assert kb.get_task(conn, child).status == "running"
+        edge = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (parent, child),
+        ).fetchone()
+        assert edge is None
+
+
+def test_link_rejects_blocked_child_when_parent_not_done(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", assignee="worker")
+        assert kb.claim_task(conn, child) is not None
+        assert kb.block_task(conn, child, reason="waiting on review")
+
+        with pytest.raises(ValueError, match="child already started"):
+            kb.link_tasks(conn, parent, child)
+
+        assert kb.get_task(conn, child).status == "blocked"
+        edge = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (parent, child),
+        ).fetchone()
+        assert edge is None
 
 
 def test_link_keeps_ready_child_when_parent_already_done(kanban_home):
