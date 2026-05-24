@@ -1445,6 +1445,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
+        self._adapter_start_time: float = 0.0  # set on connect(); used to skip stale inbound events
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
@@ -1664,6 +1665,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            self._adapter_start_time = time.time()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -2397,6 +2399,27 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message or not sender or not getattr(sender, "sender_id", None):
             logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
             return
+
+        # Skip stale messages that predate this adapter instance (e.g. events
+        # queued on the Feishu server while the gateway was down and delivered
+        # on reconnect).  Without this guard a "restart" message sent while
+        # the gateway was offline would be replayed on startup, potentially
+        # creating an infinite restart loop.
+        if self._adapter_start_time > 0:
+            create_time_raw = getattr(message, "create_time", None)
+            if create_time_raw is not None:
+                try:
+                    # Feishu SDK exposes create_time as a millisecond string
+                    create_time = float(create_time_raw) / 1000.0
+                    if create_time < self._adapter_start_time - 5.0:
+                        logger.info(
+                            "[Feishu] Skipping stale message %s (created %.1fs before adapter start)",
+                            getattr(message, "message_id", "?"),
+                            self._adapter_start_time - create_time,
+                        )
+                        return
+                except (ValueError, TypeError):
+                    pass  # unparseable — let the message through
 
         message_id = getattr(message, "message_id", None)
         if not message_id or self._is_duplicate(message_id):
