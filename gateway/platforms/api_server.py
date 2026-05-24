@@ -856,6 +856,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         gateway_session_key: Optional[str] = None,
     ) -> Any:
         """
@@ -904,6 +905,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -1201,6 +1203,33 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_reasoning(text):
+                """Forward chain-of-thought tokens to the SSE stream as a
+                dedicated ``delta.reasoning_content`` chunk.
+
+                Unifies two upstream reasoning sources:
+
+                  * A-class — structured ``delta.reasoning_content`` from
+                    DeepSeek/Moonshot/Kimi/GLM/MiniMax/Tencent thinking
+                    modes; arrives via ``run_agent._fire_reasoning_delta``
+                    on the model's reasoning channel.
+                  * B-class — ``<think>`` / ``<thinking>`` / ``<reasoning>``
+                    inline tags from open-weights models (Qwen3 thinking,
+                    finetunes following the DeepSeek-R1 prompt template,
+                    MiniMax-M2.7, etc.); the ``StreamingThinkScrubber``
+                    now surfaces the scrubbed-out text alongside the
+                    visible delta and ``_fire_stream_delta`` routes it
+                    through ``_fire_reasoning_delta`` as well.
+
+                Both arrive here as plain text and are emitted on the
+                SSE wire as ``{"choices":[{"delta":{"reasoning_content":
+                "…"}}]}`` — the de-facto OpenAI-compatible field popularised
+                by DeepSeek and consumed natively by OpenWebUI, Lobe
+                Chat, ChatGPT-Next-Web, Cline, Cursor, Continue, …
+                """
+                if text:
+                    _stream_q.put(("__reasoning__", text))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -1218,6 +1247,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
+                reasoning_callback=_on_reasoning,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
             ))
@@ -1389,16 +1419,42 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+
+                Tagged tuples are routed to dedicated channels so frontends
+                can display them without contaminating ``delta.content`` /
+                conversation history:
+
+                  * ``("__tool_progress__", payload)`` → custom
+                    ``event: hermes.tool.progress`` SSE event
+                    (#6972 / #16588).
+                  * ``("__reasoning__", text)`` → standard
+                    ``chat.completion.chunk`` carrying
+                    ``delta.reasoning_content`` — the de-facto
+                    OpenAI-compatible reasoning field popularised by
+                    DeepSeek and natively understood by OpenWebUI /
+                    Lobe Chat / ChatGPT-Next-Web / Cline / Continue.
+                    Unifies A-class (structured ``reasoning_content``
+                    from thinking models) and B-class (``<think>`` tags
+                    recovered by ``StreamingThinkScrubber``) reasoning
+                    on a single wire format.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning__":
+                    reasoning_chunk = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"reasoning_content": item[1]},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await response.write(
+                        f"data: {json.dumps(reasoning_chunk, ensure_ascii=False)}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -2741,6 +2797,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
     ) -> tuple:
@@ -2765,6 +2822,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                reasoning_callback=reasoning_callback,
                 gateway_session_key=gateway_session_key,
             )
             if agent_ref is not None:

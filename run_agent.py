@@ -2986,22 +2986,30 @@ class AIAgent:
         # scrubber's output feeds into the context scrubber's state.
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         if think_scrubber is not None:
-            think_tail = think_scrubber.flush()
-            if think_tail:
+            visible_tail, reasoning_tail = think_scrubber.flush()
+            # End-of-stream reasoning recovery: if the model died mid-block
+            # the scrubber surfaces the held-back partial close-tag prefix
+            # via the reasoning channel rather than discarding it.  We
+            # route it to ``_fire_reasoning_delta`` for the same reason
+            # B-class deltas are routed in ``_fire_stream_delta`` — keep
+            # a single downstream reasoning stream.
+            if reasoning_tail:
+                self._fire_reasoning_delta(reasoning_tail)
+            if visible_tail:
                 # Route the tail through the context scrubber too so a
                 # memory-context span straddling the final boundary is
                 # still caught.
                 ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
                 if ctx_scrubber is not None:
-                    think_tail = ctx_scrubber.feed(think_tail)
-                if think_tail:
+                    visible_tail = ctx_scrubber.feed(visible_tail)
+                if visible_tail:
                     callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
                     for cb in callbacks:
                         try:
-                            cb(think_tail)
+                            cb(visible_tail)
                         except Exception:
                             pass
-                    self._record_streamed_assistant_text(think_tail)
+                    self._record_streamed_assistant_text(visible_tail)
         # Flush any benign partial-tag tail held by the context scrubber so it
         # reaches the UI before we clear state for the next model call.  If
         # the scrubber is mid-span, flush() drops the orphaned content.
@@ -3080,7 +3088,18 @@ class AIAgent:
             # reasoning content as regular response text).
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             if think_scrubber is not None:
-                text = think_scrubber.feed(text or "")
+                # B-class reasoning recovery: the scrubber now returns the
+                # text it scrubbed out of <think>…</think> blocks alongside
+                # the visible portion, so we can route it to the same
+                # reasoning callback that A-class structured
+                # ``delta.reasoning_content`` from DeepSeek/Moonshot/Kimi
+                # already uses (``_fire_reasoning_delta``).  Downstream
+                # consumers see one unified reasoning stream regardless of
+                # whether the provider wrapped thinking in tags or in a
+                # dedicated SSE field.
+                text, scrubbed_reasoning = think_scrubber.feed(text or "")
+                if scrubbed_reasoning:
+                    self._fire_reasoning_delta(scrubbed_reasoning)
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = self._strip_think_blocks(text or "")

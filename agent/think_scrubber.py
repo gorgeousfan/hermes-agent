@@ -29,12 +29,16 @@ Usage::
 
     scrubber = StreamingThinkScrubber()
     for delta in stream:
-        visible = scrubber.feed(delta)
+        visible, reasoning = scrubber.feed(delta)
         if visible:
-            emit(visible)
-    tail = scrubber.flush()  # at end of stream
-    if tail:
-        emit(tail)
+            emit_visible(visible)
+        if reasoning:
+            emit_reasoning(reasoning)
+    visible_tail, reasoning_tail = scrubber.flush()  # at end of stream
+    if visible_tail:
+        emit_visible(visible_tail)
+    if reasoning_tail:
+        emit_reasoning(reasoning_tail)
 
 The scrubber is re-entrant per agent instance.  Call ``reset()`` at
 the top of each new turn so a hung block from an interrupted prior
@@ -52,11 +56,25 @@ that *mentions* the tag name (e.g. ``"use <think> tags here"``) from
 being incorrectly suppressed.  Closed pairs (``<think>X</think>``) are
 always suppressed regardless of boundary; a closed pair is an
 intentional, bounded construct.
+
+Reasoning-recovery (``feed`` / ``flush`` return ``(visible, reasoning)``):
+  Older versions of this scrubber discarded the contents of every
+  matched ``<think>…</think>`` block on the floor — necessary to keep
+  reasoning out of the visible chat-completions ``delta.content`` channel,
+  but it also meant any caller that wanted to *display* the reasoning
+  (e.g. a frontend showing a "thinking" panel via the OpenAI-compatible
+  ``delta.reasoning_content`` field popularised by DeepSeek/Moonshot)
+  had no way to recover it.  Now ``feed`` and ``flush`` return a
+  second string carrying the scrubbed-out reasoning text (the inside
+  of the tags, never the tags themselves).  Callers that don't care
+  can ignore it; ``run_agent._fire_stream_delta`` routes it through
+  ``_fire_reasoning_delta`` so structured ``reasoning_content`` and
+  ``<think>``-tag thinking unify on the same downstream callback.
 """
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 __all__ = ["StreamingThinkScrubber"]
 
@@ -103,18 +121,26 @@ class StreamingThinkScrubber:
         self._buf = ""
         self._last_emitted_ended_newline = True
 
-    def feed(self, text: str) -> str:
-        """Feed one delta; return the scrubbed visible portion.
+    def feed(self, text: str) -> Tuple[str, str]:
+        """Feed one delta; return ``(visible, reasoning)``.
 
-        May return an empty string when the entire delta is reasoning
-        content or is being held back pending resolution of a partial
-        tag at the boundary.
+        ``visible`` is the scrubbed assistant text the user should see.
+        It may be empty when the entire delta is reasoning content or
+        is being held back pending resolution of a partial tag at the
+        boundary.
+
+        ``reasoning`` is the text that lived *inside* any matched
+        ``<think>…</think>`` block in this delta (or that was already
+        inside an open block when the delta arrived).  Tags themselves
+        are never included.  Callers that don't surface a separate
+        reasoning channel can simply ignore the second tuple element.
         """
         if not text:
-            return ""
+            return "", ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
+        reasoning_out: list[str] = []
 
         while buf:
             if self._in_block:
@@ -124,11 +150,18 @@ class StreamingThinkScrubber:
                 )
                 if close_idx == -1:
                     # No close yet — hold back a potential partial
-                    # close-tag prefix; discard everything else.
+                    # close-tag prefix; everything before it is
+                    # reasoning content (still inside the block).
                     held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
+                    consumed = buf[:-held] if held else buf
+                    if consumed:
+                        reasoning_out.append(consumed)
                     self._buf = buf[-held:] if held else ""
-                    return "".join(out)
-                # Found close: discard block content + tag, continue.
+                    return "".join(out), "".join(reasoning_out)
+                # Found close: capture block content before the close
+                # tag as reasoning, drop the tag, continue.
+                if close_idx > 0:
+                    reasoning_out.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
             else:
@@ -149,8 +182,8 @@ class StreamingThinkScrubber:
                 if pair is not None and (
                     open_idx == -1 or pair[0] <= open_idx
                 ):
-                    start_idx, end_idx = pair
-                    preceding = buf[:start_idx]
+                    pair_open, pair_open_len, pair_close, pair_end = pair
+                    preceding = buf[:pair_open]
                     if preceding:
                         preceding = self._strip_orphan_close_tags(preceding)
                         if preceding:
@@ -158,12 +191,19 @@ class StreamingThinkScrubber:
                             self._last_emitted_ended_newline = (
                                 preceding.endswith("\n")
                             )
-                    buf = buf[end_idx:]
+                    # Reasoning lives between the open tag and the
+                    # close tag — slice excludes both tag literals.
+                    inner = buf[pair_open + pair_open_len : pair_close]
+                    if inner:
+                        reasoning_out.append(inner)
+                    buf = buf[pair_end:]
                     continue
 
                 if open_idx != -1:
                     # Unterminated open at boundary — emit preceding,
-                    # enter block, continue loop with remainder.
+                    # enter block, continue loop with remainder.  The
+                    # remainder is consumed as reasoning by the
+                    # ``_in_block`` branch on the next loop iteration.
                     preceding = buf[:open_idx]
                     if preceding:
                         preceding = self._strip_orphan_close_tags(preceding)
@@ -197,30 +237,37 @@ class StreamingThinkScrubber:
                         self._last_emitted_ended_newline = (
                             emit_text.endswith("\n")
                         )
-                return "".join(out)
+                return "".join(out), "".join(reasoning_out)
 
-        return "".join(out)
+        return "".join(out), "".join(reasoning_out)
 
-    def flush(self) -> str:
-        """End-of-stream flush.
+    def flush(self) -> Tuple[str, str]:
+        """End-of-stream flush; return ``(visible_tail, reasoning_tail)``.
 
-        If still inside an unterminated block, held-back content is
-        discarded — leaking partial reasoning is worse than a
-        truncated answer.  Otherwise the held-back partial-tag tail is
-        emitted verbatim (it turned out not to be a real tag prefix).
+        If still inside an unterminated block, the held-back partial
+        close-tag prefix is surfaced as ``reasoning_tail`` rather than
+        dropped on the floor — the model never emitted a closing tag,
+        but everything in the buffer is still chain-of-thought the
+        caller may want to display.  ``visible_tail`` is empty in that
+        case to preserve the original invariant (no unterminated
+        reasoning leaks into visible output).
+
+        Otherwise the held-back partial-tag tail turned out not to be
+        a real tag prefix and is surfaced verbatim as ``visible_tail``.
         """
         if self._in_block:
+            tail = self._buf
             self._buf = ""
             self._in_block = False
-            return ""
+            return "", tail
         tail = self._buf
         self._buf = ""
         if not tail:
-            return ""
+            return "", ""
         tail = self._strip_orphan_close_tags(tail)
         if tail:
             self._last_emitted_ended_newline = tail.endswith("\n")
-        return tail
+        return tail, ""
 
     # ── internal helpers ───────────────────────────────────────────────
 
@@ -242,8 +289,11 @@ class StreamingThinkScrubber:
                 best_len = len(tag)
         return best_idx, best_len
 
-    def _find_earliest_closed_pair(self, buf: str):
-        """Return (start_idx, end_idx) of the earliest closed pair, else None.
+    def _find_earliest_closed_pair(
+        self, buf: str,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """Return ``(open_idx, open_len, close_idx, end_idx)`` of the
+        earliest closed pair, else ``None``.
 
         A closed pair is ``<tag>...</tag>`` of any variant.  Matches are
         case-insensitive and non-greedy (the closest close tag after
@@ -251,9 +301,15 @@ class StreamingThinkScrubber:
         semantics of ``_strip_think_blocks`` case 1.  When two tag
         variants could both match, the one whose open tag appears
         earlier wins.
+
+        ``open_len`` and the position of ``close_idx`` are returned so
+        callers can slice ``buf[open_idx + open_len : close_idx]`` to
+        recover the reasoning content sandwiched between the tags
+        (used by ``feed`` to surface scrubbed reasoning to the
+        downstream reasoning callback).
         """
         buf_lower = buf.lower()
-        best: "tuple[int, int] | None" = None
+        best: Optional[Tuple[int, int, int, int]] = None
         for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
             open_lower = open_tag.lower()
             close_lower = close_tag.lower()
@@ -267,7 +323,7 @@ class StreamingThinkScrubber:
                 continue
             end_idx = close_idx + len(close_lower)
             if best is None or open_idx < best[0]:
-                best = (open_idx, end_idx)
+                best = (open_idx, len(open_lower), close_idx, end_idx)
         return best
 
     def _find_open_at_boundary(
