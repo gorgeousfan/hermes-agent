@@ -376,6 +376,59 @@ def _get_terminal_backend_name() -> str:
     return str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
 
 
+def _to_runtime_skill_dir(skill_dir: Optional[Path], backend: str) -> Optional[Path]:
+    """Translate a host-side ``skill_dir`` to the path the agent should
+    reference when executing scripts inside the active sandbox.
+
+    When the terminal backend bind-mounts the skill tree (docker, singularity,
+    modal), ``get_skills_directory_mount()`` produces ``host_path``→
+    ``container_path`` pairs.  ``skill_dir`` arrives in the gateway-side host
+    layout (e.g. ``/opt/data/skills/nextcloud`` inside the gateway container),
+    while the agent's ``execute_code`` invocations run in a separate sandbox
+    container where the same skill is mounted at ``/root/.hermes/skills/
+    nextcloud``.  Without translation the agent prefixes script paths with
+    the wrong base and the call fails (#27491).
+
+    Returns ``skill_dir`` unchanged for the ``local`` backend, for backends
+    that don't bind-mount the skill tree (ssh, daytona, vercel_sandbox use
+    file_sync instead and have no stable container_path for skills), and
+    when ``skill_dir`` doesn't fall under any known skills mount (e.g. a
+    transient test path).
+    """
+    if not skill_dir or backend not in {"docker", "singularity", "modal"}:
+        return skill_dir
+    try:
+        from tools.credential_files import get_skills_directory_mount
+
+        mounts = get_skills_directory_mount()
+    except Exception:
+        logger.debug(
+            "Could not enumerate skills mounts for runtime path translation",
+            exc_info=True,
+        )
+        return skill_dir
+    try:
+        skill_resolved = skill_dir.resolve()
+    except Exception:
+        skill_resolved = skill_dir
+    for mount in mounts:
+        host_path = Path(mount["host_path"])
+        try:
+            host_resolved = host_path.resolve()
+        except Exception:
+            host_resolved = host_path
+        try:
+            rel = skill_resolved.relative_to(host_resolved)
+        except ValueError:
+            continue
+        container_path = mount["container_path"].rstrip("/")
+        rel_str = str(rel)
+        if rel_str in {"", "."}:
+            return Path(container_path)
+        return Path(f"{container_path}/{rel_str}")
+    return skill_dir
+
+
 def _is_env_var_persisted(
     var_name: str, env_snapshot: Dict[str, str] | None = None
 ) -> bool:
@@ -1364,6 +1417,11 @@ def skill_view(
                     exc_info=True,
                 )
 
+        # Translate skill_dir into the sandbox-side path the agent will use
+        # at execute_code / terminal time.  Falls back to skill_dir for local
+        # backends and for backends that don't bind-mount the skill tree.
+        runtime_skill_dir = _to_runtime_skill_dir(skill_dir, backend)
+
         rendered_content = content
         if preprocess:
             try:
@@ -1371,7 +1429,7 @@ def skill_view(
 
                 rendered_content = preprocess_skill_content(
                     content,
-                    skill_dir,
+                    runtime_skill_dir,
                     session_id=task_id,
                 )
             except Exception:
@@ -1388,6 +1446,7 @@ def skill_view(
             "content": rendered_content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
+            "runtime_skill_dir": str(runtime_skill_dir) if runtime_skill_dir else None,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files

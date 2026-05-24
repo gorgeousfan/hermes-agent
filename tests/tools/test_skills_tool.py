@@ -393,6 +393,126 @@ class TestSkillView:
         assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
         assert "${HERMES_SKILL_DIR}" not in result["content"]
 
+    def test_skill_view_returns_host_skill_dir_for_local_backend(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "local-skill")
+            raw = skill_view("local-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skill_dir"] == str(skill_dir)
+        # For local backend, runtime_skill_dir mirrors skill_dir — agents that
+        # branch on this field never see a translated path on the local CLI.
+        assert result["runtime_skill_dir"] == str(skill_dir)
+
+    def test_skill_view_returns_sandbox_skill_dir_for_docker_backend(
+        self, tmp_path, monkeypatch
+    ):
+        """When TERMINAL_ENV=docker, skill_view must surface the sandbox-side
+        path the agent will hit at execute_code time — the host-side path
+        does not exist inside the Podman/Docker sandbox where the skill tree
+        is mounted at ``/root/.hermes/skills`` (see #27491)."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        mounts = [
+            {"host_path": str(tmp_path), "container_path": "/root/.hermes/skills"}
+        ]
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.credential_files.get_skills_directory_mount",
+                return_value=mounts,
+            ),
+        ):
+            skill_dir = _make_skill(tmp_path, "nextcloud")
+            raw = skill_view("nextcloud")
+        result = json.loads(raw)
+        assert result["success"] is True
+        # Host path is preserved (Python callers in agent/skill_commands.py
+        # still need to read the SKILL.md off disk on the gateway side).
+        assert result["skill_dir"] == str(skill_dir)
+        # Runtime path is rewritten to the canonical sandbox container_base.
+        assert result["runtime_skill_dir"] == "/root/.hermes/skills/nextcloud"
+
+    def test_skill_view_template_substitution_uses_sandbox_path(
+        self, tmp_path, monkeypatch
+    ):
+        """``${HERMES_SKILL_DIR}`` inside SKILL.md must substitute the
+        sandbox path when sandboxed — otherwise the rendered content tells
+        the agent to run ``/opt/data/skills/<name>/scripts/...`` which the
+        sandbox can't see."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        mounts = [
+            {"host_path": str(tmp_path), "container_path": "/root/.hermes/skills"}
+        ]
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.credential_files.get_skills_directory_mount",
+                return_value=mounts,
+            ),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "sandboxed",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh",
+            )
+            raw = skill_view("sandboxed")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Run /root/.hermes/skills/sandboxed/scripts/do.sh" in result["content"]
+        assert "${HERMES_SKILL_DIR}" not in result["content"]
+
+    def test_skill_view_categorized_skill_keeps_subdirs_in_sandbox_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Categorized skills (``<skills>/<category>/<name>``) keep their
+        full relative path inside the sandbox so the mount layout matches
+        ``get_skills_directory_mount()`` exactly."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        mounts = [
+            {"host_path": str(tmp_path), "container_path": "/root/.hermes/skills"}
+        ]
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.credential_files.get_skills_directory_mount",
+                return_value=mounts,
+            ),
+        ):
+            _make_skill(tmp_path, "nextcloud", category="integration")
+            raw = skill_view("nextcloud")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (
+            result["runtime_skill_dir"]
+            == "/root/.hermes/skills/integration/nextcloud"
+        )
+
+    def test_skill_view_runtime_path_falls_back_when_no_mount_matches(
+        self, tmp_path, monkeypatch
+    ):
+        """If ``get_skills_directory_mount()`` returns nothing (e.g. the
+        skills tree on disk doesn't exist yet, so no mount is registered),
+        ``runtime_skill_dir`` must fall back to the host path rather than
+        emit a confidently-wrong sandbox path."""
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.credential_files.get_skills_directory_mount",
+                return_value=[],
+            ),
+        ):
+            skill_dir = _make_skill(tmp_path, "stranded")
+            raw = skill_view("stranded")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["runtime_skill_dir"] == str(skill_dir)
+
     def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
