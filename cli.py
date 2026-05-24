@@ -696,6 +696,18 @@ try:
 except Exception:
     pass
 
+# Initialize tab title / desktop notifications from config
+try:
+    from agent.display import init_notifications
+    _notif_cfg = CLI_CONFIG.get("display", {}).get("notifications", {})
+    if isinstance(_notif_cfg, dict):
+        init_notifications(
+            enabled=_notif_cfg.get("enabled", False),
+            tab_title=_notif_cfg.get("tab_title", True),
+            desktop=_notif_cfg.get("desktop", False),
+        )
+except Exception:
+    pass
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
 # which, during CLI idle time, finds prompt_toolkit's event loop and tries to
@@ -8286,6 +8298,8 @@ class HermesCLI:
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
+        elif canonical == "notif":
+            self._handle_notif_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress(cmd_original)
         elif canonical == "usage":
@@ -8662,6 +8676,16 @@ class HermesCLI:
                 if self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
+
+                # Reset tab title and optionally notify on turn complete
+                try:
+                    from agent.display import _reset_tab_title, _notif_enabled, _notif_desktop
+                    from agent.notification import notify_turn_complete
+                    _reset_tab_title()
+                    if _notif_enabled and _notif_desktop:
+                        notify_turn_complete()
+                except Exception:
+                    pass
 
             except Exception as e:
                 # Same TUI refresh pattern as success path (#2718)
@@ -9477,6 +9501,98 @@ class HermesCLI:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _handle_notif_command(self, cmd: str):
+        """Handle /notif — configure terminal tab & desktop notifications.
+
+        Usage:
+            /notif              Show current status
+            /notif status       Show current status
+            /notif on           Enable all notifications
+            /notif off          Disable all notifications
+            /notif tab [on|off] Enable/disable tab title updates
+            /notif desktop [on|off]  Enable/disable OS desktop notifications
+        """
+        try:
+            from agent.display import (
+                init_notifications,
+                get_notification_config,
+            )
+        except ImportError:
+            _cprint(f"  {_DIM}Notifications module not available.{_RST}")
+            return
+
+        _notif = CLI_CONFIG.get("display", {}).get("notifications", {})
+        if not isinstance(_notif, dict):
+            _notif = {}
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() in ("status",):
+            cfg = get_notification_config()
+            status = "enabled" if cfg["enabled"] else "disabled"
+            _cprint(f"  {_ACCENT}Notifications: {status}{_RST}")
+            _cprint(f"  {_DIM}  Tab title: {'on' if cfg['tab_title'] else 'off'}{_RST}")
+            _cprint(f"  {_DIM}  Desktop:   {'on' if cfg['desktop'] else 'off'}{_RST}")
+            _cprint(f"  {_DIM}Usage: /notif [on|off|status|tab [on|off]|desktop [on|off]]{_RST}")
+            return
+
+        arg = parts[1].strip().split()
+        sub = arg[0].lower() if arg else ""
+
+        if sub == "on":
+            init_notifications(
+                enabled=True,
+                tab_title=_notif.get("tab_title", True),
+                desktop=_notif.get("desktop", False),
+            )
+            if save_config_value("display.notifications.enabled", True):
+                _cprint(f"  {_ACCENT}✓ Notifications enabled (saved to config){_RST}")
+            else:
+                _cprint(f"  {_ACCENT}✓ Notifications enabled (session only){_RST}")
+            return
+
+        if sub == "off":
+            init_notifications(enabled=False, tab_title=False, desktop=False)
+            if save_config_value("display.notifications.enabled", False):
+                _cprint(f"  {_ACCENT}✓ Notifications disabled (saved to config){_RST}")
+            else:
+                _cprint(f"  {_ACCENT}✓ Notifications disabled (session only){_RST}")
+            return
+
+        if sub == "tab":
+            val = arg[1].lower() if len(arg) > 1 else "toggle"
+            current = get_notification_config()
+            if val == "toggle":
+                new_val = not current["tab_title"]
+            else:
+                new_val = val in ("on", "true", "1")
+            init_notifications(
+                enabled=current["enabled"],
+                tab_title=new_val,
+                desktop=current["desktop"],
+            )
+            state = "enabled" if new_val else "disabled"
+            _cprint(f"  {_ACCENT}✓ Tab title updates {state} (session only){_RST}")
+            return
+
+        if sub == "desktop":
+            val = arg[1].lower() if len(arg) > 1 else "toggle"
+            current = get_notification_config()
+            if val == "toggle":
+                new_val = not current["desktop"]
+            else:
+                new_val = val in ("on", "true", "1")
+            init_notifications(
+                enabled=current["enabled"],
+                tab_title=current["tab_title"],
+                desktop=new_val,
+            )
+            state = "enabled" if new_val else "disabled"
+            _cprint(f"  {_ACCENT}✓ Desktop notifications {state} (session only){_RST}")
+            return
+
+        _cprint(f"  {_DIM}(._.) Unknown argument: {sub}{_RST}")
+        _cprint(f"  {_DIM}Usage: /notif [on|off|status|tab [on|off]|desktop [on|off]]{_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
@@ -10805,6 +10921,16 @@ class HermesCLI:
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
+        # Update tab title and optionally send desktop notification
+        try:
+            from agent.display import set_tab_title, _notif_enabled, _notif_desktop
+            from agent.notification import notify_question
+            set_tab_title("Hermes - Has a question for you")
+            if _notif_enabled and _notif_desktop:
+                notify_question(question=str(question)[:200])
+        except Exception:
+            pass
+
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
@@ -10922,6 +11048,16 @@ class HermesCLI:
                 "response_queue": response_queue,
             }
             self._approval_deadline = _time.monotonic() + timeout
+
+            # Update tab title and optionally send desktop notification
+            try:
+                from agent.display import set_tab_title, _notif_enabled, _notif_desktop
+                from agent.notification import notify_approval_needed
+                set_tab_title("Hermes - Waiting for approval")
+                if _notif_enabled and _notif_desktop:
+                    notify_approval_needed(command=command[:120])
+            except Exception:
+                pass
 
             self._invalidate()
 

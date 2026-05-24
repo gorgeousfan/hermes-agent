@@ -16,7 +16,57 @@ from pathlib import Path
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
 
-# ANSI escape codes for coloring tool failure indicators
+# Module-level notification config — set once at startup by the CLI
+# from display.notifications config.  These are read-only after init so the
+# spinner thread can access them without locking.
+_notif_enabled: bool = False     # Master switch
+_notif_tab_title: bool = True     # Terminal tab title updates
+_notif_desktop: bool = False      # Desktop notifications
+
+
+def init_notifications(
+    enabled: bool = False,
+    tab_title: bool = True,
+    desktop: bool = False,
+) -> None:
+    """Called once at CLI startup to configure notification settings."""
+    global _notif_enabled, _notif_tab_title, _notif_desktop
+    _notif_enabled = bool(enabled)
+    _notif_tab_title = bool(tab_title)
+    _notif_desktop = bool(desktop)
+
+
+def _update_tab_title(title: str) -> None:
+    """Internal helper — updates terminal tab title if enabled."""
+    if not _notif_enabled or not _notif_tab_title:
+        return
+    try:
+        if sys.stdout.isatty():
+            sys.stdout.write(f"\033]0;{title}\007")
+            sys.stdout.flush()
+    except (ValueError, OSError):
+        pass
+
+
+# Public alias for CLI import
+set_tab_title = _update_tab_title
+
+
+def _reset_tab_title() -> None:
+    """Reset terminal tab title back to default."""
+    _update_tab_title("")
+
+
+def get_notification_config() -> dict:
+    """Return current notification config for /notif command display."""
+    return {
+        "enabled": _notif_enabled,
+        "tab_title": _notif_tab_title,
+        "desktop": _notif_desktop,
+    }
+
+
+# =========================================================================
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
@@ -732,11 +782,24 @@ class KawaiiSpinner:
             return
         self.running = True
         self.start_time = time.time()
+        # Update tab title to thinking state if notifications are enabled
+        if _notif_enabled and _notif_tab_title:
+            _update_tab_title("Hermes - Thinking...")
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
 
     def update_text(self, new_message: str):
         self.message = new_message
+        # Update tab title with tool name if this looks like a tool execution
+        if _notif_enabled and _notif_tab_title and self.message:
+            # Try to extract tool name from "Using tool: X" or "emoji tool_name" pattern
+            msg = self.message.lstrip()
+            # Remove leading emoji/unicode
+            import re
+            cleaned = re.sub(r'^[\u2600-\u27bf\U0001f000-\U0001ffff]+', '', msg).strip()
+            if cleaned:
+                tool_name = cleaned.split()[0] if cleaned.split() else cleaned
+                _update_tab_title(f"Hermes - Using tool: {tool_name}")
 
     def print_above(self, text: str):
         """Print a line above the spinner without disrupting animation.
@@ -760,6 +823,9 @@ class KawaiiSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
+        # Reset tab title to ready state when spinner stops
+        if _notif_enabled and _notif_tab_title:
+            _reset_tab_title()
 
         is_tty = self._is_tty
         if is_tty:

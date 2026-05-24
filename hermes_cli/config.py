@@ -1069,6 +1069,23 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Terminal tab / desktop notifications — helps users with multiple
+        # terminal tabs/instances see at a glance which session needs attention.
+        # Tab titles use standard OSC 0 escape sequences (works in GNOME
+        # Terminal, iTerm2, Alacritty, Kitty, Windows Terminal, tmux).
+        # Desktop notifications use notify-send (Linux), osascript (macOS),
+        # or PowerShell (Windows).
+        "notifications": {
+            "enabled": False,           # Master switch for all notification features
+            "tab_title": True,          # Update terminal tab title on state changes
+            "desktop": False,           # Send OS notifications for approval/errors
+            "events": {                  # Fine-grained event-level control
+                "approval": True,       # Notify when command approval is needed
+                "clarify": True,        # Notify when agent asks a question
+                "error": True,          # Notify on blocking tool / API errors
+                "turn_complete": False, # Notify when a long turn finishes
+            },
+        },
     },
 
     # Web dashboard settings
