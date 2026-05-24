@@ -7720,6 +7720,9 @@ class HermesCLI:
                 "all": False,
                 "prompt": None,
                 "schedule": None,
+                "script": None,
+                "workdir": None,
+                "no_agent": None,
                 "positionals": [],
             }
             i = 0
@@ -7759,6 +7762,18 @@ class HermesCLI:
                 elif token == "--schedule" and i + 1 < len(tokens):
                     opts["schedule"] = tokens[i + 1]
                     i += 2
+                elif token == "--script" and i + 1 < len(tokens):
+                    opts["script"] = tokens[i + 1]
+                    i += 2
+                elif token == "--workdir" and i + 1 < len(tokens):
+                    opts["workdir"] = tokens[i + 1]
+                    i += 2
+                elif token == "--no-agent":
+                    opts["no_agent"] = True
+                    i += 1
+                elif token == "--agent":
+                    opts["no_agent"] = False
+                    i += 1
                 else:
                     opts["positionals"].append(token)
                     i += 1
@@ -7783,6 +7798,9 @@ class HermesCLI:
             print("    /cron resume <job_id>")
             print("    /cron run <job_id>")
             print("    /cron remove <job_id>")
+            print("    /cron status")
+            print("    /cron tick")
+            print('    /cron add "every 15m" --script watcher.py --no-agent')
             print()
             result = _cron_api(action="list")
             jobs = result.get("jobs", []) if result.get("success") else []
@@ -7834,13 +7852,13 @@ class HermesCLI:
 
         if subcommand in {"add", "create"}:
             positionals = opts["positionals"]
-            if not positionals:
+            if not positionals and not opts["schedule"]:
                 print("(._.) Usage: /cron add <schedule> <prompt>")
                 return
             schedule = opts["schedule"] or positionals[0]
             prompt = opts["prompt"] or " ".join(positionals[1:])
             skills = _normalize_skills(opts["skills"])
-            if not prompt and not skills:
+            if not prompt and not skills and not opts["no_agent"]:
                 print("(._.) Please provide a prompt or at least one skill")
                 return
             result = _cron_api(
@@ -7851,12 +7869,22 @@ class HermesCLI:
                 deliver=opts["deliver"],
                 repeat=opts["repeat"],
                 skills=skills or None,
+                script=opts["script"],
+                workdir=opts["workdir"],
+                no_agent=opts["no_agent"],
             )
             if result.get("success"):
                 print(f"(^_^)b Created job: {result['job_id']}")
                 print(f"  Schedule: {result['schedule']}")
                 if result.get("skills"):
                     print(f"  Skills: {', '.join(result['skills'])}")
+                job = result.get("job") or {}
+                if job.get("script"):
+                    print(f"  Script: {job['script']}")
+                if job.get("no_agent"):
+                    print("  Mode: no-agent (script stdout delivered directly)")
+                if job.get("workdir"):
+                    print(f"  Workdir: {job['workdir']}")
                 print(f"  Next run: {result['next_run_at']}")
             else:
                 print(f"(x_x) Failed to create job: {result.get('error')}")
@@ -7897,6 +7925,9 @@ class HermesCLI:
                 deliver=opts["deliver"],
                 repeat=opts["repeat"],
                 skills=final_skills,
+                script=opts["script"],
+                workdir=opts["workdir"],
+                no_agent=opts["no_agent"],
             )
             if result.get("success"):
                 job = result["job"]
@@ -7906,6 +7937,12 @@ class HermesCLI:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 else:
                     print("  Skills: none")
+                if job.get("script"):
+                    print(f"  Script: {job['script']}")
+                if job.get("no_agent"):
+                    print("  Mode: no-agent (script stdout delivered directly)")
+                if job.get("workdir"):
+                    print(f"  Workdir: {job['workdir']}")
             else:
                 print(f"(x_x) Failed to update job: {result.get('error')}")
             return
@@ -7934,8 +7971,20 @@ class HermesCLI:
                 print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
             return
 
+        if subcommand == "status":
+            from hermes_cli.cron import cron_status
+
+            cron_status()
+            return
+
+        if subcommand == "tick":
+            from hermes_cli.cron import cron_tick
+
+            cron_tick()
+            return
+
         print(f"(._.) Unknown cron command: {subcommand}")
-        print("  Available: list, add, edit, pause, resume, run, remove")
+        print("  Available: list, add, edit, pause, resume, run, remove, status, tick")
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.

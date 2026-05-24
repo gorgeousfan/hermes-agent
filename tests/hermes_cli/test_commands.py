@@ -631,6 +631,8 @@ class TestSubcommands:
         assert "/cron" in SUBCOMMANDS
         assert "list" in SUBCOMMANDS["/cron"]
         assert "add" in SUBCOMMANDS["/cron"]
+        assert "status" in SUBCOMMANDS["/cron"]
+        assert "tick" in SUBCOMMANDS["/cron"]
 
     def test_commands_without_subcommands_not_in_dict(self):
         """Plain commands should not appear in SUBCOMMANDS."""
