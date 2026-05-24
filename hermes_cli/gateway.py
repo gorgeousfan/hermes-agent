@@ -2776,6 +2776,28 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _unload_conflicting_gateway(current_label: str) -> None:
+    """Unload any conflicting gateway launchd service before bootstrapping a new one.
+
+    When switching from the default ``ai.hermes.gateway`` to a profile-specific
+    label (e.g. ``ai.hermes.gateway-deepseek-pro``), the old default service
+    must be removed first.  Otherwise two gateways fight for the same ports
+    and KeepAlive causes an endless crash-restart loop.
+    """
+    if current_label == "ai.hermes.gateway":
+        return  # Already the default — nothing to conflict with
+    domain = _launchd_domain()
+    generic = "ai.hermes.gateway"
+    # bootout is idempotent — fails silently if the service isn't loaded
+    subprocess.run(["launchctl", "bootout", f"{domain}/{generic}"], check=False, timeout=90)
+    # Remove the old plist so it doesn't get reloaded on next login
+    generic_plist = _launchd_user_home() / "Library" / "LaunchAgents" / f"{generic}.plist"
+    try:
+        generic_plist.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
@@ -2888,8 +2910,10 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
+    _unload_conflicting_gateway(label)
+
+    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
     subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
