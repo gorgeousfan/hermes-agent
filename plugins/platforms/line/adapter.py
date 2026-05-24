@@ -23,7 +23,8 @@ button and always Push-fallback instead.
 
 **Three-allowlist gating.** Separate allowlists for users (U-prefixed),
 groups (C-prefixed), and rooms (R-prefixed). ``LINE_ALLOW_ALL_USERS=true``
-is a dev-only escape hatch.
+is a dev-only escape hatch. ``LINE_READ_ONLY_GROUPS`` can admit selected
+groups for local archival without invoking the agent or sending replies.
 
 **Media via public HTTPS.** LINE's Messaging API does *not* accept
 binary uploads — images, audio, and video must be reachable HTTPS URLs.
@@ -92,6 +93,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
     cache_image_from_bytes,
 )
 from gateway.config import Platform
@@ -424,6 +426,77 @@ def _allowed_for_source(
     return False
 
 
+def _message_type_for_line_message(msg_type: str) -> MessageType:
+    return {
+        "text": MessageType.TEXT,
+        "image": MessageType.PHOTO,
+        "audio": MessageType.AUDIO,
+        "video": MessageType.VIDEO,
+        "file": MessageType.DOCUMENT,
+        "location": MessageType.LOCATION,
+        "sticker": MessageType.STICKER,
+    }.get(msg_type, MessageType.TEXT)
+
+
+def _media_mime_for_line_message(msg_type: str, message: Dict[str, Any]) -> str:
+    if msg_type == "image":
+        return "image/jpeg"
+    if msg_type == "audio":
+        return "audio/mp4"
+    if msg_type == "video":
+        return "video/mp4"
+    if msg_type == "file":
+        content_type = str(message.get("contentType") or "").strip()
+        if content_type:
+            return content_type
+        guessed, _ = mimetypes.guess_type(str(message.get("fileName") or ""))
+        return guessed or "application/octet-stream"
+    return "application/octet-stream"
+
+
+def _extension_for_line_message(msg_type: str, message: Dict[str, Any], media_mime: str) -> str:
+    if msg_type == "file":
+        filename = str(message.get("fileName") or "")
+        suffix = Path(filename).suffix
+        if suffix:
+            return suffix[:32]
+    fallback = {
+        "image": ".jpg",
+        "audio": ".m4a",
+        "video": ".mp4",
+    }.get(msg_type)
+    if fallback:
+        return fallback
+    guessed = mimetypes.guess_extension(media_mime or "")
+    return guessed or ".bin"
+
+
+def _cache_line_attachment_from_bytes(
+    data: bytes,
+    *,
+    ext: str = ".bin",
+    original_filename: str = "",
+) -> str:
+    """Cache non-image LINE media without image magic-byte validation."""
+    try:
+        from hermes_constants import get_hermes_dir
+        cache_dir = get_hermes_dir("cache/line-media", "line_media_cache")
+    except Exception:
+        cache_dir = Path.home() / ".hermes" / "cache" / "line-media"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = re.sub(r"[^A-Za-z0-9_. -]", "_", original_filename).strip(" .")
+    if safe_name:
+        filename = f"line_{uuid.uuid4().hex[:12]}_{safe_name}"
+        if not Path(filename).suffix and ext:
+            filename += ext
+    else:
+        filename = f"line_{uuid.uuid4().hex[:12]}{ext or '.bin'}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
+
+
 # ---------------------------------------------------------------------------
 # LINE Reply / Push HTTP client
 # ---------------------------------------------------------------------------
@@ -671,6 +744,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_groups = _csv_set(
             os.getenv("LINE_ALLOWED_GROUPS", "")
         ) | set(extra.get("allowed_groups", []))
+        self.read_only_groups = _csv_set(
+            os.getenv("LINE_READ_ONLY_GROUPS", "")
+        ) | set(extra.get("read_only_groups", []))
         self.allowed_rooms = _csv_set(
             os.getenv("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
@@ -895,12 +971,13 @@ class LineAdapter(BasePlatformAdapter):
         if self._bot_user_id and sender_user_id == self._bot_user_id:
             return
 
-        # Allowlist gate.
+        # Allowlist gate. Read-only groups are intentionally admitted here,
+        # then short-circuited in _handle_message_event before agent dispatch.
         if not _allowed_for_source(
             source,
             allow_all=self.allow_all,
             user_ids=self.allowed_users,
-            group_ids=self.allowed_groups,
+            group_ids=self.allowed_groups | self.read_only_groups,
             room_ids=self.allowed_rooms,
         ):
             logger.info("LINE: rejecting unauthorized source %s", source)
@@ -914,6 +991,42 @@ class LineAdapter(BasePlatformAdapter):
             logger.info("LINE: lifecycle event %s from %s", event_type, source)
         else:
             logger.debug("LINE: ignoring event type %r", event_type)
+
+    def _archive_read_only_message(
+        self,
+        event: Dict[str, Any],
+        *,
+        text: str,
+        msg_type: str,
+        media_types: List[str],
+    ) -> None:
+        """Persist a LINE group message without dispatching it to the agent."""
+        source = event.get("source") or {}
+        chat_id, chat_type = _resolve_chat(source)
+        try:
+            from hermes_constants import get_hermes_home
+
+            hermes_home = Path(get_hermes_home()).resolve()
+        except Exception:
+            hermes_home = Path.home().joinpath(".hermes").resolve()
+
+        archive_dir = hermes_home / "data" / "line-read-only"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        safe_chat_id = re.sub(r"[^A-Za-z0-9_.-]", "_", chat_id or "unknown")
+        record = {
+            "received_at": time.time(),
+            "event_timestamp": event.get("timestamp"),
+            "webhook_event_id": event.get("webhookEventId", ""),
+            "chat_id": chat_id,
+            "chat_type": chat_type,
+            "user_id": source.get("userId", ""),
+            "message_id": (event.get("message") or {}).get("id", ""),
+            "message_type": msg_type,
+            "text": text,
+            "media_types": media_types,
+        }
+        with (archive_dir / f"{safe_chat_id}.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     async def _handle_message_event(self, event: Dict[str, Any]) -> None:
         msg = event.get("message") or {}
@@ -940,10 +1053,14 @@ class LineAdapter(BasePlatformAdapter):
         if msg_type == "text":
             text = msg.get("text", "") or ""
         elif msg_type in {"image", "audio", "video", "file"}:
-            local_path = await self._download_media(message_id, msg_type)
+            local_path, media_mime = await self._download_media(
+                message_id,
+                msg_type,
+                message=msg,
+            )
             if local_path:
                 media_urls.append(local_path)
-                media_types.append(msg_type)
+                media_types.append(media_mime)
             text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
@@ -954,6 +1071,22 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        if chat_type == "group" and chat_id in self.read_only_groups:
+            self._reply_tokens.pop(chat_id, None)
+            self._archive_read_only_message(
+                event,
+                text=text,
+                msg_type=msg_type,
+                media_types=media_types,
+            )
+            logger.info(
+                "LINE: archived read-only group message chat=%s user=%s type=%s",
+                chat_id,
+                user_id,
+                msg_type,
+            )
+            return
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:
@@ -969,7 +1102,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_message_type_for_line_message(msg_type),
             source=source_obj,
             raw_message=event,
             message_id=message_id,
@@ -1038,25 +1171,35 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self,
+        message_id: str,
+        msg_type: str,
+        *,
+        message: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[str], str]:
+        media_mime = _media_mime_for_line_message(msg_type, message or {})
         if not self._client or not message_id:
-            return None
+            return None, media_mime
         try:
             data = await self._client.fetch_content(message_id)
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
-            return None
-        ext = {
-            "image": ".jpg",
-            "audio": ".m4a",
-            "video": ".mp4",
-            "file": ".bin",
-        }.get(msg_type, ".bin")
+            return None, media_mime
+        ext = _extension_for_line_message(msg_type, message or {}, media_mime)
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "image":
+                return cache_image_from_bytes(data, ext=ext), media_mime
+            if msg_type == "audio":
+                return cache_audio_from_bytes(data, ext=ext), media_mime
+            return _cache_line_attachment_from_bytes(
+                data,
+                ext=ext,
+                original_filename=(message or {}).get("fileName") or "",
+            ), media_mime
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
-            return None
+            return None, media_mime
 
     # ------------------------------------------------------------------
     # Outbound send (text)

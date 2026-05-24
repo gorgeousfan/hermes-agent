@@ -6251,6 +6251,8 @@ class GatewayRunner:
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
+        if source.platform and source.platform.value == "line":
+            platform_group_chat_env_map[source.platform] = "LINE_ALLOWED_GROUPS"
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
@@ -7805,13 +7807,21 @@ class GatewayRunner:
                         f"Its content has been included below. "
                         f"The file is also saved at: {agent_path}]"
                     )
+                    try:
+                        _raw_doc = Path(path).read_bytes()
+                        _doc_text = _raw_doc[:50_000].decode("utf-8", errors="replace")
+                        if len(_raw_doc) > 50_000:
+                            _doc_text += "\n\n[Document truncated after 50000 bytes.]"
+                    except Exception as exc:
+                        _doc_text = f"[Could not read text document content: {exc}]"
+                    message_text = f"{context_note}\n\n{_doc_text}\n\n{message_text}"
                 else:
                     context_note = (
                         f"[The user sent a document: '{display_name}'. "
                         f"The file is saved at: {agent_path}. "
                         f"Ask the user what they'd like you to do with it.]"
                     )
-                message_text = f"{context_note}\n\n{message_text}"
+                    message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text

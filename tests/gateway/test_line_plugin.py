@@ -629,10 +629,12 @@ class TestAdapterInit:
         monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
         monkeypatch.setenv("LINE_ALLOWED_USERS", "U1, U2,U3")
         monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
+        monkeypatch.setenv("LINE_READ_ONLY_GROUPS", "C2")
         from gateway.config import PlatformConfig
         ad = LineAdapter(PlatformConfig(enabled=True))
         assert ad.allowed_users == {"U1", "U2", "U3"}
         assert ad.allowed_groups == {"C1"}
+        assert ad.read_only_groups == {"C2"}
 
     def test_get_chat_info_infers_type_from_prefix(self, monkeypatch):
         monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
@@ -642,3 +644,133 @@ class TestAdapterInit:
         assert asyncio.run(ad.get_chat_info("U123"))["type"] == "dm"
         assert asyncio.run(ad.get_chat_info("C123"))["type"] == "group"
         assert asyncio.run(ad.get_chat_info("R123"))["type"] == "channel"
+
+    def test_message_event_uses_base_source_builder(self, monkeypatch):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": {"type": "text", "id": "m1", "text": "hello"},
+        }
+
+        asyncio.run(ad._handle_message_event(event))
+
+        assert len(captured) == 1
+        assert captured[0].text == "hello"
+        assert captured[0].source.chat_id == "U123"
+        assert captured[0].source.user_id == "U123"
+        assert captured[0].source.chat_type == "dm"
+
+    def test_read_only_group_message_is_archived_without_agent_dispatch(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        monkeypatch.setenv("LINE_READ_ONLY_GROUPS", "Cread")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from gateway.config import PlatformConfig
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "webhookEventId": "evt-1",
+            "timestamp": 1234567890,
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "Cread", "userId": "U123"},
+            "message": {"type": "text", "id": "m1", "text": "大家好"},
+        }
+
+        asyncio.run(ad._dispatch_event(event))
+
+        assert captured == []
+        assert "Cread" not in ad._reply_tokens
+        archive = tmp_path / ".hermes" / "data" / "line-read-only" / "Cread.jsonl"
+        rows = [json.loads(line) for line in archive.read_text().splitlines()]
+        assert rows[-1]["chat_id"] == "Cread"
+        assert rows[-1]["user_id"] == "U123"
+        assert rows[-1]["text"] == "大家好"
+
+    def test_image_message_downloads_as_photo_event(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageType
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        ad._client = MagicMock()
+        ad._client.fetch_content = AsyncMock(return_value=b"\xff\xd8\xff\xe0fake-jpeg")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "C1", "userId": "U123"},
+            "message": {"type": "image", "id": "m-img"},
+        }
+
+        asyncio.run(ad._handle_message_event(event))
+
+        assert len(captured) == 1
+        assert captured[0].message_type is MessageType.PHOTO
+        assert captured[0].media_types == ["image/jpeg"]
+        assert captured[0].media_urls
+        assert os.path.exists(captured[0].media_urls[0])
+
+    def test_file_message_downloads_without_image_validation(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "t")
+        monkeypatch.setenv("LINE_CHANNEL_SECRET", "s")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageType
+
+        ad = LineAdapter(PlatformConfig(enabled=True))
+        ad._client = MagicMock()
+        ad._client.fetch_content = AsyncMock(return_value=b"field trip details")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        ad.handle_message = _capture
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "group", "groupId": "C1", "userId": "U123"},
+            "message": {
+                "type": "file",
+                "id": "m-file",
+                "fileName": "field-trip.txt",
+            },
+        }
+
+        asyncio.run(ad._handle_message_event(event))
+
+        assert len(captured) == 1
+        assert captured[0].message_type is MessageType.DOCUMENT
+        assert captured[0].media_types == ["text/plain"]
+        path = captured[0].media_urls[0]
+        assert path.endswith("field-trip.txt")
+        assert os.path.exists(path)
+        assert open(path, "rb").read() == b"field trip details"

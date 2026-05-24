@@ -47,6 +47,10 @@ optional_env:
     description: "Comma-separated LINE group IDs the bot will respond in (C-prefixed)"
     prompt: "Allowed group IDs (comma-separated)"
     password: false
+  - name: LINE_READ_ONLY_GROUPS
+    description: "Comma-separated LINE group IDs to archive locally without agent replies (C-prefixed)"
+    prompt: "Read-only group IDs (comma-separated)"
+    password: false
   - name: LINE_ALLOWED_ROOMS
     description: "Comma-separated LINE room IDs the bot will respond in (R-prefixed)"
     prompt: "Allowed room IDs (comma-separated)"
