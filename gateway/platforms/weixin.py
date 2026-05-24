@@ -72,8 +72,8 @@ from utils import atomic_json_write
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
-CHANNEL_VERSION = "2.2.0"
-ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
+CHANNEL_VERSION = "2.4.3"
+ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 3
 
 EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
@@ -82,6 +82,8 @@ EP_GET_CONFIG = "ilink/bot/getconfig"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
+EP_NOTIFY_START = "ilink/bot/msg/notifystart"
+EP_NOTIFY_STOP = "ilink/bot/msg/notifystop"
 
 LONG_POLL_TIMEOUT_MS = 35_000
 API_TIMEOUT_MS = 15_000
@@ -204,7 +206,7 @@ def _random_wechat_uin() -> str:
 
 
 def _base_info() -> Dict[str, Any]:
-    return {"channel_version": CHANNEL_VERSION}
+    return {"channel_version": CHANNEL_VERSION, "bot_agent": ""}
 
 
 def _headers(token: Optional[str], body: str) -> Dict[str, str]:
@@ -1272,6 +1274,20 @@ class WeixinAdapter(BasePlatformAdapter):
         # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
+        # Notify iLink server that the bot is starting (matches OpenClaw behavior).
+        try:
+            await _api_post(
+                self._poll_session,
+                base_url=self._base_url,
+                endpoint=EP_NOTIFY_START,
+                payload={},
+                token=self._token,
+                timeout_ms=API_TIMEOUT_MS,
+            )
+            logger.debug("[%s] notifyStart sent", self.name)
+        except Exception as exc:
+            # Non-fatal — the bot can still function without notifyStart.
+            logger.debug("[%s] notifyStart failed (non-fatal): %s", self.name, exc)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1293,6 +1309,20 @@ class WeixinAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+        # Notify iLink server that the bot is shutting down (matches OpenClaw behavior).
+        if self._poll_session and not self._poll_session.closed and self._token:
+            try:
+                await _api_post(
+                    self._poll_session,
+                    base_url=self._base_url,
+                    endpoint=EP_NOTIFY_STOP,
+                    payload={},
+                    token=self._token,
+                    timeout_ms=API_TIMEOUT_MS,
+                )
+                logger.debug("[%s] notifyStop sent", self.name)
+            except Exception as exc:
+                logger.debug("[%s] notifyStop failed (non-fatal): %s", self.name, exc)
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
             try:
