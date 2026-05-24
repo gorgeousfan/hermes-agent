@@ -62,6 +62,14 @@ from utils import base_url_host_matches
 logger = logging.getLogger("run_agent")
 
 
+# Primary providers known to throw prolonged overload / rate-limit storms
+# (Anthropic 529s under Claude Code OAuth, OpenAI Codex CLI burst limits).
+# When configured as primary with NO fallback chain, retries happen
+# in-loop and look like a silent hang — see init_agent() for the
+# session-start warning that surfaces this configuration risk.
+_RETRY_PRONE_PROVIDERS_WITHOUT_FALLBACK = frozenset({"anthropic", "openai-codex"})
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.OpenAI`` / ``run_agent.cleanup_vm`` / ... and have those
@@ -903,6 +911,29 @@ def init_agent(
         else:
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
+    elif not agent._fallback_chain and agent.provider in _RETRY_PRONE_PROVIDERS_WITHOUT_FALLBACK:
+        # Primary providers known for prolonged overload / rate-limit storms
+        # (Anthropic 529s, ChatGPT-OAuth Codex burst limits) silently retry
+        # in-loop when the fallback chain is empty, which has bitten real
+        # sessions (builder/ops 2026-05-18→19).  Surface a one-line WARNING
+        # at session start so operators can `hermes fallback add` before
+        # hitting an outage.  The warning goes through ``logger`` (visible
+        # in ~/.hermes/logs/errors.log) and, in non-quiet interactive runs,
+        # to stdout so it can't be missed.
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            _profile = get_active_profile_name() or "default"
+        except Exception:
+            _profile = "default"
+        _flag = "" if _profile in (None, "", "default") else f" -p {_profile}"
+        _msg = (
+            f"empty fallback_providers with primary={agent.provider} — "
+            f"overload / rate-limit will cause silent in-loop retries. "
+            f"Add a backup with: hermes{_flag} fallback add"
+        )
+        logger.warning(_msg)
+        if not agent.quiet_mode:
+            print(f"⚠️  {_msg}")
 
     # Get available tools with filtering
     agent.tools = _ra().get_tool_definitions(
