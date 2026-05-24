@@ -669,6 +669,19 @@ DEFAULT_CONFIG = {
         "persistent_shell": True,
     },
 
+    # Optional SilverBullet workflow context. Disabled by default so upstream
+    # installs do not inject local notes unless explicitly configured.
+    "silverbullet": {
+        "context": {
+            "enabled": False,
+            "space_path": None,
+            "max_chars": 2000,
+            "include_activity": True,
+            "include_indexes": True,
+            "recent_daily_notes": 1,
+        },
+    },
+
     "web": {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
@@ -3309,7 +3322,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "silverbullet",
 }
 
 # Valid fields inside a custom_providers list entry

@@ -1806,19 +1806,21 @@ class SlackAdapter(BasePlatformAdapter):
         # gateway dispatcher) handles it like a normal slash command.  Only
         # rewrite when the first token resolves to a known gateway command
         # so casual messages like "!nice work" pass through unchanged.
-        if original_text.startswith("!"):
+        bang_candidate = original_text.lstrip()
+        if bang_candidate.startswith("!"):
             try:
                 from hermes_cli.commands import is_gateway_known_command
-                first_token = original_text[1:].split(maxsplit=1)[0]
+                first_token = bang_candidate[1:].split(maxsplit=1)[0]
                 # Strip "@suffix" the same way get_command() does, so
                 # forms like ``!stop@hermes`` still resolve.
                 cmd_name = first_token.split("@", 1)[0].lower()
                 if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
-                    original_text = "/" + original_text[1:]
+                    original_text = "/" + bang_candidate[1:]
             except Exception:  # pragma: no cover - defensive
-                pass
+                logger.warning("[Slack] Failed to rewrite bang-prefixed command", exc_info=True)
 
         text = original_text
+        msg_type = MessageType.COMMAND if original_text.startswith("/") else MessageType.TEXT
 
         # Extract quoted/forwarded content from Slack blocks.
         # Slack's modern composer embeds forwarded messages in the ``blocks``
@@ -2010,10 +2012,17 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
+        # Commands intentionally skip fetched context: gateway command parsing
+        # expects event.text to start with "/", and commands do not need LLM
+        # conversation context to dispatch.
+        if (
+            msg_type != MessageType.COMMAND
+            and is_thread_reply
+            and not self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
         ):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
@@ -2023,11 +2032,6 @@ class SlackAdapter(BasePlatformAdapter):
             )
             if thread_context:
                 text = thread_context + text
-
-        # Determine message type
-        msg_type = MessageType.TEXT
-        if (original_text or "").startswith("/"):
-            msg_type = MessageType.COMMAND
 
         # Handle file attachments
         media_urls = []
@@ -2198,13 +2202,20 @@ class SlackAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        # Command dispatch depends on MessageEvent.text being the exact slash
+        # command string. Slack may include rich-text blocks, unfurls, files,
+        # or thread reply metadata alongside the text; those are useful for LLM
+        # turns but must not become /model args or other command payload.
+        if msg_type == MessageType.COMMAND:
+            text = original_text
+
         # Extract reply context if this message is a thread reply.
         # Mirrors the Telegram/Discord implementations so that gateway.run
         # can inject a `[Replying to: "..."]` prefix when the parent is not
         # already in the session history. Uses the thread-context cache when
         # available to avoid redundant conversations.replies calls.
         reply_to_text = None
-        if thread_ts and thread_ts != ts:
+        if msg_type != MessageType.COMMAND and thread_ts and thread_ts != ts:
             try:
                 reply_to_text = await self._fetch_thread_parent_text(
                     channel_id=channel_id,

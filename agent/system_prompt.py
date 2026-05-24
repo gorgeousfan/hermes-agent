@@ -14,7 +14,8 @@ Three tiers are joined with ``\\n\\n``:
   enforcement guidance + per-model operational guidance, skills prompt,
   alibaba model-name workaround, environment hints, platform hints.
 * ``context``  — caller-supplied ``system_message`` plus context files
-  (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
+  (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``
+  and optional compact workflow context such as SilverBullet.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
   provider block, timestamp/session/model/provider line.
 
@@ -270,6 +271,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             cwd=_context_cwd, skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
+
+    silverbullet_context_prompt = _r.build_silverbullet_context_prompt()
+    if silverbullet_context_prompt:
+        context_parts.append(silverbullet_context_prompt)
 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
