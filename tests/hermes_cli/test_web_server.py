@@ -1440,6 +1440,7 @@ class TestStatusRemoteGateway:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "_scan_gateway_pid_in_container", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
@@ -1485,6 +1486,7 @@ class TestStatusRemoteGateway:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "_scan_gateway_pid_in_container", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
 
@@ -1499,6 +1501,7 @@ class TestStatusRemoteGateway:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "_scan_gateway_pid_in_container", lambda: None)
         monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
         monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
         monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
@@ -1511,6 +1514,191 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
+
+
+class TestStatusContainerFallback:
+    """Tests for /api/status pgrep fallback when the gateway runs as PID 1.
+
+    Complements the upstream fix for issue #4776 (CLI status path) — the
+    dashboard's /api/status handler took a different code path and was
+    missed by that refactor.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_container_fallback_supplies_pid_when_local_returns_none(self, monkeypatch):
+        """get_running_pid None + container scan finds PID → gateway shows running."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "_scan_gateway_pid_in_container", lambda: 7)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 7
+
+    def test_container_fallback_both_none_keeps_stopped(self, monkeypatch):
+        """get_running_pid None + container scan also None → gateway stays stopped."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "_scan_gateway_pid_in_container", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_pid"] is None
+
+    def test_container_fallback_not_invoked_when_local_pid_found(self, monkeypatch):
+        """When get_running_pid returns a PID, container scan must not run."""
+        import hermes_cli.web_server as ws
+
+        scan_called = [False]
+
+        def _track_scan():
+            scan_called[0] = True
+            return 99
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "_scan_gateway_pid_in_container", _track_scan)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert resp.json()["gateway_pid"] == 1234
+        assert scan_called[0] is False
+
+
+class TestScanGatewayPidInContainer:
+    """Unit tests for the _scan_gateway_pid_in_container() helper itself."""
+
+    def test_returns_none_outside_container(self, monkeypatch):
+        """Helper short-circuits to None when is_container() is False."""
+        import hermes_constants as hc
+        monkeypatch.setattr(hc, "is_container", lambda: False)
+
+        from hermes_cli.web_server import _scan_gateway_pid_in_container
+        assert _scan_gateway_pid_in_container() is None
+
+    def test_returns_pid_from_pgrep_inside_container(self, monkeypatch):
+        """Helper parses pgrep stdout and returns the PID once cmdline validates."""
+        import hermes_constants as hc
+        import subprocess
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(hc, "is_container", lambda: True)
+
+        class _FakeProc:
+            returncode = 0
+            stdout = "42\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
+        monkeypatch.setattr(
+            ws,
+            "_read_proc_cmdline_tokens",
+            lambda pid: ["python3", "/opt/hermes/.venv/bin/hermes", "gateway", "run"]
+            if pid == 42
+            else None,
+        )
+
+        assert ws._scan_gateway_pid_in_container() == 42
+
+    def test_returns_none_when_cmdline_lacks_gateway_tokens(self, monkeypatch):
+        """pgrep substring-matched a bogus cmdline → cmdline validation rejects it."""
+        import hermes_constants as hc
+        import subprocess
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(hc, "is_container", lambda: True)
+
+        class _FakeProc:
+            returncode = 0
+            stdout = "13\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
+        # PID 13 is a `python -c '...hermes gateway run...'` debug invocation —
+        # pgrep -f substring-matched it, but argv has no 'gateway'/'run' token.
+        monkeypatch.setattr(
+            ws,
+            "_read_proc_cmdline_tokens",
+            lambda pid: ["python", "-c", 'print("hermes gateway run debug")'],
+        )
+
+        assert ws._scan_gateway_pid_in_container() is None
+
+    def test_skips_self_pid_in_pgrep_results(self, monkeypatch):
+        """If pgrep returns self PID first, helper skips and continues scanning."""
+        import os
+        import hermes_constants as hc
+        import subprocess
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(hc, "is_container", lambda: True)
+
+        self_pid = os.getpid()
+
+        class _FakeProc:
+            returncode = 0
+            stdout = f"{self_pid}\n55\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
+        monkeypatch.setattr(
+            ws,
+            "_read_proc_cmdline_tokens",
+            lambda pid: ["python3", "/path/hermes", "gateway", "run"]
+            if pid == 55
+            else None,
+        )
+
+        assert ws._scan_gateway_pid_in_container() == 55
+
+    def test_returns_none_when_pgrep_finds_nothing(self, monkeypatch):
+        """pgrep exit code != 0 → no match → helper returns None."""
+        import hermes_constants as hc
+        import subprocess
+
+        monkeypatch.setattr(hc, "is_container", lambda: True)
+
+        class _FakeProc:
+            returncode = 1
+            stdout = ""
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
+
+        from hermes_cli.web_server import _scan_gateway_pid_in_container
+        assert _scan_gateway_pid_in_container() is None
+
+    def test_returns_none_when_pgrep_raises(self, monkeypatch):
+        """subprocess.run failure (e.g. pgrep missing) → helper swallows + returns None."""
+        import hermes_constants as hc
+        import subprocess
+
+        monkeypatch.setattr(hc, "is_container", lambda: True)
+
+        def _boom(*a, **kw):
+            raise FileNotFoundError("pgrep not installed")
+
+        monkeypatch.setattr(subprocess, "run", _boom)
+
+        from hermes_cli.web_server import _scan_gateway_pid_in_container
+        assert _scan_gateway_pid_in_container() is None
 
 
 # ---------------------------------------------------------------------------

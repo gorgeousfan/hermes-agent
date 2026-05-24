@@ -535,6 +535,75 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _read_proc_cmdline_tokens(pid: int) -> Optional[List[str]]:
+    """Read ``/proc/<pid>/cmdline`` and return the NUL-split argv tokens.
+
+    Returns ``None`` when the file is unreadable (process gone, permission
+    denied, non-Linux host).  Split into a helper so the validation step in
+    :func:`_scan_gateway_pid_in_container` is easy to mock in tests.
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode("utf-8", "replace") for a in f.read().split(b"\x00") if a]
+    except OSError:
+        return None
+
+
+def _scan_gateway_pid_in_container() -> Optional[int]:
+    """Find a live ``hermes gateway run`` PID — container deployment fallback.
+
+    In Docker/Kubernetes deployments where the gateway runs as the container
+    entrypoint, ``gateway.pid`` / ``gateway.lock`` files are never reliably
+    written, so :func:`get_running_pid` returns ``None`` even when the
+    gateway is alive.  This mirrors the ``pgrep`` fallback already adopted
+    upstream for the ``hermes status`` CLI (issue #4776 — refactored into
+    :func:`hermes_cli.gateway.get_gateway_runtime_snapshot`); the dashboard's
+    ``/api/status`` handler took a different code path and was missed by
+    that refactor.
+
+    Only runs when :func:`is_container` reports True, so non-container hosts
+    (where ``pgrep`` may be unavailable on Windows) are unaffected.
+
+    Uses ``pgrep`` for a fast candidate list, then re-validates each PID by
+    checking ``gateway`` and ``run`` appear as independent argv tokens in
+    ``/proc/<pid>/cmdline`` — guards against ``pgrep -f``'s substring match
+    accidentally hitting a cmdline that *contains* the literal string
+    ``"hermes gateway run"`` (e.g. a debug ``python -c`` invocation).
+    """
+    try:
+        from hermes_constants import is_container
+    except Exception:
+        return None
+    if not is_container():
+        return None
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["pgrep", "-f", "hermes gateway run"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    self_pid = os.getpid()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.isdigit():
+            continue
+        pid = int(line)
+        if pid == self_pid:
+            continue
+        argv = _read_proc_cmdline_tokens(pid)
+        if argv is None:
+            continue
+        if "gateway" in argv and "run" in argv:
+            return pid
+    return None
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -544,6 +613,11 @@ async def get_status():
     # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
     # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
+    if gateway_pid is None:
+        # Docker/Kubernetes fallback: get_running_pid() depends on pid/lock
+        # files that aren't written in the PID-1 entrypoint pattern.  See
+        # _scan_gateway_pid_in_container() for the full rationale.
+        gateway_pid = _scan_gateway_pid_in_container()
     gateway_running = gateway_pid is not None
     remote_health_body: dict | None = None
 
