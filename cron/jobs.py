@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, parse_reasoning_effort
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,16 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
 
     profile = _coerce_job_text(normalized.get("profile")).strip()
     normalized["profile"] = profile or None
+
+    try:
+        normalized["reasoning_effort"] = _normalize_reasoning_effort(normalized.get("reasoning_effort"))
+    except ValueError as exc:
+        logger.warning(
+            "Job '%s': invalid reasoning_effort in stored record: %s",
+            normalized.get("id", "?"),
+            exc,
+        )
+        normalized["reasoning_effort"] = None
 
     return normalized
 
@@ -506,6 +516,18 @@ def _normalize_profile(profile: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+    """Normalize/validate an optional per-job reasoning effort override."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if parse_reasoning_effort(text) is None:
+        raise ValueError(
+            "reasoning_effort must be one of: none, minimal, low, medium, high, xhigh"
+        )
+    return text
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -523,6 +545,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -607,6 +630,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
+    normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
     normalized_no_agent = bool(no_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -662,6 +686,7 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        "reasoning_effort": normalized_reasoning_effort,
     }
 
     jobs = load_jobs()
@@ -750,6 +775,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        # Validate / normalize per-job reasoning effort if present. Empty
+        # string/None clears the override and restores global fallback.
+        if "reasoning_effort" in updates:
+            updates["reasoning_effort"] = _normalize_reasoning_effort(updates.get("reasoning_effort"))
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

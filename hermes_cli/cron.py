@@ -101,6 +101,9 @@ def cron_list(show_all: bool = False):
         profile = job.get("profile")
         if profile:
             print(f"    Profile:   {profile}")
+        reasoning_effort = job.get("reasoning_effort")
+        if reasoning_effort is not None:
+            print(f"    Reasoning: {reasoning_effort}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -178,6 +181,7 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
@@ -197,6 +201,8 @@ def cron_create(args):
         print(f"  Workdir: {job_data['workdir']}")
     if job_data.get("profile"):
         print(f"  Profile: {job_data['profile']}")
+    if job_data.get("reasoning_effort") is not None:
+        print(f"  Reasoning: {job_data['reasoning_effort']}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
@@ -231,6 +237,11 @@ def cron_edit(args):
             if skill not in final_skills:
                 final_skills.append(skill)
 
+    if getattr(args, "clear_reasoning_effort", False) and getattr(args, "reasoning_effort", None):
+        print(color("Cannot combine --reasoning-effort with --clear-reasoning-effort", Colors.RED))
+        return 1
+    reasoning_effort = "" if getattr(args, "clear_reasoning_effort", False) else getattr(args, "reasoning_effort", None)
+
     result = _cron_api(
         action="update",
         job_id=args.job_id,
@@ -243,6 +254,7 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
+        reasoning_effort=reasoning_effort,
         no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
@@ -265,6 +277,8 @@ def cron_edit(args):
         print(f"  Workdir: {updated['workdir']}")
     if updated.get("profile"):
         print(f"  Profile: {updated['profile']}")
+    if updated.get("reasoning_effort") is not None:
+        print(f"  Reasoning: {updated['reasoning_effort']}")
     return 0
 
 

@@ -1,6 +1,8 @@
 """Tests for hermes_cli.cron command handling."""
 
 from argparse import Namespace
+import sys
+import types
 
 import pytest
 
@@ -111,3 +113,83 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_create_edit_clear_and_list_reasoning_effort(self, tmp_cron_dir, capsys, monkeypatch):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Check reasoning",
+                name="Reasoning job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                workdir=None,
+                profile=None,
+                no_agent=False,
+                reasoning_effort="low",
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Reasoning: low" in out
+        job = list_jobs()[0]
+        assert job["reasoning_effort"] == "low"
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                add_skills=None,
+                remove_skills=None,
+                clear_skills=False,
+                script=None,
+                workdir=None,
+                profile=None,
+                no_agent=None,
+                reasoning_effort="high",
+                clear_reasoning_effort=False,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Reasoning: high" in out
+        assert get_job(job["id"])["reasoning_effort"] == "high"
+
+        fake_gateway = types.ModuleType("hermes_cli.gateway")
+        setattr(fake_gateway, "find_gateway_pids", lambda: [123])
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway", fake_gateway)
+
+        cron_command(Namespace(cron_command="list", all=False))
+        out = capsys.readouterr().out
+        assert "Reasoning: high" in out
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                add_skills=None,
+                remove_skills=None,
+                clear_skills=False,
+                script=None,
+                workdir=None,
+                profile=None,
+                no_agent=None,
+                reasoning_effort=None,
+                clear_reasoning_effort=True,
+            )
+        )
+        assert get_job(job["id"])["reasoning_effort"] is None

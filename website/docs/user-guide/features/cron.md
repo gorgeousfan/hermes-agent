@@ -121,6 +121,40 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate — `TERMINAL_CWD` is process-global, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+## Tuning reasoning effort per job
+
+By default, cron jobs use the same `agent.reasoning_effort` configured for normal Hermes sessions. For scheduled background work, that is not always the right trade-off: a routine feed digest or low-risk watchdog can usually run faster and cheaper with lighter reasoning than an interactive coding session.
+
+Set a per-job override with `--reasoning-effort`:
+
+```bash
+hermes cron create "0 3 * * *" \
+  "Summarize yesterday's low-priority feeds" \
+  --reasoning-effort low
+```
+
+The same option is available through the `cronjob` tool:
+
+```python
+cronjob(
+    action="create",
+    schedule="0 3 * * *",
+    prompt="Summarize yesterday's low-priority feeds",
+    reasoning_effort="low",
+)
+```
+
+Valid values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`.
+
+Semantics:
+
+- omit the field to use global `agent.reasoning_effort`
+- set `none` to explicitly disable reasoning for that job
+- clear the override with `hermes cron edit <job_id> --clear-reasoning-effort`
+- `no_agent` script-only jobs ignore reasoning effort because they never create an agent or call a model
+
+This lets you keep a stronger global setting for interactive sessions while making recurring low-risk cron jobs less expensive in latency and token usage.
+
 ## Running cron jobs in a specific profile
 
 By default a cron job inherits whichever Hermes profile owned the gateway / CLI that created it. Pass `--profile <name>` (CLI) or `profile=` (cronjob tool) to re-target the job at a different profile — the scheduler resolves that profile's `HERMES_HOME`, temporarily switches into it for the duration of the run, loads its `.env` + `config.yaml`, and executes the job there:
