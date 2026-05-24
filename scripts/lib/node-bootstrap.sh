@@ -10,7 +10,7 @@
 #   2. ~/.hermes/node/ from a prior Hermes-managed install
 #   3. fnm, proto, nvm (in that order) if the user already uses a version manager
 #   4. Termux `pkg`, macOS Homebrew
-#   5. pinned nodejs.org tarball into ~/.hermes/node/ (always works, zero shell rc edits)
+#   5. pinned nodejs.org tarball into ~/.hermes/node/ (persistent install)
 #
 # Usage:
 #   source scripts/lib/node-bootstrap.sh
@@ -35,6 +35,26 @@ HERMES_NODE_AVAILABLE=false
 _nb_log()  { declare -F log_info    >/dev/null 2>&1 && log_info    "$*" || printf '→ %s\n' "$*" >&2; }
 _nb_ok()   { declare -F log_success >/dev/null 2>&1 && log_success "$*" || printf '✓ %s\n' "$*" >&2; }
 _nb_warn() { declare -F log_warn    >/dev/null 2>&1 && log_warn    "$*" || printf '⚠ %s\n' "$*" >&2; }
+
+_nb_prepend_path() {
+    case ":$PATH:" in
+        *":$1:"*) ;;
+        *) export PATH="$1:$PATH" ;;
+    esac
+}
+
+_nb_persist_hermes_node_path() {
+   local line='export PATH="$HOME/.hermes/node/bin:$PATH"'
+    local profile
+
+    for profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+        [ -f "$profile" ] || continue
+
+        grep -Fq '.hermes/node/bin' "$profile" && continue
+
+        printf '\n# Hermes Node.js\n%s\n' "$line" >> "$profile"
+    done
+}
 
 # ---------------------------------------------------------------------------
 # Platform + version helpers
@@ -184,14 +204,16 @@ _nb_install_bundled_node() {
 
     mkdir -p "$HERMES_HOME"
     rm -rf "$HERMES_HOME/node"
-    mv "$extracted" "$HERMES_HOME/node"
+
+    mv "$extracted" "$HERMES_HOME/node" || {
+        rm -rf "$tmp"
+        return 1
+    }
+
     rm -rf "$tmp"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
-    export PATH="$HERMES_HOME/node/bin:$PATH"
+    _nb_prepend_path "$HERMES_HOME/node/bin"
+    _nb_persist_hermes_node_path
 
     _nb_have_modern_node || return 1
     _nb_ok "Node $(node --version) installed to $HERMES_HOME/node/"
@@ -212,7 +234,7 @@ ensure_node() {
     fi
 
     if [ -x "$HERMES_HOME/node/bin/node" ]; then
-        export PATH="$HERMES_HOME/node/bin:$PATH"
+        _nb_prepend_path "$HERMES_HOME/node/bin"
         if _nb_have_modern_node; then
             _nb_ok "Node $(node --version) found (Hermes-managed)"
             HERMES_NODE_AVAILABLE=true
