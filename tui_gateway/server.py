@@ -2779,25 +2779,35 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
 
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+    # Detach from _sessions (already done above) then finalize in a background
+    # thread so that slow work — memory commit, DB write, hook execution — does
+    # not block the JSON-RPC response.  The frontend is waiting on this response
+    # before it can call session.create for the new session; any latency here
+    # makes /clear feel stuck and leaves old context visible. (#23642)
+    def _bg_close(s: dict) -> None:
+        _finalize_session(s)
+        try:
+            from tools.approval import unregister_gateway_notify
+            unregister_gateway_notify(s["session_key"])
+        except Exception:
+            pass
+        try:
+            a = s.get("agent")
+            if a and hasattr(a, "close"):
+                a.close()
+        except Exception:
+            pass
+        try:
+            w = s.get("slash_worker")
+            if w:
+                w.close()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_bg_close, args=(session,), daemon=True,
+                         name=f"session-close-{sid[:8]}")
+    t.start()
     return _ok(rid, {"closed": True})
 
 
