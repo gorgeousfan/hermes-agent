@@ -2921,6 +2921,59 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    def _busy_ack_reply_to(self, event: MessageEvent, reply_anchor: Optional[str]) -> Optional[str]:
+        # Pick the right ``reply_to`` for a busy-path acknowledgment. Telegram
+        # has three sub-cases (DM-in-thread, group-in-thread, everything else)
+        # and the rule is duplicated in three sibling send sites in this
+        # function; this centralizes it so the branches can't drift.
+        if event.source.platform == Platform.TELEGRAM and event.source.thread_id:
+            if event.source.chat_type == "dm":
+                return reply_anchor
+            return None
+        return event.message_id
+
+    async def _try_execute_exec_quick_command(self, command: Optional[str]) -> Optional[str]:
+        # Run an exec-type quick command inline and return its output (already
+        # redacted) when ``command`` matches one. Returns ``None`` when no
+        # matching exec quick command exists, so callers fall through to
+        # normal dispatch. ``alias``-type quick commands are NOT handled here —
+        # they rewrite into other commands and stay in the cold path.
+        if not command:
+            return None
+        if isinstance(self.config, dict):
+            quick_commands = self.config.get("quick_commands", {}) or {}
+        else:
+            quick_commands = getattr(self.config, "quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict) or command not in quick_commands:
+            return None
+        qcmd = quick_commands[command]
+        if not isinstance(qcmd, dict) or qcmd.get("type") != "exec":
+            return None
+        exec_cmd = qcmd.get("command", "")
+        if not exec_cmd:
+            return f"Quick command '/{command}' has no command defined."
+        try:
+            # Sanitize env to prevent credential leakage — quick commands run
+            # in the gateway process which has all API keys in os.environ.
+            from tools.environments.local import _sanitize_subprocess_env
+            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
+            proc = await asyncio.create_subprocess_shell(
+                exec_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=sanitized_env,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            output = (stdout or stderr).decode().strip()
+            if output:
+                from agent.redact import redact_sensitive_text
+                output = redact_sensitive_text(output)
+            return output if output else "Command returned no output."
+        except asyncio.TimeoutError:
+            return "Quick command timed out (30s)."
+        except Exception as e:
+            return f"Quick command error: {e}"
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -2955,15 +3008,37 @@ class GatewayRunner:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=self._busy_ack_reply_to(event, reply_anchor),
                 metadata=thread_meta,
             )
+            return True
+
+        # --- Exec-type quick commands bypass the agent entirely (#25783) ---
+        # Quick commands with ``type: exec`` run a subprocess and don't touch
+        # the LLM or session state, so queueing/interrupting the running agent
+        # is the wrong response. Without this short-circuit the message falls
+        # through to the queue/interrupt path below and is replayed to the
+        # agent as raw text once the current turn finishes, so the user's
+        # ``/note ...`` command silently arrives in the conversation instead
+        # of executing. Matches the precedence in the non-busy ``_handle_message``
+        # cold path: draining wins (handled above), exec quick commands run
+        # next. ``alias``-type quick commands intentionally are NOT handled
+        # here — they rewrite into agent input and follow normal busy semantics.
+        exec_output = await self._try_execute_exec_quick_command(event.get_command())
+        if exec_output is not None:
+            adapter = self.adapters.get(event.source.platform)
+            if adapter is not None:
+                reply_anchor = self._reply_anchor_for_event(event)
+                thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+                try:
+                    await adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=exec_output,
+                        reply_to=self._busy_ack_reply_to(event, reply_anchor),
+                        metadata=thread_meta,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to deliver exec quick command output: %s", exc)
             return True
 
         # Normal busy case (agent actively running a task)
@@ -3104,13 +3179,7 @@ class GatewayRunner:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
-                reply_to=(
-                    reply_anchor
-                    if event.source.platform == Platform.TELEGRAM
-                    and event.source.chat_type == "dm"
-                    and event.source.thread_id
-                    else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-                ),
+                reply_to=self._busy_ack_reply_to(event, reply_anchor),
                 metadata=thread_meta,
             )
         except Exception as e:
@@ -7413,33 +7482,7 @@ class GatewayRunner:
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            # Sanitize env to prevent credential leakage —
-                            # quick commands run in the gateway process which
-                            # has all API keys in os.environ.
-                            from tools.environments.local import _sanitize_subprocess_env
-                            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                env=sanitized_env,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            # Redact any remaining sensitive patterns in output
-                            if output:
-                                from agent.redact import redact_sensitive_text
-                                output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
+                    return await self._try_execute_exec_quick_command(command)
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
