@@ -1,5 +1,6 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import os
 from unittest.mock import patch
 
 from rich.console import Console
@@ -133,3 +134,69 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
     raw = buf.getvalue()
     assert "Hermes Agent v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
+
+
+def test_show_banner_resolves_provider_slug_via_custom_providers():
+    """Integration: show_banner() resolves a provider slug to the model name
+    from custom_providers config, rather than displaying the raw slug."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch as _patch
+    import cli as _cli_module
+    import model_tools as _mt
+    import tools.mcp_tool as _mcp
+
+    # Use "alibaba" — a known HERMES_OVERLAYS provider slug whose canonical
+    # identity is itself (no alias indirection).  The custom_providers entry
+    # will override its display model.
+    PROVIDER_SLUG = "alibaba"
+    RESOLVED_MODEL = "qwen-max-custom"
+
+    # Build a CLI_CONFIG dict that includes custom_providers with our slug.
+    cli_config = {
+        "display": {"tool_progress": "new"},
+        "terminal": {},
+        "model": {},
+        "custom_providers": {
+            PROVIDER_SLUG: {"model": RESOLVED_MODEL},
+        },
+    }
+
+    captured_model = None
+
+    def _capture_banner(console, model, cwd, **kwargs):
+        nonlocal captured_model
+        captured_model = model
+
+    with (
+        _patch.object(_cli_module, "load_cli_config", return_value=cli_config),
+        _patch.object(_cli_module, "CLI_CONFIG", cli_config),
+        _patch.object(_cli_module, "get_tool_definitions", return_value=[]),
+        _patch.object(_cli_module, "build_welcome_banner", side_effect=_capture_banner),
+        _patch(_cli_module.__name__ + ".HermesCLI._show_tool_availability_warnings"),
+        _patch.object(_mt, "check_tool_availability", return_value=(["web"], [])),
+        _patch.object(_mcp, "get_mcp_status", return_value=[]),
+    ):
+        from cli import HermesCLI
+        obj = HermesCLI.__new__(HermesCLI)
+        obj.model = PROVIDER_SLUG
+        obj.enabled_toolsets = ["hermes-core"]
+        obj.compact = False
+        obj.console = MagicMock()
+        obj.session_id = None
+        obj.api_key = "test"
+        obj.base_url = ""
+        obj.provider = "test"
+        obj._provider_source = None
+        obj.agent = SimpleNamespace(
+            context_compressor=SimpleNamespace(context_length=None)
+        )
+
+        # show_banner checks terminal width for compact mode
+        with _patch("shutil.get_terminal_size", return_value=os.terminal_size((120, 40))):
+            obj.show_banner()
+
+    assert captured_model is not None, "build_welcome_banner was never called"
+    assert captured_model == RESOLVED_MODEL, (
+        f"Expected model={RESOLVED_MODEL!r}, got {captured_model!r} — "
+        f"provider slug {PROVIDER_SLUG!r} was not resolved through custom_providers"
+    )
