@@ -322,3 +322,74 @@ class TestHermesConstantsFallback:
         import hermes_constants
         assert module.get_hermes_home is hermes_constants.get_hermes_home
         assert module.display_hermes_home is hermes_constants.display_hermes_home
+
+
+class TestGwsAuthFallback:
+    """Tests for gws CLI credential detection when no Hermes token exists."""
+
+    def test_check_auth_returns_true_when_gws_is_valid(self, setup_module, monkeypatch, capsys):
+        """When no token exists but gws auth status is valid, check_auth returns True."""
+        assert not setup_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(
+            setup_module, "_gws_auth_valid", lambda: True
+        )
+        assert setup_module.check_auth() is True
+        out = capsys.readouterr().out
+        assert "AUTHENTICATED: via gws CLI" in out
+
+    def test_check_auth_falls_through_when_gws_invalid(self, setup_module, monkeypatch, capsys):
+        """When no token and gws is not valid, check_auth returns False."""
+        assert not setup_module.TOKEN_PATH.exists()
+        monkeypatch.setattr(
+            setup_module, "_gws_auth_valid", lambda: False
+        )
+        assert setup_module.check_auth() is False
+        out = capsys.readouterr().out
+        assert "NOT_AUTHENTICATED" in out
+
+    def test_gws_auth_valid_returns_false_when_binary_missing(self, setup_module, monkeypatch):
+        """_gws_auth_valid returns False when gws is not installed."""
+        monkeypatch.setattr("shutil.which", lambda _name: None)
+        assert setup_module._gws_auth_valid() is False
+
+    def test_gws_auth_valid_returns_false_on_nonzero_exit(self, setup_module, monkeypatch):
+        """_gws_auth_valid returns False when gws auth status fails."""
+        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/gws")
+
+        class FakeResult:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+
+        monkeypatch.setattr(
+            "subprocess.run", lambda *a, **kw: FakeResult()
+        )
+        assert setup_module._gws_auth_valid() is False
+
+    def test_gws_auth_valid_returns_true_on_valid_output(self, setup_module, monkeypatch):
+        """_gws_auth_valid returns True when gws reports valid tokens."""
+        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/gws")
+
+        class FakeResult:
+            returncode = 0
+            stdout = json.dumps({"token_valid": True, "has_refresh_token": True})
+            stderr = ""
+
+        monkeypatch.setattr(
+            "subprocess.run", lambda *a, **kw: FakeResult()
+        )
+        assert setup_module._gws_auth_valid() is True
+
+    def test_gws_auth_valid_returns_false_on_expired_token(self, setup_module, monkeypatch):
+        """_gws_auth_valid returns False when gws token is expired."""
+        monkeypatch.setattr("shutil.which", lambda _name: "/usr/local/bin/gws")
+
+        class FakeResult:
+            returncode = 0
+            stdout = json.dumps({"token_valid": False, "has_refresh_token": True})
+            stderr = ""
+
+        monkeypatch.setattr(
+            "subprocess.run", lambda *a, **kw: FakeResult()
+        )
+        assert setup_module._gws_auth_valid() is False
