@@ -1908,7 +1908,10 @@ def run_doctor(args):
             mem0_key = mem0_cfg.get("api_key", "")
             if mem0_key:
                 check_ok("Mem0 API key configured")
-                check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+                mem0_info = f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}"
+                if mem0_cfg.get("host"):
+                    mem0_info += f"  host={mem0_cfg.get('host')}"
+                check_info(mem0_info)
             else:
                 _fail_and_issue(
                     "Mem0 API key not set",

@@ -324,12 +324,19 @@ def cmd_setup(args) -> None:
                 # Regular text prompt
                 current = provider_config.get(key)
                 effective_default = current or default
-                val = _prompt(desc, default=str(effective_default) if effective_default else None)
+                prompt_default = None if field.get("clear_on_blank") else effective_default
+                val = _prompt(desc, default=str(prompt_default) if prompt_default else None)
                 if val:
-                    provider_config[key] = val
+                    if not field.get("env_only"):
+                        provider_config[key] = val
                     # Also write to .env if this field has an env_var
                     if env_var and env_var not in env_writes:
                         env_writes[env_var] = val
+                elif field.get("clear_on_blank"):
+                    if not field.get("env_only"):
+                        provider_config[key] = ""
+                    if env_var and env_var not in env_writes:
+                        env_writes[env_var] = None
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
@@ -357,8 +364,15 @@ def cmd_setup(args) -> None:
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
-    """Append or update env vars in .env file."""
+    """Append, update, or remove env vars in .env file.
+
+    Values set to ``None`` remove the key.
+    """
     env_path.parent.mkdir(parents=True, exist_ok=True)
+    if not env_path.exists():
+        template_path = Path(__file__).resolve().parents[1] / ".env.example"
+        if template_path.exists():
+            env_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
 
     existing_lines = []
     if env_path.exists():
@@ -367,15 +381,21 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     updated_keys = set()
     new_lines = []
     for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            candidate = stripped[1:].lstrip()
+        else:
+            candidate = stripped
+        key_match = candidate.split("=", 1)[0].strip() if "=" in candidate else ""
         if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
+            if env_writes[key_match] is not None:
+                new_lines.append(f"{key_match}={env_writes[key_match]}")
             updated_keys.add(key_match)
         else:
             new_lines.append(line)
 
     for key, val in env_writes.items():
-        if key not in updated_keys:
+        if key not in updated_keys and val is not None:
             new_lines.append(f"{key}={val}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")

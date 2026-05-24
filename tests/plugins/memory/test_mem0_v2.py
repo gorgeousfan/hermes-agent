@@ -4,9 +4,11 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 """
 
 import json
+import sys
+import types
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider
+from plugins.memory.mem0 import Mem0MemoryProvider, _SelfHostedMem0Client, _load_config
 
 
 class FakeClientV2:
@@ -225,3 +227,141 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+    def test_mem0_host_env_loaded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("MEM0_HOST", "https://mem0.example.com")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg = _load_config()
+
+        assert cfg["host"] == "https://mem0.example.com"
+
+    def test_mem0_json_host_overrides_env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.setenv("MEM0_HOST", "https://env.example.com")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"host": "https://file.example.com"}),
+            encoding="utf-8",
+        )
+
+        cfg = _load_config()
+
+        assert cfg["host"] == "https://file.example.com"
+
+    def test_save_config_removes_blank_host(self, tmp_path):
+        config_path = tmp_path / "mem0.json"
+        config_path.write_text(
+            json.dumps({
+                "host": "https://mem0.example.com",
+                "user_id": "hermes-user",
+            }),
+            encoding="utf-8",
+        )
+        provider = Mem0MemoryProvider()
+
+        provider.save_config({"host": ""}, tmp_path)
+
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        assert "host" not in cfg
+        assert cfg["user_id"] == "hermes-user"
+
+    def test_memory_client_omits_empty_host(self, monkeypatch):
+        captured_kwargs = {}
+
+        class FakeMemoryClient:
+            def __init__(self, **kwargs):
+                captured_kwargs.update(kwargs)
+
+        fake_mem0 = types.SimpleNamespace(MemoryClient=FakeMemoryClient)
+        monkeypatch.setitem(sys.modules, "mem0", fake_mem0)
+
+        provider = Mem0MemoryProvider()
+        provider._api_key = "test-key"
+        provider._host = ""
+
+        provider._get_client()
+
+        assert captured_kwargs == {"api_key": "test-key"}
+
+    def test_memory_client_uses_configured_host(self, monkeypatch):
+        provider = Mem0MemoryProvider()
+        provider._api_key = "test-key"
+        provider._host = "https://mem0.example.com"
+
+        client = provider._get_client()
+
+        assert isinstance(client, _SelfHostedMem0Client)
+
+    def test_self_hosted_client_uses_oss_routes(self, monkeypatch):
+        captured_calls = []
+
+        class FakeResponse:
+            content = b"{}"
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"results": []}
+
+        def fake_request(method, url, **kwargs):
+            captured_calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse()
+
+        fake_requests = types.SimpleNamespace(request=fake_request)
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+        client = _SelfHostedMem0Client(
+            api_key="test-key",
+            host="https://mem0.example.com",
+        )
+        client.add([{"role": "user", "content": "hello"}], user_id="u123", agent_id="hermes")
+        client.search(query="hello", filters={"user_id": "u123"}, top_k=3, rerank=False)
+        client.get_all(filters={"user_id": "u123"})
+
+        assert captured_calls[0]["method"] == "POST"
+        assert captured_calls[0]["url"] == "https://mem0.example.com/memories"
+        assert captured_calls[0]["headers"]["X-API-Key"] == "test-key"
+        assert captured_calls[0]["json"]["user_id"] == "u123"
+        assert captured_calls[0]["json"]["agent_id"] == "hermes"
+
+        assert captured_calls[1]["method"] == "POST"
+        assert captured_calls[1]["url"] == "https://mem0.example.com/search"
+        assert captured_calls[1]["json"] == {
+            "query": "hello",
+            "filters": {"user_id": "u123"},
+            "top_k": 3,
+            "rerank": False,
+        }
+
+        assert captured_calls[2]["method"] == "GET"
+        assert captured_calls[2]["url"] == "https://mem0.example.com/memories"
+        assert captured_calls[2]["params"] == {"user_id": "u123"}
+
+    def test_self_hosted_api_key_uses_only_x_api_key(self, monkeypatch):
+        captured_calls = []
+
+        class FakeResponse:
+            content = b"{}"
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {}
+
+        def fake_request(method, url, **kwargs):
+            captured_calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse()
+
+        fake_requests = types.SimpleNamespace(request=fake_request)
+        monkeypatch.setitem(sys.modules, "requests", fake_requests)
+
+        client = _SelfHostedMem0Client(api_key="mem0-test-key", host="https://mem0.example.com")
+        client.get_all(filters={"user_id": "u123"})
+
+        headers = captured_calls[0]["headers"]
+        assert headers["X-API-Key"] == "mem0-test-key"
+        assert "Authorization" not in headers

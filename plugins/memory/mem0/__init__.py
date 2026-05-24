@@ -6,7 +6,8 @@ automatic deduplication via the Mem0 Platform API.
 Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
 Config via environment variables:
-  MEM0_API_KEY       — Mem0 Platform API key (required)
+  MEM0_HOST          — Mem0 URL (blank for Mem0 Platform)
+  MEM0_API_KEY       — Mem0 API key (required)
   MEM0_USER_ID       — User identifier (default: hermes-user)
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
@@ -21,6 +22,7 @@ import os
 import threading
 import time
 from typing import Any, Dict, List
+from urllib.parse import urljoin
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -48,6 +50,7 @@ def _load_config() -> dict:
 
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
@@ -116,6 +119,60 @@ CONCLUDE_SCHEMA = {
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
 
+class _SelfHostedMem0Client:
+    """Small REST client for Mem0 OSS servers, which do not use /v1 paths."""
+
+    def __init__(self, *, api_key: str, host: str):
+        import requests
+
+        self._requests = requests
+        self._base_url = host.rstrip("/") + "/"
+        self._headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+        }
+
+    def _url(self, path: str) -> str:
+        return urljoin(self._base_url, path.lstrip("/"))
+
+    def _request(self, method: str, path: str, **kwargs) -> Any:
+        response = self._requests.request(
+            method,
+            self._url(path),
+            headers=self._headers,
+            timeout=30,
+            **kwargs,
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        return response.json()
+
+    def get_all(self, **kwargs) -> Any:
+        filters = kwargs.get("filters") or {}
+        params = {k: v for k, v in filters.items() if v is not None and v != ""}
+        return self._request("GET", "/memories", params=params)
+
+    def search(self, **kwargs) -> Any:
+        filters = kwargs.get("filters") or {}
+        payload = {
+            "query": kwargs.get("query", ""),
+            "filters": {k: v for k, v in filters.items() if v is not None and v != ""},
+        }
+        if kwargs.get("top_k") is not None:
+            payload["top_k"] = kwargs["top_k"]
+        if kwargs.get("rerank") is not None:
+            payload["rerank"] = kwargs["rerank"]
+        return self._request("POST", "/search", json=payload)
+
+    def add(self, messages, **kwargs) -> Any:
+        payload = {
+            "messages": messages,
+            **{k: v for k, v in kwargs.items() if v is not None and v != ""},
+        }
+        return self._request("POST", "/memories", json=payload)
+
+
 class Mem0MemoryProvider(MemoryProvider):
     """Mem0 Platform memory with server-side extraction and semantic search."""
 
@@ -124,6 +181,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
+        self._host = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -148,6 +206,7 @@ class Mem0MemoryProvider(MemoryProvider):
         import json
         from pathlib import Path
         config_path = Path(hermes_home) / "mem0.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if config_path.exists():
             try:
@@ -155,11 +214,13 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
+        existing = {k: v for k, v in existing.items() if v is not None and v != ""}
         config_path.write_text(json.dumps(existing, indent=2))
 
     def get_config_schema(self):
         return [
-            {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Mem0 URL (blank for Mem0 Platform)", "required": False, "env_var": "MEM0_HOST", "clear_on_blank": True, "env_only": True},
+            {"key": "api_key", "description": "Mem0 API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai or your self-hosted dashboard"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -171,8 +232,13 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._client is not None:
                 return self._client
             try:
+                if self._host:
+                    self._client = _SelfHostedMem0Client(api_key=self._api_key, host=self._host)
+                    return self._client
+
                 from mem0 import MemoryClient
-                self._client = MemoryClient(api_key=self._api_key)
+                client_kwargs = {"api_key": self._api_key}
+                self._client = MemoryClient(**client_kwargs)
                 return self._client
             except ImportError:
                 raise RuntimeError("mem0 package not installed. Run: pip install mem0ai")
@@ -203,6 +269,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
@@ -221,7 +288,10 @@ class Mem0MemoryProvider(MemoryProvider):
     def _unwrap_results(response: Any) -> list:
         """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
         if isinstance(response, dict):
-            return response.get("results", [])
+            for key in ("results", "memories"):
+                if isinstance(response.get(key), list):
+                    return response[key]
+            return []
         if isinstance(response, list):
             return response
         return []

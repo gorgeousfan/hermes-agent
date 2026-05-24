@@ -2437,6 +2437,20 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Honcho base URL (e.g. http://localhost:8000)",
         "category": "tool",
     },
+    "MEM0_API_KEY": {
+        "description": "Mem0 API key for persistent memory",
+        "prompt": "Mem0 API key",
+        "url": "https://app.mem0.ai",
+        "password": True,
+        "category": "tool",
+    },
+    "MEM0_HOST": {
+        "description": "Mem0 URL (blank for Mem0 Platform)",
+        "prompt": "Mem0 URL",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
 
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": {
