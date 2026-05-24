@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 try:
@@ -160,6 +160,17 @@ class QQAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
+    _active_instance: ClassVar[Optional["QQAdapter"]] = None
+
+    @classmethod
+    def get_active(cls) -> Optional["QQAdapter"]:
+        """Return the currently connected adapter instance, if any."""
+        return cls._active_instance
+
+    @classmethod
+    def set_active(cls, adapter: Optional["QQAdapter"]) -> None:
+        """Track the live adapter so helper tools can reuse native media sends."""
+        cls._active_instance = adapter
 
     @property
     def _log_tag(self) -> str:
@@ -321,6 +332,7 @@ class QQAdapter(BasePlatformAdapter):
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self._mark_connected()
+            QQAdapter.set_active(self)
             logger.info("[%s] Connected", self._log_tag)
             return True
         except Exception as exc:
@@ -335,6 +347,8 @@ class QQAdapter(BasePlatformAdapter):
         """Close all connections and stop listeners."""
         self._running = False
         self._mark_disconnected()
+        if QQAdapter._active_instance is self:
+            QQAdapter.set_active(None)
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -667,6 +681,7 @@ class QQAdapter(BasePlatformAdapter):
             gateway_url = await self._get_gateway_url()
             await self._open_ws(gateway_url)
             self._mark_connected()
+            QQAdapter.set_active(self)
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
@@ -2772,7 +2787,6 @@ class QQAdapter(BasePlatformAdapter):
             reply_to,
             file_name=file_name,
         )
-
     async def _send_media(
             self,
             chat_id: str,
@@ -3130,3 +3144,8 @@ class QQAdapter(BasePlatformAdapter):
             return True
         self._seen_messages[msg_id] = now
         return False
+
+
+def get_active_adapter() -> Optional["QQAdapter"]:
+    """Delegate to ``QQAdapter.get_active()`` for tool-side reuse."""
+    return QQAdapter.get_active()

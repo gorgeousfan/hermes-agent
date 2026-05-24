@@ -156,6 +156,16 @@ class TestBasicDetection:
         paths, _ = _extract("File at /tmp/my-screenshot-2024.png done")
         assert paths == ["/tmp/my-screenshot-2024.png"]
 
+    def test_windows_backslash_path(self):
+        paths, cleaned = _extract(r"Saved to C:\Users\Test User\shot.png now")
+        assert paths == [r"C:\Users\Test User\shot.png"]
+        assert r"C:\Users\Test User\shot.png" not in cleaned
+
+    def test_windows_forwardslash_path(self):
+        paths, cleaned = _extract("Saved to C:/Users/Test User/shot.png now")
+        assert paths == ["C:/Users/Test User/shot.png"]
+        assert "C:/Users/Test User/shot.png" not in cleaned
+
 
 # ---------------------------------------------------------------------------
 # Non-existent files are skipped
@@ -205,6 +215,10 @@ class TestURLRejection:
     def test_file_url_not_matched(self):
         paths, _ = _extract("Open file:///home/user/doc.png in browser")
         # file:// has :// before /home so lookbehind blocks it
+        assert paths == []
+
+    def test_windows_file_url_not_matched(self):
+        paths, _ = _extract("Open file://C:/Users/Test/shot.png in browser")
         assert paths == []
 
 
@@ -337,10 +351,11 @@ class TestEdgeCases:
         paths, _ = _extract("File at /tmp/my file.png here")
         assert paths == []
 
-    def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
-        paths, _ = _extract("See C:\\Users\\test\\image.png")
-        assert paths == []
+    def test_windows_path_is_matched(self):
+        """Windows-style absolute media paths should be detected."""
+        paths, cleaned = _extract("See C:\\Users\\test\\image.png")
+        assert paths == [r"C:\Users\test\image.png"]
+        assert r"C:\Users\test\image.png" not in cleaned
 
     def test_relative_path_not_matched(self):
         """Relative paths like ./image.png should not match."""

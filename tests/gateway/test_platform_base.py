@@ -238,6 +238,18 @@ class TestExtractImages:
         images, _ = BasePlatformAdapter.extract_images(content)
         assert images == []
 
+    def test_html_img_file_url_windows_quoted_is_normalized(self):
+        content = 'Screenshot: <img src="file:///C:/Users/Test User/shot.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == [("file://C:/Users/Test User/shot.png", "")]
+        assert "<img" not in cleaned
+
+    def test_html_img_file_url_windows_unquoted_is_normalized(self):
+        content = "Screenshot: <img src=file://C:\\Users\\Test\\shot.png>"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == [("file://C:/Users/Test/shot.png", "")]
+        assert "<img" not in cleaned
+
     def test_non_image_link_preserved_when_mixed_with_images(self):
         """Regression: non-image markdown links must not be silently removed
         when the response also contains real images."""

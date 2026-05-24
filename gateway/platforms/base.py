@@ -17,7 +17,7 @@ import subprocess
 import sys
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from utils import normalize_proxy_url
 
@@ -253,6 +253,44 @@ def _split_host_port(value: str) -> tuple[str, int | None]:
         if maybe_port.isdigit():
             return host.lower().rstrip("."), int(maybe_port)
     return raw.lower().strip("[]").rstrip("."), None
+
+
+def _normalize_file_image_url(url: str) -> str:
+    """Normalize ``file://`` image URLs for downstream local-file senders.
+
+    POSIX paths stay as ``file:///tmp/x.png``. Windows drive-letter forms are
+    normalized to ``file://C:/path/to/x.png`` so callers that strip the
+    ``file://`` prefix do not end up with a bogus leading slash.
+    """
+    if not url.lower().startswith("file://"):
+        return url
+    raw_path = unquote(url[7:]).replace("\\", "/")
+    if re.match(r"^/[A-Za-z]:/", raw_path):
+        raw_path = raw_path[1:]
+    if re.match(r"^[A-Za-z]:/", raw_path):
+        return f"file://{raw_path}"
+    return f"file://{raw_path}"
+
+
+def _is_extractable_image_url(url: str) -> bool:
+    lower = url.lower()
+    if lower.startswith("file://"):
+        return lower.split("?", 1)[0].endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        )
+    return any(
+        lower.endswith(ext) or ext in lower
+        for ext in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            "fal.media",
+            "fal-cdn",
+            "replicate.delivery",
+        )
+    )
 
 
 def _no_proxy_entries() -> list[str]:
@@ -2065,6 +2103,8 @@ class BasePlatformAdapter(ABC):
         """
         images = []
         cleaned = content
+        extracted_markdown: list[str] = []
+        extracted_html: list[str] = []
         
         # Match markdown images: ![alt](url)
         md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
@@ -2072,24 +2112,28 @@ class BasePlatformAdapter(ABC):
             alt_text = match.group(1)
             url = match.group(2)
             # Only extract URLs that look like actual images
-            if any(url.lower().endswith(ext) or ext in url.lower() for ext in
-                   ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
+            if _is_extractable_image_url(url):
                 images.append((url, alt_text))
-        
-        # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        for match in re.finditer(html_pattern, content):
-            url = match.group(1)
-            images.append((url, ""))
-        
+                extracted_markdown.append(match.group(0))
+
+        # Match HTML img tags with quoted or unquoted src values and tolerate
+        # additional attributes before/after src.
+        html_pattern = re.compile(
+            r'<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^>\s]+))[^>]*>\s*(?:</img>)?',
+            re.IGNORECASE,
+        )
+        for match in html_pattern.finditer(content):
+            raw_url = match.group(1) or match.group(2) or match.group(3) or ""
+            normalized = _normalize_file_image_url(raw_url) if raw_url.lower().startswith("file://") else raw_url
+            if not _is_extractable_image_url(normalized):
+                continue
+            images.append((normalized, ""))
+            extracted_html.append(match.group(0))
+
         # Remove only the matched image tags from content (not all markdown images)
         if images:
-            extracted_urls = {url for url, _ in images}
-            def _remove_if_extracted(match):
-                url = match.group(2) if match.lastindex >= 2 else match.group(1)
-                return '' if url in extracted_urls else match.group(0)
-            cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
-            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
+            for raw in extracted_markdown + extracted_html:
+                cleaned = cleaned.replace(raw, "")
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
@@ -2333,8 +2377,14 @@ class BasePlatformAdapter(ABC):
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
         #             and relative paths (./foo.png)
         # (?:~/|/)    anchors to absolute or home-relative paths
-        path_re = re.compile(
+        posix_path_re = re.compile(
             r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            re.IGNORECASE,
+        )
+        windows_path_re = re.compile(
+            r'(?<![\w/:.-])[A-Za-z]:(?:\\|/)(?:[^<>:"|?*\r\n]+(?:\\|/))*[^<>:"|?*\r\n]+\.(?:'
+            + ext_part
+            + r')\b',
             re.IGNORECASE,
         )
 
@@ -2348,19 +2398,23 @@ class BasePlatformAdapter(ABC):
         def _in_code(pos: int) -> bool:
             return any(s <= pos < e for s, e in code_spans)
 
-        found: list = []  # (raw_match_text, expanded_path)
-        for match in path_re.finditer(content):
+        found: list = []  # (start_pos, raw_match_text, expanded_path)
+        all_matches = []
+        for path_re in (posix_path_re, windows_path_re):
+            all_matches.extend(path_re.finditer(content))
+
+        for match in sorted(all_matches, key=lambda m: m.start()):
             if _in_code(match.start()):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
             if os.path.isfile(expanded):
-                found.append((raw, expanded))
+                found.append((match.start(), raw, expanded))
 
         # Deduplicate by expanded path, preserving discovery order
         seen: set = set()
         unique: list = []
-        for raw, expanded in found:
+        for _start, raw, expanded in found:
             if expanded not in seen:
                 seen.add(expanded)
                 unique.append((raw, expanded))

@@ -97,6 +97,16 @@ class TestQQAdapterInit:
         adapter = self._make(app_id="a", client_secret="b")
         assert adapter.name == "QQBot"
 
+    def test_active_adapter_helper_round_trips_instance(self):
+        from gateway.platforms.qqbot import QQAdapter, get_active_adapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        QQAdapter.set_active(adapter)
+        try:
+            assert get_active_adapter() is adapter
+        finally:
+            QQAdapter.set_active(None)
+
 
 # ---------------------------------------------------------------------------
 # _coerce_list

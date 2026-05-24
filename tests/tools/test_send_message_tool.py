@@ -741,6 +741,47 @@ class TestSendToPlatformChunking:
         helper.assert_not_awaited()
         lightweight.assert_awaited_once()
 
+    def test_qqbot_media_uses_live_adapter_helper(self, tmp_path):
+        image_path = tmp_path / "shot.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        helper = AsyncMock(return_value={"success": True, "platform": "qqbot", "chat_id": "openid-1", "message_id": "msg-1"})
+        with patch("tools.send_message_tool._send_qqbot_via_adapter", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.QQBOT,
+                    SimpleNamespace(enabled=True, token="tok", extra={"app_id": "appid"}),
+                    "openid-1",
+                    "here you go",
+                    media_files=[(str(image_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once()
+        call = helper.await_args
+        assert call.args[0] == "openid-1"
+        assert call.args[1] == "here you go"
+        assert call.kwargs["media_files"] == [(str(image_path), False)]
+
+    def test_qqbot_text_only_uses_rest_path(self):
+        media_helper = AsyncMock()
+        rest_helper = AsyncMock(return_value={"success": True, "platform": "qqbot", "chat_id": "openid-1", "message_id": "msg-2"})
+        with patch("tools.send_message_tool._send_qqbot_via_adapter", media_helper), \
+             patch("tools.send_message_tool._send_qqbot", rest_helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.QQBOT,
+                    SimpleNamespace(enabled=True, token="tok", extra={"app_id": "appid"}),
+                    "openid-1",
+                    "just text",
+                )
+            )
+
+        assert result["success"] is True
+        media_helper.assert_not_awaited()
+        rest_helper.assert_awaited_once()
+
     def test_send_matrix_via_adapter_sends_document(self, tmp_path):
         file_path = tmp_path / "report.pdf"
         file_path.write_bytes(b"%PDF-1.4 test")
