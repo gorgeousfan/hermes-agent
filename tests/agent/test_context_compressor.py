@@ -1942,3 +1942,81 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestOnSessionReset:
+    """Regression: /new and /reset must re-probe context length (#31043)."""
+
+    def test_reset_reprobes_context_length(self):
+        """on_session_reset() re-probes context_length from the provider."""
+        call_count = [0]
+
+        def _mock_ctx_len(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] <= 1:
+                return 100000
+            return 200000
+
+        with patch("agent.context_compressor.get_model_context_length",
+                   side_effect=_mock_ctx_len):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                base_url="http://localhost:1234/v1",
+                provider="lmstudio",
+                quiet_mode=True,
+            )
+            assert c.context_length == 100000
+            assert call_count[0] == 1
+
+            c.on_session_reset()
+            assert c.context_length == 200000
+            assert call_count[0] >= 2
+
+    def test_reset_same_length_no_op(self):
+        """on_session_reset() does not change context_length when unchanged."""
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                quiet_mode=True,
+            )
+            original_threshold = c.threshold_tokens
+            # Keep the mock active during on_session_reset
+            c.on_session_reset()
+            assert c.context_length == 100000
+            assert c.threshold_tokens == original_threshold
+
+    def test_reset_probe_failure_keeps_stale_value(self):
+        """on_session_reset() keeps stale value when probe fails."""
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                quiet_mode=True,
+            )
+        with patch("agent.context_compressor.get_model_context_length",
+                   side_effect=OSError("connection refused")):
+            c.on_session_reset()
+        assert c.context_length == 100000
+
+    def test_lmstudio_reset_invalidates_endpoint_metadata_cache(self):
+        """LM Studio /new bypasses the short-lived endpoint metadata cache."""
+        with patch("agent.context_compressor.get_model_context_length",
+                   return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                base_url="http://localhost:1234/v1",
+                provider="lmstudio",
+                quiet_mode=True,
+            )
+
+        with patch("agent.context_compressor.invalidate_endpoint_model_metadata_cache") as invalidate, \
+             patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            c.on_session_reset()
+
+        invalidate.assert_called_once_with("http://localhost:1234/v1")
+        assert c.context_length == 200000
