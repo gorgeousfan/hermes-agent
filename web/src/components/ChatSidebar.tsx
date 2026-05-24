@@ -120,7 +120,9 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         if (cancelled) {
           return;
         }
-        return gw.request<{ session_id: string }>("session.create", {});
+        return gw.request<{ session_id: string }>("session.create", {
+          close_on_disconnect: true,
+        });
       })
       .then((created) => {
         if (cancelled || !created?.session_id) {

@@ -132,6 +132,22 @@ def test_dispatch_rejects_non_object_params():
     }
 
 
+def test_session_create_marks_close_on_disconnect():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"close_on_disconnect": "true"},
+        }
+    )
+
+    sid = resp["result"]["session_id"]
+    try:
+        assert server._sessions[sid]["close_on_disconnect"] is True
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -806,6 +822,70 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         assert ("on_session_finalize", "session-key") in calls["hooks"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_close_sessions_for_transport_closes_sidecar_worker(monkeypatch):
+    closed_workers: list[str] = []
+    finalized: list[str] = []
+    closed_agents: list[str] = []
+    unregistered: list[str] = []
+    transport = object()
+
+    class _FakeWorker:
+        def close(self):
+            closed_workers.append("worker")
+
+    class _FakeAgent:
+        def close(self):
+            closed_agents.append("agent")
+
+    monkeypatch.setattr(
+        server,
+        "_finalize_session",
+        lambda session, end_reason="tui_close": finalized.append(end_reason),
+    )
+    import tools.approval as _approval
+
+    monkeypatch.setattr(
+        _approval,
+        "unregister_gateway_notify",
+        lambda key: unregistered.append(key),
+    )
+
+    server._sessions["sidecar"] = _session(
+        agent=_FakeAgent(),
+        session_key="sidecar-key",
+        slash_worker=_FakeWorker(),
+        transport=transport,
+        close_on_disconnect=True,
+    )
+
+    try:
+        server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
+
+        assert "sidecar" not in server._sessions
+        assert finalized == ["ws_disconnect"]
+        assert closed_agents == ["agent"]
+        assert closed_workers == ["worker"]
+        assert unregistered == ["sidecar-key"]
+    finally:
+        server._sessions.pop("sidecar", None)
+
+
+def test_close_sessions_for_transport_preserves_normal_session():
+    transport = object()
+    server._sessions["normal"] = _session(
+        transport=transport,
+        close_on_disconnect=False,
+    )
+
+    try:
+        server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
+
+        assert "normal" in server._sessions
+        assert server._sessions["normal"]["transport"] is server._stdio_transport
+    finally:
+        server._sessions.pop("normal", None)
 
 
 def test_init_session_fires_reset_hook(monkeypatch):
