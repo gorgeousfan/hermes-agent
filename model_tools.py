@@ -847,9 +847,9 @@ def handle_function_call(
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         try:
+            from hermes_cli.hook_payloads import PostToolCallPayload, payload_to_kwargs
             from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "post_tool_call",
+            _post_payload = PostToolCallPayload(
                 tool_name=function_name,
                 args=function_args,
                 result=result,
@@ -858,6 +858,7 @@ def handle_function_call(
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
             )
+            invoke_hook("post_tool_call", **payload_to_kwargs(_post_payload))
         except Exception as _hook_err:
             logger.debug("post_tool_call hook error: %s", _hook_err)
 
@@ -868,9 +869,9 @@ def handle_function_call(
         # is appended back into conversation context. Fail-open; the first
         # valid string return wins; non-string returns are ignored.
         try:
+            from hermes_cli.hook_payloads import TransformToolResultPayload, payload_to_kwargs
             from hermes_cli.plugins import invoke_hook
-            hook_results = invoke_hook(
-                "transform_tool_result",
+            _transform_payload = TransformToolResultPayload(
                 tool_name=function_name,
                 args=function_args,
                 result=result,
@@ -879,6 +880,7 @@ def handle_function_call(
                 tool_call_id=tool_call_id or "",
                 duration_ms=duration_ms,
             )
+            hook_results = invoke_hook("transform_tool_result", **payload_to_kwargs(_transform_payload))
             for hook_result in hook_results:
                 if isinstance(hook_result, str):
                     result = hook_result

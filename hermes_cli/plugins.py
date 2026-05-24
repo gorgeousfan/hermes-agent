@@ -1559,20 +1559,25 @@ def get_pre_tool_call_block_message(
     from their ``pre_tool_call`` callback.  The first valid block
     directive wins.  Invalid or irrelevant hook return values are
     silently ignored so existing observer-only hooks are unaffected.
+
+    Uses ``PreToolCallPayload`` to ensure all fields are explicitly
+    provided at the construction site.
     """
+    from hermes_cli.hook_payloads import PreToolCallPayload, payload_to_kwargs
+
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return fmt.format(tool_name=tool_name)
 
-    hook_results = invoke_hook(
-        "pre_tool_call",
+    payload = PreToolCallPayload(
         tool_name=tool_name,
         args=args if isinstance(args, dict) else {},
         task_id=task_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
     )
+    hook_results = invoke_hook("pre_tool_call", **payload_to_kwargs(payload))
 
     for result in hook_results:
         if not isinstance(result, dict):

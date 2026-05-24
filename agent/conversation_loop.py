@@ -203,13 +203,14 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
     try:
+        from hermes_cli.hook_payloads import SessionStartPayload, payload_to_kwargs
         from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
+        _payload = SessionStartPayload(
             session_id=agent.session_id,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
         )
+        _invoke_hook("on_session_start", **payload_to_kwargs(_payload))
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
 
@@ -546,9 +547,9 @@ def run_conversation(
     # All injected context is ephemeral (not persisted to session DB).
     _plugin_user_context = ""
     try:
+        from hermes_cli.hook_payloads import PreLlmCallPayload, payload_to_kwargs
         from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _pre_results = _invoke_hook(
-            "pre_llm_call",
+        _pre_payload = PreLlmCallPayload(
             session_id=agent.session_id,
             user_message=original_user_message,
             conversation_history=list(messages),
@@ -557,6 +558,7 @@ def run_conversation(
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
         )
+        _pre_results = _invoke_hook("pre_llm_call", **payload_to_kwargs(_pre_payload))
         _ctx_parts: list[str] = []
         for r in _pre_results:
             if isinstance(r, dict) and r.get("context"):
