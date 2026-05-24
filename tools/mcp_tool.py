@@ -95,6 +95,11 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+# Keep the stdio MCP malware preflight bounded even if urllib's per-request
+# timeout fails to interrupt a lower-level SSL/connect stall. The malware check
+# itself is fail-open, so timeout here should also allow startup to proceed.
+_OSV_MALWARE_CHECK_TIMEOUT = 12.0
+
 
 # ---------------------------------------------------------------------------
 # Stdio subprocess stderr redirection
@@ -1267,9 +1272,22 @@ class MCPServerTask:
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
 
-        # Check package against OSV malware database before spawning
+        # Check package against OSV malware database before spawning.
+        # OSV queries use blocking urllib I/O; keep that off the MCP event loop
+        # and bound the await so a lower-level SSL/connect stall cannot keep
+        # stdio MCP startup stuck forever. The malware check is fail-open.
         from tools.osv_check import check_package_for_malware
-        malware_error = check_package_for_malware(command, args)
+        try:
+            malware_error = await asyncio.wait_for(
+                asyncio.to_thread(check_package_for_malware, command, args),
+                timeout=_OSV_MALWARE_CHECK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "OSV malware check timed out for MCP server '%s' (allowing)",
+                self.name,
+            )
+            malware_error = None
         if malware_error:
             raise ValueError(
                 f"MCP server '{self.name}': {malware_error}"
