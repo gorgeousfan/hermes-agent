@@ -3123,13 +3123,20 @@ def _normalize_custom_provider_entry(
     if isinstance(models, dict) and models:
         normalized["models"] = models
     elif isinstance(models, list) and models:
-        # Hand-edited configs (and older Hermes versions) write ``models`` as
-        # a plain list of model ids. Preserve them by converting to the dict
-        # shape downstream code expects; otherwise normalize silently drops
-        # the list and /model shows the provider with (0) models.
-        normalized["models"] = {
-            str(m): {} for m in models if isinstance(m, str) and m.strip()
-        }
+        # Preserve both simple ``list[str]`` and enriched ``list[dict]`` forms.
+        # Older/local configs often store model metadata objects here; dropping
+        # them forces downstream pickers to fall back to incomplete endpoint
+        # /models listings.
+        normalized_models: Dict[str, Any] = {}
+        for item in models:
+            if isinstance(item, str) and item.strip():
+                normalized_models[item.strip()] = {}
+            elif isinstance(item, dict):
+                mid = item.get("id") or item.get("name")
+                if isinstance(mid, str) and mid.strip():
+                    normalized_models[mid.strip()] = item
+        if normalized_models:
+            normalized["models"] = normalized_models
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
