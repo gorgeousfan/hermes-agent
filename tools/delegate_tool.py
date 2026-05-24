@@ -2125,7 +2125,13 @@ def delegate_task(
                     # Parent interrupted — collect whatever finished and
                     # abandon the rest.  Children already received the
                     # interrupt signal; we just can't wait forever.
-                    for f in pending:
+                    # Cancel pending futures and exit the executor
+                    # immediately so we don't block on running children.
+                    # cancel_futures=True prevents queued work from
+                    # starting; wait=False returns without waiting for
+                    # already-running children.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    for f in futures:
                         idx = futures[f]
                         if f.done():
                             try:
@@ -2155,7 +2161,6 @@ def delegate_task(
                                 ),
                             }
                         results.append(entry)
-                        completed_count += 1
                     break
 
                 from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED

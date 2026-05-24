@@ -114,11 +114,12 @@ class TestAgentCloseMethod:
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser:
                 agent.close()
 
-                mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
-                )
-                mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
-                mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
+                # close() uses kill_all() with no filter (full teardown)
+                # and task_id="default" for vm/browser cleanup (all
+                # non-RL processes normalize to "default").
+                mock_registry.kill_all.assert_called_once_with()
+                mock_cleanup_vm.assert_called_once_with("default")
+                mock_cleanup_browser.assert_called_once_with("default")
 
     def test_close_is_idempotent(self):
         """close() can be called multiple times without error."""

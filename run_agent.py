@@ -2096,6 +2096,15 @@ class AIAgent:
         except Exception:
             pass
 
+        # Close the Anthropic SDK client if one was created.
+        try:
+            anthropic_client = getattr(self, "_anthropic_client", None)
+            if anthropic_client is not None:
+                anthropic_client.close()
+                self._anthropic_client = None
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -2109,12 +2118,15 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
-        task_id = getattr(self, "session_id", None) or ""
+        # All non-RL processes normalize to "default" via
+        # _resolve_container_task_id(). Using session_id here was a
+        # mismatch — it never matched anything.
+        task_id = "default"
 
-        # 1. Kill background processes for this task
+        # 1. Kill all background processes (no filter — full teardown)
         try:
             from tools.process_registry import process_registry
-            process_registry.kill_all(task_id=task_id)
+            process_registry.kill_all()
         except Exception:
             pass
 
@@ -2149,6 +2161,24 @@ class AIAgent:
             if client is not None:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
+        except Exception:
+            pass
+
+        # 6. Close the Anthropic SDK client if one was created.
+        try:
+            anthropic_client = getattr(self, "_anthropic_client", None)
+            if anthropic_client is not None:
+                anthropic_client.close()
+                self._anthropic_client = None
+        except Exception:
+            pass
+
+        # 7. Close the Codex session if one was created.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                codex_session.close()
+                self._codex_session = None
         except Exception:
             pass
 
