@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import json
+
 import pytest
 
 import hermes_cli.gateway as gateway
@@ -329,6 +331,35 @@ def test_install_start_now_without_login_autostart_never_escalates(monkeypatch, 
     assert any(call[0] == "report_start" for call in calls)
     out = capsys.readouterr().out
     assert "Skipped Windows login auto-start install" in out
+
+
+def test_windows_restart_writes_notify_marker_from_telegram_home(monkeypatch, tmp_path):
+    """CLI-triggered Windows restarts should still notify Telegram when back online."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_HOME_CHANNEL=8528007120\n", encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+
+    assert gateway_windows._write_restart_notify_marker_from_home_channel() is True
+    assert json.loads((hermes_home / ".restart_notify.json").read_text(encoding="utf-8")) == {
+        "platform": "telegram",
+        "chat_id": "8528007120",
+    }
+
+
+def test_windows_restart_notify_marker_falls_back_to_first_allowed_user(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=111,222\n", encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+
+    assert gateway_windows._write_restart_notify_marker_from_home_channel() is True
+    assert json.loads((hermes_home / ".restart_notify.json").read_text(encoding="utf-8")) == {
+        "platform": "telegram",
+        "chat_id": "111",
+    }
 
 
 def test_start_noops_when_gateway_already_running(monkeypatch, capsys):

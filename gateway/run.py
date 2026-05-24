@@ -8636,6 +8636,8 @@ class GatewayRunner:
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    provider=agent_result.get("provider"),
+                    base_url=agent_result.get("base_url"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)

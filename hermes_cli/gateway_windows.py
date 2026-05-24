@@ -1038,9 +1038,73 @@ def stop() -> None:
         print("✗ No gateway was running")
 
 
+def _read_dotenv_value(env_path: Path, key: str) -> str:
+    """Best-effort read of a simple KEY=value entry from a Hermes .env file."""
+    try:
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            raw_key, raw_value = stripped.split("=", 1)
+            if raw_key.strip() != key:
+                continue
+            value = raw_value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            return value.strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _write_restart_notify_marker_from_home_channel() -> bool:
+    """Create the same online-notification marker that `/restart` writes.
+
+    The in-gateway `/restart` path records the requesting chat before the old
+    process exits, so the new process can immediately say it is back online.
+    On Windows, however, `hermes gateway restart` goes through the Scheduled
+    Task/service backend and historically killed/restarted the process from the
+    outside, bypassing that marker. When a CLI restart is triggered from a
+    gateway agent turn after a Telegram approval button, fall back to the
+    configured home channel so the user still gets the expected post-restart
+    notification.
+    """
+    try:
+        from hermes_cli.config import get_hermes_home
+        from utils import atomic_json_write
+
+        hermes_home = Path(get_hermes_home())
+        notify_path = hermes_home / ".restart_notify.json"
+        if notify_path.exists():
+            return False
+
+        env_path = hermes_home / ".env"
+        telegram_home = os.environ.get("TELEGRAM_HOME_CHANNEL") or _read_dotenv_value(
+            env_path, "TELEGRAM_HOME_CHANNEL"
+        )
+        if not telegram_home:
+            telegram_home = os.environ.get("TELEGRAM_ALLOWED_USERS") or _read_dotenv_value(
+                env_path, "TELEGRAM_ALLOWED_USERS"
+            )
+            if telegram_home and "," in telegram_home:
+                telegram_home = telegram_home.split(",", 1)[0].strip()
+        if not telegram_home:
+            return False
+
+        atomic_json_write(
+            notify_path,
+            {"platform": "telegram", "chat_id": telegram_home.strip()},
+            indent=None,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def restart() -> None:
     """Stop the gateway then start it again."""
     _assert_windows()
+    _write_restart_notify_marker_from_home_channel()
     stop()
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)

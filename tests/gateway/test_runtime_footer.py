@@ -4,6 +4,7 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import pytest
 
@@ -45,7 +46,7 @@ def test_home_relative_cwd_collapses_home(tmp_path, monkeypatch):
 def test_home_relative_cwd_leaves_abs_path_alone(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "other"))
     result = _home_relative_cwd(str(tmp_path / "outside" / "dir"))
-    assert result == str(tmp_path / "outside" / "dir")
+    assert result == str(tmp_path / "outside" / "dir").replace("\\", "/")
 
 
 def test_home_relative_cwd_empty_returns_empty():
@@ -67,7 +68,7 @@ def test_format_footer_all_fields(monkeypatch, tmp_path):
         cwd=None,  # falls back to TERMINAL_CWD env var
         fields=("model", "context_pct", "cwd"),
     )
-    assert out == "gpt-5.4 · 68% · ~/projects/hermes"
+    assert out == "gpt-5.4 · ctx 68% · ~/projects/hermes"
 
 
 def test_format_footer_skips_missing_context_length():
@@ -81,7 +82,7 @@ def test_format_footer_skips_missing_context_length():
     # context_pct dropped silently; no "?%" artifact
     assert "%" not in out
     assert "gpt-5.4" in out
-    assert "/tmp/wd" in out
+    assert "tmp/wd" in out
 
 
 def test_format_footer_context_pct_clamped_to_100():
@@ -92,7 +93,7 @@ def test_format_footer_context_pct_clamped_to_100():
         cwd="",
         fields=("context_pct",),
     )
-    assert out == "100%"
+    assert out == "ctx 100%"
 
 
 def test_format_footer_context_pct_never_negative():
@@ -124,7 +125,7 @@ def test_format_footer_drops_cwd_when_empty(monkeypatch):
         fields=("model", "context_pct", "cwd"),
     )
     # cwd silently dropped; model + pct remain
-    assert out == "gpt-5.4 · 50%"
+    assert out == "gpt-5.4 · ctx 50%"
 
 
 def test_format_footer_custom_field_order():
@@ -134,7 +135,7 @@ def test_format_footer_custom_field_order():
         cwd="/opt/project",
         fields=("context_pct", "model"),  # swapped + no cwd
     )
-    assert out == "50% · gpt-5.4"
+    assert out == "ctx 50% · gpt-5.4"
 
 
 def test_format_footer_unknown_field_silently_ignored():
@@ -144,7 +145,7 @@ def test_format_footer_unknown_field_silently_ignored():
         cwd="/x",
         fields=("model", "bogus", "context_pct"),
     )
-    assert out == "gpt-5.4 · 50%"
+    assert out == "gpt-5.4 · ctx 50%"
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +154,16 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {
+        "enabled": False,
+        "fields": ["model", "context_pct", "cwd"],
+        "labels": {
+            "context_pct": "ctx",
+            "provider_window_pct": "5H",
+            "provider_reset": "reset",
+        },
+        "timezone": None,
+    }
 
 
 def test_resolve_global_enable():
@@ -200,6 +210,145 @@ def test_resolve_ignores_malformed_config():
     user = {"display": {"runtime_footer": "on"}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is False
+
+
+def test_format_footer_provider_window_pct_shows_remaining_quota_not_used():
+    class Window:
+        label = "Session"
+        used_percent = 65.0
+        reset_at = datetime(2026, 5, 20, 4, 26, tzinfo=timezone.utc)
+
+    class Snapshot:
+        windows = (Window(),)
+
+    out = format_runtime_footer(
+        model="openai-codex/gpt-5.5",
+        context_tokens=41000,
+        context_length=100000,
+        fields=("model", "context_pct", "provider_window_pct", "provider_reset"),
+        timezone_name="Europe/Berlin",
+        provider_usage=Snapshot(),
+    )
+    assert out == "gpt-5.5 · ctx 41% · 5H 35% · reset 06:26"
+
+
+def test_build_footer_fetches_provider_usage_when_provider_fields_requested(monkeypatch):
+    class Window:
+        label = "Session"
+        used_percent = 39.0
+        reset_at = "2026-05-20T04:26:00Z"
+
+    class Snapshot:
+        windows = (Window(),)
+
+    import gateway.runtime_footer as runtime_footer
+
+    monkeypatch.setattr(
+        runtime_footer,
+        "_fetch_provider_usage_cached",
+        lambda provider, base_url, api_key: Snapshot(),
+    )
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "runtime_footer": {
+                            "enabled": True,
+                            "fields": ["model", "context_pct", "provider_window_pct", "provider_reset"],
+                            "timezone": "Europe/Berlin",
+                        }
+                    }
+                }
+            }
+        },
+        platform_key="telegram",
+        model="gpt-5.5",
+        context_tokens=41000,
+        context_length=100000,
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+    )
+    assert out == "gpt-5.5 · ctx 41% · 5H 61% · reset 06:26"
+
+
+def test_build_footer_uses_configured_provider_when_agent_result_omits_provider(monkeypatch):
+    class Window:
+        label = "Session"
+        used_percent = 44.0
+        reset_at = "2026-05-20T17:57:00Z"
+
+    class Snapshot:
+        windows = (Window(),)
+
+    import gateway.runtime_footer as runtime_footer
+
+    seen = {}
+
+    def fake_fetch(provider, base_url, api_key):
+        seen.update({"provider": provider, "base_url": base_url, "api_key": api_key})
+        return Snapshot()
+
+    monkeypatch.setattr(runtime_footer, "_fetch_provider_usage_cached", fake_fetch)
+
+    out = build_footer_line(
+        user_config={
+            "model": {
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "from-config",
+            },
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "provider_window_pct", "provider_reset"],
+                    "timezone": "Europe/Berlin",
+                }
+            },
+        },
+        platform_key="telegram",
+        model="gpt-5.5",
+        context_tokens=0,
+        context_length=None,
+        provider="auto",
+        base_url=None,
+        api_key=None,
+    )
+
+    assert seen == {
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "from-config",
+    }
+    assert out == "gpt-5.5 · 5H 56% · reset 19:57"
+
+
+def test_provider_usage_cache_does_not_pin_transient_missing_snapshot(monkeypatch):
+    import gateway.runtime_footer as runtime_footer
+
+    runtime_footer._USAGE_CACHE.clear()
+    calls = {"count": 0}
+
+    class Window:
+        label = "Session"
+        used_percent = 22.0
+        reset_at = "2026-05-20T17:57:00Z"
+
+    class Snapshot:
+        windows = (Window(),)
+
+    def fake_fetch_account_usage(provider, base_url=None, api_key=None):
+        calls["count"] += 1
+        return None if calls["count"] == 1 else Snapshot()
+
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        fake_fetch_account_usage,
+    )
+
+    assert runtime_footer._fetch_provider_usage_cached("openai-codex", None, None) is None
+    assert runtime_footer._fetch_provider_usage_cached("openai-codex", None, None) is not None
+    assert calls["count"] == 2
 
 
 # ---------------------------------------------------------------------------
