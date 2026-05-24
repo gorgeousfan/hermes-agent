@@ -336,6 +336,6 @@ hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ## Related Documentation
 
 - [Messaging Gateway Overview](./index.md)
-- [Slash Commands Reference](/docs/reference/slash-commands.md)
-- [Cron Jobs](/docs/user-guide/features/cron.md)
+- [Slash Commands Reference](/docs/reference/slash-commands)
+- [Cron Jobs](/docs/user-guide/features/cron)
 - [Background Sessions](/docs/user-guide/cli#background-sessions)
