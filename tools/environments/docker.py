@@ -503,10 +503,20 @@ class DockerEnvironment(BaseEnvironment):
 
         # Start the container directly via `docker run -d`.
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        # Labels let external cleanup automation safely target only
+        # Hermes-spawned containers (e.g.
+        # `docker container prune --filter label=io.hermes.sandbox=true`).
+        # `docker container prune` does not accept --name filters, so the
+        # naming prefix alone is not enough on shared hosts.
+        label_args = [
+            "--label", "io.hermes.sandbox=true",
+            "--label", f"io.hermes.sandbox.task_id={task_id}",
+        ]
         run_cmd = [
             self._docker_exe, "run", "-d",
             "--init",           # tini/catatonit as PID 1 — reaps zombie children
             "--name", container_name,
+            *label_args,
             "-w", cwd,
             *all_run_args,
             image,

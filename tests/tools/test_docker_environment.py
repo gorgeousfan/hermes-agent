@@ -484,6 +484,36 @@ def test_run_as_host_user_default_off(monkeypatch):
     )
 
 
+def test_sandbox_labels_present_for_safe_cleanup_targeting(monkeypatch):
+    """Spawned containers must carry io.hermes.sandbox=true so external
+    cleanup automation can target only Hermes-managed containers via
+    `docker container prune --filter label=io.hermes.sandbox=true`.
+
+    `docker container prune` does not support --name filters, so the
+    `hermes-<hex>` naming prefix alone is insufficient on shared hosts.
+    """
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(task_id="my-task-id")
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    label_values = [
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--label"
+    ]
+    assert "io.hermes.sandbox=true" in label_values, (
+        f"missing io.hermes.sandbox=true label in docker run args: {run_args}"
+    )
+    assert "io.hermes.sandbox.task_id=my-task-id" in label_values, (
+        f"missing task_id label in docker run args: {run_args}"
+    )
+
+
 def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog):
     """On platforms without POSIX getuid/getgid, log a warning and leave the
     container at its image default user (no --user flag, full cap set)."""
