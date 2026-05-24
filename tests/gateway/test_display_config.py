@@ -164,6 +164,20 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"slack": {"tool_preview_length": "80"}}}}
         assert resolve_display_setting(config, "slack", "tool_preview_length") == 80
 
+    def test_status_messages_platform_false(self):
+        """Per-platform status_messages can silence lifecycle bubbles."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"status_messages": "false"}}}}
+        assert resolve_display_setting(config, "telegram", "status_messages") is False
+
+    def test_interim_assistant_messages_platform_false(self):
+        """Per-platform interim assistant messages can be disabled."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"interim_assistant_messages": False}}}}
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
+
     def test_platform_override_false_tool_progress(self):
         """Per-platform bare off → normalised."""
         from gateway.display_config import resolve_display_setting

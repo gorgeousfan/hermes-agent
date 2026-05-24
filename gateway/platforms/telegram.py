@@ -1673,6 +1673,40 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _creative_lab_quick_actions_markup(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
+        """Attach Creative Lab inline action buttons only inside that topic.
+
+        Do not infer this from message text: normal DM/status replies often
+        mention "Creative Lab" while discussing the feature, and attaching the
+        product cockpit globally pollutes every Telegram response.
+        """
+        metadata = metadata or {}
+        topic = str(
+            metadata.get("chat_topic")
+            or metadata.get("topic")
+            or metadata.get("thread_name")
+            or ""
+        ).strip().lower()
+        if topic != "creative lab":
+            return None
+        try:
+            return InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔥 Winners", callback_data="crl:winners"),
+                    InlineKeyboardButton("🎨 Variants", callback_data="crl:variants"),
+                ],
+                [
+                    InlineKeyboardButton("📊 Stats", callback_data="crl:stats"),
+                    InlineKeyboardButton("🧪 Run lab", callback_data="crl:run"),
+                ],
+            ])
+        except Exception:
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -1723,6 +1757,8 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            creative_lab_keyboard = self._creative_lab_quick_actions_markup(content, metadata)
+
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
@@ -1760,6 +1796,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=creative_lab_keyboard if i == len(chunks) - 1 else None,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1774,6 +1811,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=creative_lab_keyboard if i == len(chunks) - 1 else None,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -2965,6 +3003,81 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Creative Lab quick-action callbacks (crl:action) ---
+        # Lightweight, product-specific buttons for Даня's Creative Lab Telegram
+        # topic. They turn a button click into a normal Hermes text event in the
+        # same chat/topic, so the existing agent loop does the actual work.
+        if data.startswith("crl:"):
+            action = data.split(":", 1)[1].strip().lower()
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use this button.")
+                return
+
+            prompt_map = {
+                "winners": "Creative Lab: найди текущие winner-креативы MetaAuto по последней доступной статистике ExzyPo. Только ExzyPo, не all users. Покажи source cards с preview/provenance и не генерируй варианты до выбора source.",
+                "variants": "Creative Lab: если в текущем сообщении/топике есть выбранный или загруженный source creative, сделай source analysis и generation plan. Если source не выбран/не доказан — сначала покажи winners/source cards и спроси выбор. Не генерируй из all users и не отправляй визуалы ниже self-grade 4/5.",
+                "stats": "Creative Lab: проверь последнюю статистику MetaAuto/ExzyPo и покажи, какие креативы реально лидируют. Только ExzyPo; обязательно proof/source scope.",
+                "run": "Creative Lab: запусти gated цикл lab — ExzyPo winners → source preview/provenance → source selection → analysis → variants. Без запуска рекламы и трат; без генерации, если source не доказан.",
+            }
+            label_map = {
+                "winners": "🔥 Найти winners",
+                "variants": "🎨 Сделать variants",
+                "stats": "📊 Проверить статистику",
+                "run": "🧪 Запустить lab",
+            }
+            prompt = prompt_map.get(action)
+            if not prompt or not query.message:
+                await query.answer(text="Unknown Creative Lab action.")
+                return
+
+            label = label_map.get(action, action)
+            await query.answer(text=f"Запускаю: {label}")
+            try:
+                await query.message.reply_text(
+                    f"{label} — принято, запускаю через Nox…",
+                    reply_to_message_id=getattr(query.message, "message_id", None),
+                )
+            except Exception:
+                pass
+
+            qmsg = query.message
+            chat = getattr(qmsg, "chat", None)
+            chat_type_value = getattr(chat, "type", None)
+            chat_type_str = str(getattr(chat_type_value, "value", chat_type_value)).lower()
+            normalized_chat_type = "dm"
+            if chat_type_str in {"group", "supergroup"}:
+                normalized_chat_type = "group"
+            elif chat_type_str == "channel":
+                normalized_chat_type = "channel"
+
+            thread_id = getattr(qmsg, "message_thread_id", None)
+            source = self.build_source(
+                chat_id=str(getattr(chat, "id", query_chat_id)),
+                chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+                chat_type=normalized_chat_type,
+                user_id=str(getattr(query.from_user, "id", "")) or None,
+                user_name=getattr(query.from_user, "full_name", None) or getattr(query.from_user, "first_name", None),
+                thread_id=str(thread_id) if thread_id is not None else None,
+                chat_topic="Creative Lab" if thread_id is not None else None,
+                message_id=str(getattr(qmsg, "message_id", "")) or None,
+            )
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=qmsg,
+                message_id=str(getattr(qmsg, "message_id", "")) or None,
+            )
+            await self.handle_message(event)
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)
@@ -3660,6 +3773,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
+            creative_lab_keyboard = self._creative_lab_quick_actions_markup(
+                f"{caption or ''}\n{image_path}",
+                metadata,
+            )
             with open(image_path, "rb") as image_file:
                 msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_photo,
@@ -3668,6 +3785,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "photo": image_file,
                         "caption": caption[:1024] if caption else None,
                         "reply_to_message_id": reply_to_id,
+                        "reply_markup": creative_lab_keyboard,
                         **thread_kwargs,
                         **self._notification_kwargs(metadata),
                     },

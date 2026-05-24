@@ -703,8 +703,23 @@ def _reload_runtime_env_preserving_config_authority() -> None:
         return
 
     agent_cfg = cfg.get("agent", {})
-    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
-        os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+    if isinstance(agent_cfg, dict):
+        # Keep all runtime-budget env bridges in sync on every turn, not only
+        # at module import. Gateway processes are long-lived and users often
+        # change config.yaml while the daemon keeps running; a stale env value
+        # must not resurrect raw "Still working... iteration x/y" notices or
+        # old timeout budgets after config says otherwise.
+        _runtime_env_map = {
+            "max_turns": "HERMES_MAX_ITERATIONS",
+            "gateway_timeout": "HERMES_AGENT_TIMEOUT",
+            "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
+            "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
+            "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
+            "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
+        }
+        for _cfg_key, _env_name in _runtime_env_map.items():
+            if _cfg_key in agent_cfg:
+                os.environ[_env_name] = str(agent_cfg[_cfg_key])
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -957,6 +972,256 @@ logger = logging.getLogger(__name__)
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+
+# Nox v2 / Башня runtime router.  This is deliberately hard-gated to the
+# nox-v2 profile and one Telegram group topic so the default production profile
+# and token paths remain untouched.
+_NOX_BASHNYA_PROFILE = "nox-v2"
+_NOX_BASHNYA_CHAT_ID = "-1003889439571"
+_NOX_BASHNYA_THREAD_ID = "25"
+_NOX_PROJECT_EMPLOYEE_ROUTES_PATH = Path(
+    "/Users/exz/nox-os/state/war-room/project-employees.json"
+)
+_NOX_PHASE_RUNS_PATH = Path("/Users/exz/nox-os/state/war-room/phase-runs.json")
+_NOX_BASHNYA_FAST_MAX_TURNS_DEFAULT = 8
+_NOX_WORKER_PLAN_MAX_TURNS_DEFAULT = 10
+_NOX_WORKER_PHASE_MAX_TURNS_DEFAULT = 30
+
+_NOX_PROJECT_ALIASES: Dict[str, tuple[str, ...]] = {
+    "ryadom": ("ryadom", "рядом"),
+    "metaauto": ("metaauto", "meta auto", "метаавто", "мета авто"),
+    "planner": ("planner", "планнер", "планер", "планировщик"),
+    "creative-lab": ("creative lab", "creative", "креатив", "креативная лаборатория"),
+    "nox-system": (
+        "nox os",
+        "nox",
+        "nox v2",
+        "hermes",
+        "гермес",
+        "gateway",
+        "гейтвей",
+        "war room",
+        "башня",
+        "nox os hermes",
+    ),
+}
+
+# Cross-project / agent-platform work belongs to the Nox OS employee lane when
+# no concrete product project is named.  Keep these out of _NOX_PROJECT_ALIASES:
+# broad words like "skills" or "agents" must not create a multi-project conflict
+# when the same message explicitly says "MetaAuto" or "Ryadom".
+_NOX_SYSTEM_SCOPE_MARKERS: tuple[str, ...] = (
+    "all projects",
+    "cross project",
+    "cross-project",
+    "все проекты",
+    "всех проектов",
+    "по всем проектам",
+    "всем проектам",
+    "all agents",
+    "agent platform",
+    "agents",
+    "агенты",
+    "агентов",
+    "все агенты",
+    "всех агентов",
+    "сами агенты",
+    "самих агентов",
+    "любой агент",
+    "любого агента",
+    "skills",
+    "skill",
+    "skill hub",
+    "hermes skills",
+    "скиллы",
+    "скилл",
+    "навыки",
+)
+
+# Soft, project-specific vocabulary used only when Башня receives a substantial
+# follow-up without an explicit project name.  This keeps long project work out
+# of the control tower while avoiding broad aliases like "приложение" that would
+# steal unrelated tasks.
+_NOX_PROJECT_CONTEXT_ALIASES: Dict[str, tuple[str, ...]] = {
+    "ryadom": (
+        "лендинг",
+        "лендинга",
+        "лендингу",
+        "лендингом",
+        "лендинги",
+        "landing",
+        "hero",
+        "хуки",
+        "хуков",
+        "hook",
+        "воронка",
+        "воронки",
+        "воронкам",
+        "воронок",
+        "ценник",
+        "отзывы",
+        "макет",
+        "макеты",
+        "макетов",
+        "анимации",
+        "урок",
+        "уроки",
+        "озвучка",
+        "озвучку",
+        "tts",
+        "кнопки",
+        "checkout",
+        "pwa",
+    ),
+    "metaauto": (
+        "facebook",
+        "fb",
+        "ads",
+        "adspower",
+        "реклама",
+        "рекламный",
+        "кабинет",
+        "кампания",
+        "кампании",
+        "creative lab",
+        "exzypo",
+        "токен",
+        "токены",
+        "railway",
+    ),
+    "creative-lab": ("creative lab", "exzypo", "креативы", "варианты", "winner", "source"),
+}
+
+_NOX_ACTIVE_PHASE_STATUSES = {
+    "planning",
+    "running_phase",
+    "awaiting_approval",
+    "awaiting_nox_pm_approval",
+}
+# Plain text in a project employee topic while a run is active/parked should
+# steer or amend that run, not start an unrelated main chat in the worker topic.
+_NOX_LIVE_WORKER_STATUSES = set(_NOX_ACTIVE_PHASE_STATUSES)
+
+_NOX_PROJECT_RUN_MARKERS: tuple[str, ...] = (
+    "запусти",
+    "прогони",
+    "run ",
+    "pytest",
+    "тесты",
+    "тест",
+    "deploy",
+    "release",
+    "миграц",
+    "пересобери",
+)
+
+_NOX_PROJECT_HEAVY_MARKERS: tuple[str, ...] = (
+    "implement",
+    "реализ",
+    "сделай",
+    "поставь",
+    "поставить",
+    "установи",
+    "установить",
+    "инсталл",
+    "install",
+    "внедри",
+    "внедр",
+    "доделай",
+    "почини",
+    "исправ",
+    "fix",
+    "debug",
+    "investigate",
+    "разберись",
+    "диагност",
+    "добавь",
+    "создай",
+    "собери",
+    "собрать",
+    "настрой",
+    "обнови",
+    "patch",
+    "код",
+    "router",
+    "routing",
+    "runtime",
+    "worker",
+    "сотрудник",
+    "проект",
+    "project",
+    "run ",
+    "pytest",
+)
+
+_NOX_PROJECT_BLOCKER_MARKERS: tuple[str, ...] = (
+    "rm -rf",
+    "удали прод",
+    "удали production",
+    "перезапусти gateway",
+    "restart gateway",
+    "deploy production",
+    "продакшен деплой",
+    "оплати",
+    "купи",
+)
+
+# Nox PM can approve safe worker phases without Danya.  These markers are the
+# conservative escape hatch: if they appear in the original task, worker plan,
+# or worker proof, the run stops on a human gate instead of auto-advancing.
+_NOX_HUMAN_APPROVAL_MARKERS: tuple[str, ...] = _NOX_PROJECT_BLOCKER_MARKERS + (
+    "sudo",
+    "git reset --hard",
+    "reset --hard",
+    "force push",
+    "push --force",
+    "drop database",
+    "drop table",
+    "truncate database",
+    "truncate table",
+    "delete database",
+    "delete prod",
+    "delete production",
+    "удали базу",
+    "дропни базу",
+    "сотри базу",
+    "миграция в прод",
+    "прод миграция",
+    "production migration",
+    "prod migration",
+    "деплой в прод",
+    "deploy prod",
+    "deploy production",
+    "production deploy",
+    "release prod",
+    "release production",
+    "перезапусти прод",
+    "перезапусти production",
+    "restart prod",
+    "restart production",
+    "нужен даня",
+    "нужна даня",
+    "нужно подтвердить у дани",
+    "требуется подтверждение дани",
+    "requires danya",
+    "requires human approval",
+    "approval required",
+    "нужен доступ",
+    "нужны доступы",
+    "нужен логин",
+    "нужен пароль",
+    "нужна 2fa",
+    "нужны секреты",
+    "api key needed",
+    "purchase",
+    "payment",
+    "card",
+    "credit card",
+    "массовая отправка",
+    "отправь всем",
+    "send to all",
+    "mass message",
+)
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -1644,6 +1909,12 @@ class GatewayRunner:
         import threading as _threading
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
+        # Hidden Nox project-worker agents keyed by durable run/task id.
+        # These worker turns are spawned outside the normal gateway session
+        # loop, so `_running_agents` cannot be used for live steer.
+        self._nox_worker_agents_by_run_id: Dict[str, Any] = {}
+        self._nox_worker_agents_by_task_id: Dict[str, Any] = {}
+        self._nox_worker_agents_lock = _threading.RLock()
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
@@ -2230,6 +2501,1602 @@ class GatewayRunner:
                     return recovered
                 return None
         return None
+
+    def _nox_bashnya_normalize_text(self, text: str) -> str:
+        """Normalize Russian/English task text for the narrow Nox router."""
+        normalized = (text or "").lower().replace("ё", "е")
+        normalized = re.sub(r"[\u2010-\u2015_\-]+", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    def _nox_bashnya_has_phrase(self, normalized_text: str, phrase: str) -> bool:
+        phrase_norm = self._nox_bashnya_normalize_text(phrase)
+        if not phrase_norm:
+            return False
+        # Word-ish boundary matching avoids routing on substrings such as
+        # "planning" -> "planner" while still supporting multi-word aliases.
+        return re.search(
+            rf"(?<![\w]){re.escape(phrase_norm)}(?![\w])",
+            normalized_text,
+            flags=re.IGNORECASE,
+        ) is not None
+
+    def _is_nox_bashnya_source(self, source: Optional[SessionSource]) -> bool:
+        """Return True only for nox-v2's `01 Башня управления` topic."""
+        if source is None or source.platform != Platform.TELEGRAM:
+            return False
+        if str(source.chat_id or "") != _NOX_BASHNYA_CHAT_ID:
+            return False
+        if str(source.thread_id or "") != _NOX_BASHNYA_THREAD_ID:
+            return False
+        try:
+            profile = self._active_profile_name()
+        except Exception:
+            profile = "default"
+        return str(profile or "default") == _NOX_BASHNYA_PROFILE
+
+    def _nox_active_phase_states_for_bashnya(
+        self,
+        source: Optional[SessionSource],
+    ) -> List[tuple[str, Dict[str, Any]]]:
+        """Return active project runs that originated from this Башня topic."""
+        if source is None:
+            return []
+        chat_id = str(source.chat_id or "")
+        thread_id = str(source.thread_id or "")
+        if not chat_id or not thread_id:
+            return []
+        states: List[tuple[str, Dict[str, Any]]] = []
+        for run_id, state in self._load_nox_phase_runs().items():
+            status = str(state.get("status") or "")
+            if status not in _NOX_ACTIVE_PHASE_STATUSES:
+                continue
+            if str(state.get("bashnya_chat_id") or "") != chat_id:
+                continue
+            if str(state.get("bashnya_thread_id") or "") != thread_id:
+                continue
+            project = str(state.get("project") or "").strip().lower()
+            if not project:
+                continue
+            states.append((str(run_id), state))
+        states.sort(
+            key=lambda item: str(item[1].get("updated_at") or item[1].get("created_at") or ""),
+            reverse=True,
+        )
+        return states
+
+    def _nox_infer_project_from_active_context(
+        self,
+        normalized_text: str,
+        source: Optional[SessionSource],
+    ) -> tuple[Optional[Dict[str, Any]], List[tuple[str, Dict[str, Any]]]]:
+        """Infer project for a substantial unqualified Башня follow-up.
+
+        Used only as a guardrail after explicit project aliases fail.  If it
+        cannot infer one project confidently, the caller blocks and asks for a
+        project instead of letting the main control-tower session continue.
+        """
+        active = self._nox_active_phase_states_for_bashnya(source)
+        if not active:
+            return None, []
+
+        scored: list[tuple[int, str, str, list[str], Dict[str, Any]]] = []
+        for run_id, state in active:
+            project_key = str(state.get("project") or "").strip().lower()
+            hits = [
+                alias
+                for alias in _NOX_PROJECT_CONTEXT_ALIASES.get(project_key, ())
+                if self._nox_bashnya_has_phrase(normalized_text, alias)
+            ]
+            if hits:
+                scored.append((len(hits), project_key, run_id, hits, state))
+
+        if scored:
+            scored.sort(
+                key=lambda item: (
+                    item[0],
+                    str(item[4].get("updated_at") or item[4].get("created_at") or ""),
+                ),
+                reverse=True,
+            )
+            if len(scored) == 1 or scored[0][0] > scored[1][0]:
+                score, project_key, run_id, hits, _state = scored[0]
+                return (
+                    {
+                        "project": project_key,
+                        "reason": "active_context_alias",
+                        "run_id": run_id,
+                        "score": score,
+                        "hits": hits,
+                    },
+                    active,
+                )
+            return None, active
+
+        unique_projects = list(
+            dict.fromkeys(
+                str(state.get("project") or "").strip().lower()
+                for _run_id, state in active
+                if str(state.get("project") or "").strip()
+            )
+        )
+        if len(unique_projects) == 1:
+            return (
+                {
+                    "project": unique_projects[0],
+                    "reason": "single_active_context",
+                    "run_id": active[0][0],
+                    "score": 1,
+                    "hits": [],
+                },
+                active,
+            )
+        return None, active
+
+    def _nox_bashnya_classify_task(
+        self,
+        message_text: str,
+        source: Optional[SessionSource] = None,
+    ) -> Dict[str, Any]:
+        """Classify FAST vs project-heavy Nox Bashnya messages.
+
+        Conservative rule: substantial project-like messages must not fall
+        through into the main Башня session.  They need an explicit project, a
+        confident active-context inference, or a BLOCKER asking Danya to name
+        the project.
+        """
+        raw_text = message_text or ""
+        normalized = self._nox_bashnya_normalize_text(raw_text)
+        if not normalized:
+            return {"weight": "FAST", "project": None, "reason": "empty"}
+
+        matches: list[str] = []
+        for project_key, aliases in _NOX_PROJECT_ALIASES.items():
+            if any(self._nox_bashnya_has_phrase(normalized, alias) for alias in aliases):
+                matches.append(project_key)
+
+        unique_matches = list(dict.fromkeys(matches))
+        if len(unique_matches) > 1:
+            return {
+                "weight": "BLOCKER",
+                "project": None,
+                "projects": unique_matches,
+                "reason": "multiple_projects",
+            }
+
+        system_scope_hits = [
+            marker
+            for marker in _NOX_SYSTEM_SCOPE_MARKERS
+            if self._nox_bashnya_has_phrase(normalized, marker)
+        ]
+
+        has_blocker = any(
+            self._nox_bashnya_has_phrase(normalized, marker)
+            for marker in _NOX_PROJECT_BLOCKER_MARKERS
+        )
+        has_run = any(
+            self._nox_bashnya_has_phrase(normalized, marker)
+            for marker in _NOX_PROJECT_RUN_MARKERS
+        )
+        has_heavy_marker = any(
+            self._nox_bashnya_has_phrase(normalized, marker)
+            for marker in _NOX_PROJECT_HEAVY_MARKERS
+        )
+        looks_like_brief = len(raw_text.strip()) <= 220 and "\n" not in raw_text
+        substantial = (
+            has_run
+            or has_heavy_marker
+            or has_blocker
+            or not looks_like_brief
+            or "the user sent a voice message" in normalized
+        )
+
+        project_key = unique_matches[0] if unique_matches else None
+        inference: Optional[Dict[str, Any]] = None
+        active_projects: list[str] = []
+        if not project_key and system_scope_hits and substantial:
+            project_key = "nox-system"
+            inference = {
+                "project": "nox-system",
+                "reason": "system_scope_marker",
+                "score": len(system_scope_hits),
+                "hits": system_scope_hits[:5],
+            }
+        if not project_key and substantial:
+            inference, active_runs = self._nox_infer_project_from_active_context(normalized, source)
+            active_projects = list(
+                dict.fromkeys(
+                    str(state.get("project") or "").strip().lower()
+                    for _run_id, state in active_runs
+                    if str(state.get("project") or "").strip()
+                )
+            )
+            if inference:
+                project_key = str(inference.get("project") or "").strip().lower()
+            else:
+                return {
+                    "weight": "BLOCKER",
+                    "project": None,
+                    "projects": active_projects,
+                    "reason": "missing_project_for_substantial_task",
+                }
+
+        if not project_key:
+            return {"weight": "FAST", "project": None, "reason": "no_known_project"}
+
+        if has_blocker:
+            return {
+                "weight": "BLOCKER",
+                "project": project_key,
+                "reason": "approval_required",
+            }
+
+        reason = str(inference.get("reason")) if inference else ""
+        extra: Dict[str, Any] = {"inferred_from": inference} if inference else {}
+        if has_run:
+            return {"weight": "RUN", "project": project_key, "reason": reason or "run_marker", **extra}
+        if inference or has_heavy_marker or not looks_like_brief:
+            return {"weight": "PROJECT", "project": project_key, "reason": reason or "heavy_marker", **extra}
+        return {"weight": "FAST", "project": project_key, "reason": "brief_project_question"}
+
+    def _load_nox_project_employee_routes(self) -> Dict[str, Dict[str, Any]]:
+        """Load `<Project> · Сотрудник` route map from the Nox control-plane."""
+        raw_path = os.getenv(
+            "NOX_PROJECT_EMPLOYEE_ROUTING_PATH",
+            str(_NOX_PROJECT_EMPLOYEE_ROUTES_PATH),
+        )
+        path = Path(raw_path).expanduser()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Nox Bashnya router: cannot read project routes at %s: %s", path, exc)
+            return {}
+        projects = data.get("projects") if isinstance(data, dict) else None
+        if not isinstance(projects, dict):
+            return {}
+        routes: Dict[str, Dict[str, Any]] = {}
+        for key, route in projects.items():
+            if not isinstance(route, dict):
+                continue
+            chat_id = str(route.get("chat_id") or "").strip()
+            thread_id = route.get("message_thread_id")
+            if not chat_id or thread_id is None:
+                continue
+            routes[str(key).lower()] = {
+                "project": str(route.get("project") or key),
+                "display": str(route.get("display") or key),
+                "topic_name": str(route.get("topic_name") or f"{route.get('display') or key} · Сотрудник"),
+                "chat_id": chat_id,
+                "message_thread_id": str(thread_id),
+            }
+        return routes
+
+    def _nox_now_iso(self) -> str:
+        return datetime.now().isoformat(timespec="seconds")
+
+    def _nox_phase_runs_path(self) -> Path:
+        raw_path = os.getenv("NOX_PHASE_RUNS_PATH", str(_NOX_PHASE_RUNS_PATH))
+        return Path(raw_path).expanduser()
+
+    def _load_nox_phase_runs(self) -> Dict[str, Dict[str, Any]]:
+        """Load durable Nox worker phase-run state.
+
+        Stored outside Hermes sessions so the visible War Room state survives
+        gateway restarts.  The default path is profile-specific Nox OS state,
+        and tests can override it with NOX_PHASE_RUNS_PATH.
+        """
+        path = self._nox_phase_runs_path()
+        try:
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Nox phase runner: cannot read state at %s: %s", path, exc)
+            return {}
+        runs = data.get("runs") if isinstance(data, dict) else None
+        # Backward/hand-edit tolerance: a bare {run_id: state} dict is also OK.
+        if runs is None and isinstance(data, dict):
+            runs = data
+        if not isinstance(runs, dict):
+            return {}
+        return {
+            str(run_id): dict(state)
+            for run_id, state in runs.items()
+            if isinstance(state, dict)
+        }
+
+    def _save_nox_phase_runs(self, runs: Dict[str, Dict[str, Any]]) -> None:
+        path = self._nox_phase_runs_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updated_at": self._nox_now_iso(),
+            "runs": runs,
+        }
+        tmp_path = path.with_name(f".{path.name}.tmp")
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+
+    def _upsert_nox_phase_run(self, run_id: str, **updates: Any) -> Dict[str, Any]:
+        runs = self._load_nox_phase_runs()
+        state = dict(runs.get(run_id) or {})
+        state.update({k: v for k, v in updates.items() if v is not None})
+        state["run_id"] = run_id
+        state["updated_at"] = self._nox_now_iso()
+        runs[run_id] = state
+        self._save_nox_phase_runs(runs)
+        return state
+
+    def _refresh_nox_phase_state(self, run_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Reload durable run state before building worker prompts.
+
+        Background plan/phase tasks are scheduled with a state snapshot. Live
+        amendments can arrive after scheduling but before the worker builds its
+        prompt, so refresh from disk and preserve any newer fields.
+        """
+        try:
+            fresh = self._load_nox_phase_runs().get(str(run_id))
+        except Exception:
+            fresh = None
+        if isinstance(fresh, dict):
+            merged = dict(state or {})
+            merged.update(fresh)
+            return merged
+        return dict(state or {})
+
+    def _ensure_nox_worker_agent_registry(self) -> None:
+        if not isinstance(getattr(self, "_nox_worker_agents_by_run_id", None), dict):
+            self._nox_worker_agents_by_run_id = {}
+        if not isinstance(getattr(self, "_nox_worker_agents_by_task_id", None), dict):
+            self._nox_worker_agents_by_task_id = {}
+        if getattr(self, "_nox_worker_agents_lock", None) is None:
+            self._nox_worker_agents_lock = threading.RLock()
+
+    def _register_nox_worker_agent(
+        self,
+        *,
+        run_id: Optional[str],
+        task_id: str,
+        agent: Any,
+    ) -> None:
+        self._ensure_nox_worker_agent_registry()
+        lock = self._nox_worker_agents_lock
+        with lock:
+            if run_id:
+                self._nox_worker_agents_by_run_id[str(run_id)] = agent
+            if task_id:
+                self._nox_worker_agents_by_task_id[str(task_id)] = agent
+
+    def _release_nox_worker_agent(
+        self,
+        *,
+        run_id: Optional[str],
+        task_id: str,
+        agent: Any,
+    ) -> None:
+        self._ensure_nox_worker_agent_registry()
+        lock = self._nox_worker_agents_lock
+        with lock:
+            if run_id and self._nox_worker_agents_by_run_id.get(str(run_id)) is agent:
+                self._nox_worker_agents_by_run_id.pop(str(run_id), None)
+            if task_id and self._nox_worker_agents_by_task_id.get(str(task_id)) is agent:
+                self._nox_worker_agents_by_task_id.pop(str(task_id), None)
+
+    def _nox_worker_agent_for_run(self, run_id: str) -> Optional[Any]:
+        self._ensure_nox_worker_agent_registry()
+        lock = self._nox_worker_agents_lock
+        with lock:
+            return self._nox_worker_agents_by_run_id.get(str(run_id))
+
+    def _nox_live_steer_text(self, event: MessageEvent, message_text: str) -> str:
+        text = str(getattr(event, "text", "") or "").strip()
+        if not text:
+            text = self._strip_nox_gateway_author_prefix(message_text)
+        text = (text or "").strip()
+        try:
+            from agent.redact import redact_sensitive_text
+            text = redact_sensitive_text(text)
+        except Exception:
+            pass
+        if len(text) > 3000:
+            text = text[:3000].rstrip() + "…"
+        return text
+
+    def _nox_live_steer_payload(
+        self,
+        *,
+        run_id: str,
+        state: Dict[str, Any],
+        amendment: Dict[str, Any],
+    ) -> str:
+        return (
+            "LIVE STEER / USER AMENDMENT\n"
+            f"run_id: {run_id}\n"
+            f"project: {state.get('display') or state.get('project') or ''}\n"
+            f"phase_index: {state.get('phase_index') or 0}\n"
+            f"message_id: {amendment.get('message_id') or ''}\n"
+            "Instruction from Danya; incorporate immediately if still relevant:\n"
+            f"{amendment.get('text') or ''}"
+        )
+
+    def _find_nox_live_worker_run(
+        self,
+        *,
+        source: SessionSource,
+        message_text: str,
+    ) -> tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+        runs = self._load_nox_phase_runs()
+        if not runs:
+            return None, None, None
+        raw_lower = (message_text or "").lower()
+        normalized = self._nox_bashnya_normalize_text(message_text)
+        explicit_run_id = None
+        for run_id in runs:
+            run_id_text = str(run_id or "")
+            if not run_id_text:
+                continue
+            if run_id_text.lower() in raw_lower or self._nox_bashnya_normalize_text(run_id_text) in normalized:
+                explicit_run_id = run_id_text
+                break
+        chat_id = str(source.chat_id or "")
+        thread_id = str(source.thread_id or "")
+        candidates: list[tuple[str, Dict[str, Any]]] = []
+        for run_id, state in runs.items():
+            if str(state.get("status") or "") not in _NOX_LIVE_WORKER_STATUSES:
+                continue
+            if explicit_run_id and str(run_id) != explicit_run_id:
+                continue
+            employee_match = (
+                chat_id == str(state.get("employee_chat_id") or "")
+                and thread_id == str(state.get("employee_thread_id") or "")
+            )
+            if employee_match:
+                candidates.append((str(run_id), state))
+        if not candidates:
+            return None, None, None
+        if len(candidates) > 1 and not explicit_run_id:
+            ids = ", ".join(run_id for run_id, _ in candidates[:5])
+            return None, None, f"Нужен run_id: в этом worker-топике несколько активных runs ({ids})."
+        candidates.sort(key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+        return candidates[0][0], candidates[0][1], None
+
+    def _append_nox_live_amendment(
+        self,
+        *,
+        run_id: str,
+        state: Dict[str, Any],
+        event: MessageEvent,
+        text: str,
+        delivery: str,
+        delivery_error: Optional[str] = None,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        now = self._nox_now_iso()
+        amendment_id = f"amend-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.urandom(2).hex()}"
+        amendment: Dict[str, Any] = {
+            "id": amendment_id,
+            "created_at": now,
+            "source": "telegram",
+            "chat_id": str(getattr(event.source, "chat_id", "") or ""),
+            "thread_id": str(getattr(event.source, "thread_id", "") or ""),
+            "message_id": str(getattr(event, "message_id", "") or ""),
+            "user_id": str(getattr(event.source, "user_id", "") or ""),
+            "user_name": str(getattr(event.source, "user_name", "") or ""),
+            "text": text,
+            "delivery": delivery,
+        }
+        if delivery_error:
+            amendment["delivery_error"] = delivery_error
+        runs = self._load_nox_phase_runs()
+        current = dict(runs.get(run_id) or state or {})
+        amendments = current.get("amendments")
+        if not isinstance(amendments, list):
+            amendments = []
+        amendments.append(amendment)
+        current["amendments"] = amendments
+        current["last_amendment_at"] = now
+        current["run_id"] = run_id
+        current["updated_at"] = now
+        runs[run_id] = current
+        self._save_nox_phase_runs(runs)
+        return current, amendment
+
+    def _update_nox_live_amendment_delivery(
+        self,
+        *,
+        run_id: str,
+        amendment_id: str,
+        delivery: str,
+        delivery_error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        runs = self._load_nox_phase_runs()
+        state = dict(runs.get(run_id) or {})
+        amendments = state.get("amendments")
+        if isinstance(amendments, list):
+            for item in amendments:
+                if isinstance(item, dict) and item.get("id") == amendment_id:
+                    item["delivery"] = delivery
+                    item["delivered_at"] = self._nox_now_iso()
+                    if delivery_error:
+                        item["delivery_error"] = delivery_error
+                    else:
+                        item.pop("delivery_error", None)
+                    break
+        state["updated_at"] = self._nox_now_iso()
+        runs[run_id] = state
+        self._save_nox_phase_runs(runs)
+        return state
+
+    def _render_nox_live_amendments(self, state: Dict[str, Any]) -> str:
+        amendments = state.get("amendments")
+        if not isinstance(amendments, list) or not amendments:
+            return ""
+        lines = ["Live amendments / user steering:"]
+        for item in amendments[-12:]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            if len(text) > 1200:
+                text = text[:1200].rstrip() + "…"
+            stamp = str(item.get("created_at") or "")
+            delivery = str(item.get("delivery") or "saved")
+            lines.append(f"- [{stamp}] ({delivery}) {text}")
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _redact_nox_goal_for_state(self, text: str) -> str:
+        goal = (text or "").strip()
+        try:
+            from agent.redact import redact_sensitive_text
+            goal = redact_sensitive_text(goal)
+        except Exception:
+            pass
+        if len(goal) > 4000:
+            goal = goal[:4000].rstrip() + "…"
+        return goal
+
+    def _build_nox_phase_state(
+        self,
+        *,
+        event: MessageEvent,
+        message_text: str,
+        classification: Dict[str, Any],
+        route: Dict[str, Any],
+        run_id: str,
+        packet_message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        source = event.source
+        now = self._nox_now_iso()
+        goal_text = getattr(event, "text", "") or message_text
+        return {
+            "run_id": run_id,
+            "status": "planning",
+            "mode": str(classification.get("weight") or "PROJECT"),
+            "project": str(route.get("project") or classification.get("project") or ""),
+            "display": str(route.get("display") or route.get("project") or "Project"),
+            "topic_name": str(route.get("topic_name") or "Project · Сотрудник"),
+            "goal": self._redact_nox_goal_for_state(goal_text),
+            "source_message_id": str(event.message_id or ""),
+            "packet_message_id": str(packet_message_id or ""),
+            "bashnya_chat_id": str(source.chat_id or ""),
+            "bashnya_thread_id": str(source.thread_id or ""),
+            "employee_chat_id": str(route.get("chat_id") or ""),
+            "employee_thread_id": str(route.get("message_thread_id") or ""),
+            "source_user_id": str(source.user_id or ""),
+            "source_user_name": str(source.user_name or ""),
+            "phase_index": 0,
+            "phase_count": 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def _nox_route_from_phase_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "project": state.get("project") or "",
+            "display": state.get("display") or state.get("project") or "Project",
+            "topic_name": state.get("topic_name") or "Project · Сотрудник",
+            "chat_id": str(state.get("employee_chat_id") or ""),
+            "message_thread_id": str(state.get("employee_thread_id") or ""),
+        }
+
+    def _nox_worker_source_from_state(self, state: Dict[str, Any]) -> SessionSource:
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(state.get("employee_chat_id") or ""),
+            chat_name=str(state.get("topic_name") or "Project · Сотрудник"),
+            chat_type="supergroup",
+            user_id=str(state.get("source_user_id") or "8756671470"),
+            user_name=str(state.get("source_user_name") or "Danya"),
+            thread_id=str(state.get("employee_thread_id") or ""),
+        )
+
+    def _extract_nox_plan_phase_count(self, plan_text: str) -> int:
+        text = plan_text or ""
+        numbers: list[int] = []
+        patterns = (
+            r"(?im)^\s*(?:[-*]\s*)?(?:фаза|phase)\s*([0-9]{1,2})\b",
+            r"(?im)^\s*(?:[-*]\s*)?([0-9]{1,2})[\).\s:-]+(?:фаза|phase)\b",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                try:
+                    numbers.append(int(match.group(1)))
+                except (TypeError, ValueError):
+                    continue
+        try:
+            max_phases = int(os.getenv("NOX_WORKER_MAX_PHASES", "7"))
+        except (TypeError, ValueError):
+            max_phases = 7
+        max_phases = max(1, min(max_phases, 20))
+        if not numbers:
+            return 1
+        return max(1, min(max(numbers), max_phases))
+
+    def _nox_pm_auto_approve_safe_phases_enabled(self) -> bool:
+        raw = os.getenv("NOX_PM_AUTO_APPROVE_SAFE_PHASES", "1")
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    def _nox_human_approval_reason(self, *texts: str) -> Optional[str]:
+        """Return a conservative human-gate reason, or None for Nox PM auto-approval."""
+        if not self._nox_pm_auto_approve_safe_phases_enabled():
+            return "auto_approval_disabled"
+        combined = "\n".join(str(text or "") for text in texts if text)
+        normalized = self._nox_bashnya_normalize_text(combined)
+        if not normalized:
+            return None
+        for marker in _NOX_HUMAN_APPROVAL_MARKERS:
+            if self._nox_bashnya_has_phrase(normalized, marker):
+                return marker
+        return None
+
+    def _nox_worker_output_human_gate_reason(self, output: str) -> Optional[str]:
+        """Worker proof can discover a blocker even when the original task was safe."""
+        blocker_reason = self._nox_human_approval_reason(output)
+        if blocker_reason:
+            return blocker_reason
+        normalized = self._nox_bashnya_normalize_text(output)
+        soft_blockers = (
+            "не могу продолжить без дани",
+            "cannot continue without danya",
+            "waiting for human",
+            "жду человека",
+            "жду подтверждение",
+            "жду подтверждения",
+            "нужно решение",
+            "нужно product решение",
+            "нужно бизнес решение",
+        )
+        for marker in soft_blockers:
+            if self._nox_bashnya_has_phrase(normalized, marker):
+                return marker
+        return None
+
+    def _approve_and_start_nox_next_phase(
+        self,
+        *,
+        run_id: str,
+        state: Dict[str, Any],
+        approved_by: str,
+        approval_mode: str,
+        approval_reason: str,
+    ) -> tuple[int, str, Dict[str, Any]]:
+        phase_count = int(state.get("phase_count") or 1)
+        phase_index = int(state.get("phase_index") or 0)
+        next_phase = phase_index + 1
+        if next_phase > phase_count:
+            updated = self._upsert_nox_phase_run(run_id, status="completed")
+            return next_phase, "", updated
+        updated = self._upsert_nox_phase_run(
+            run_id,
+            status="running_phase",
+            phase_index=next_phase,
+            approved_at=self._nox_now_iso(),
+            approved_by=approved_by,
+            approval_mode=approval_mode,
+            approval_reason=approval_reason,
+        )
+        route = self._nox_route_from_phase_state(updated)
+        task_id = self._start_nox_worker_phase_runner(
+            run_id=run_id,
+            route=route,
+            state=updated,
+        )
+        updated = self._upsert_nox_phase_run(run_id, phase_task_id=task_id)
+        return next_phase, task_id, updated
+
+    def _build_nox_worker_plan_prompt(self, state: Dict[str, Any]) -> str:
+        amendments = self._render_nox_live_amendments(state)
+        amendments_block = f"\n{amendments}\n\n" if amendments else ""
+        return (
+            "Ты работаешь как Nox project employee lane, НЕ как Башня управления.\n"
+            "Сейчас нужен только ТЗ/план, без выполнения фаз.\n\n"
+            f"run_id: {state.get('run_id')}\n"
+            f"Проект: {state.get('display')}\n"
+            f"Исходная задача:\n{state.get('goal')}\n\n"
+            f"{amendments_block}"
+            "Сделай короткий рабочий план в формате:\n"
+            "1. Цель и критерий готовности.\n"
+            "2. Scope / ограничения / риски.\n"
+            "3. Фазы, строго строками `Фаза 1: ...`, `Фаза 2: ...`.\n"
+            "4. Human gate: `none`, если всё safe; иначе самый маленький вопрос/риск для Дани.\n\n"
+            "Правила:\n"
+            "- Не делай destructive/high-risk действия.\n"
+            "- Не выполняй фазу 1 сейчас.\n"
+            "- Не проси Даню утверждать safe-план: Nox PM сам review/approve.\n"
+            "- Заверши строкой: `План готов для Nox PM review`.")
+
+    def _build_nox_worker_phase_prompt(self, state: Dict[str, Any], phase_number: int) -> str:
+        amendments = self._render_nox_live_amendments(state)
+        amendments_block = f"\n{amendments}\n\n" if amendments else ""
+        return (
+            "Ты работаешь в project employee lane. Выполни только одну утверждённую фазу.\n\n"
+            f"run_id: {state.get('run_id')}\n"
+            f"Проект: {state.get('display')}\n"
+            f"Фаза к выполнению: {phase_number}\n\n"
+            f"Исходная задача:\n{state.get('goal')}\n\n"
+            f"Утверждённый план:\n{state.get('plan') or '(план не сохранён)'}\n\n"
+            f"{amendments_block}"
+            "Правила выполнения:\n"
+            "- Выполни только эту фазу, не переходи к следующей сам.\n"
+            "- Safe scoped edits/checks allowed; destructive/high-risk только если явно уже утверждено Даней.\n"
+            "- В конце дай proof: файлы/логи/команды/проверки и риски.\n"
+            "- Если нужен Даня, остановись и явно напиши `Нужен Даня:` + blocker.\n"
+            "- Если всё safe, не проси `утвердить`: Nox PM сам решит продолжать ли следующую фазу.")
+
+    async def _send_nox_phase_state_message(
+        self,
+        state: Dict[str, Any],
+        *,
+        target: str,
+        content: str,
+    ) -> Optional[str]:
+        adapter = self.adapters.get(Platform.TELEGRAM) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return None
+        if target == "bashnya":
+            chat_id = str(state.get("bashnya_chat_id") or "")
+            thread_id = str(state.get("bashnya_thread_id") or "")
+        else:
+            chat_id = str(state.get("employee_chat_id") or "")
+            thread_id = str(state.get("employee_thread_id") or "")
+        if not chat_id:
+            return None
+        metadata = {"thread_id": thread_id} if thread_id else None
+        result = await adapter.send(chat_id, content, metadata=metadata)
+        if getattr(result, "success", False):
+            return getattr(result, "message_id", None)
+        return None
+
+    async def _run_nox_worker_agent_once(
+        self,
+        *,
+        prompt: str,
+        source: SessionSource,
+        task_id: str,
+        max_iterations: int,
+        run_id: Optional[str] = None,
+    ) -> str:
+        """Run one hidden worker agent turn and return its final text."""
+        from run_agent import AIAgent
+
+        user_config = _load_gateway_config()
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=source,
+            user_config=user_config,
+        )
+        if not runtime_kwargs.get("api_key"):
+            return "❌ Worker failed: no provider credentials configured."
+
+        platform_key = _platform_config_key(source.platform)
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        agent_cfg = user_config.get("agent") or {}
+        disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+        pr = self._provider_routing
+        reasoning_config = self._resolve_session_reasoning_config(source=source)
+        service_tier = self._load_service_tier()
+        turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+
+        def run_sync():
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=max_iterations,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                reasoning_config=reasoning_config,
+                service_tier=service_tier,
+                request_overrides=turn_route.get("request_overrides"),
+                providers_allowed=pr.get("only"),
+                providers_ignored=pr.get("ignore"),
+                providers_order=pr.get("order"),
+                provider_sort=pr.get("sort"),
+                provider_require_parameters=pr.get("require_parameters", False),
+                provider_data_collection=pr.get("data_collection"),
+                session_id=task_id,
+                platform=platform_key,
+                user_id=source.user_id,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                session_db=self._session_db,
+                fallback_model=self._fallback_model,
+            )
+            self._register_nox_worker_agent(run_id=run_id, task_id=task_id, agent=agent)
+            try:
+                result = agent.run_conversation(user_message=prompt, task_id=task_id)
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+                return response or "(No response generated)"
+            finally:
+                self._release_nox_worker_agent(run_id=run_id, task_id=task_id, agent=agent)
+                self._cleanup_agent_resources(agent)
+
+        return await self._run_in_executor_with_context(run_sync)
+
+    def _start_nox_background_task(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        if not hasattr(self, "_background_tasks"):
+            self._background_tasks = set()
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _start_nox_worker_plan_runner(
+        self,
+        *,
+        run_id: str,
+        route: Dict[str, Any],
+        state: Dict[str, Any],
+    ) -> str:
+        task_id = f"nox_plan_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        self._start_nox_background_task(self._run_nox_worker_plan(run_id, route, state, task_id))
+        return task_id
+
+    def _start_nox_worker_phase_runner(
+        self,
+        *,
+        run_id: str,
+        route: Dict[str, Any],
+        state: Dict[str, Any],
+    ) -> str:
+        phase_number = int(state.get("phase_index") or 1)
+        task_id = f"nox_phase{phase_number}_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        self._start_nox_background_task(self._run_nox_worker_phase(run_id, route, state, task_id))
+        return task_id
+
+    async def _run_nox_worker_plan(
+        self,
+        run_id: str,
+        route: Dict[str, Any],
+        state: Dict[str, Any],
+        task_id: str,
+    ) -> None:
+        del route  # route is captured for monkeypatch/test symmetry; state is source of truth.
+        try:
+            state = self._refresh_nox_phase_state(run_id, state)
+            try:
+                max_turns = int(os.getenv("NOX_WORKER_PLAN_MAX_TURNS", str(_NOX_WORKER_PLAN_MAX_TURNS_DEFAULT)))
+            except (TypeError, ValueError):
+                max_turns = _NOX_WORKER_PLAN_MAX_TURNS_DEFAULT
+            prompt = self._build_nox_worker_plan_prompt(state)
+            source = self._nox_worker_source_from_state(state)
+            plan = await self._run_nox_worker_agent_once(
+                prompt=prompt,
+                source=source,
+                task_id=task_id,
+                max_iterations=max(1, max_turns),
+                run_id=run_id,
+            )
+            phase_count = self._extract_nox_plan_phase_count(plan)
+            human_reason = self._nox_human_approval_reason(state.get("goal", ""), plan)
+            approval_mode = "human" if human_reason else "nox_pm_auto"
+            status = "awaiting_approval" if human_reason else "awaiting_nox_pm_approval"
+            state = self._upsert_nox_phase_run(
+                run_id,
+                status=status,
+                plan=plan,
+                phase_count=phase_count,
+                phase_index=0,
+                plan_task_id=task_id,
+                plan_completed_at=self._nox_now_iso(),
+                approval_mode=approval_mode,
+                approval_reason=human_reason or "safe_plan",
+            )
+            if human_reason:
+                employee_suffix = (
+                    f"Gate: Нужен Даня перед Фазой 1 — reason: `{human_reason}`. "
+                    "Напиши `утвердить`, если это разрешено."
+                )
+                bashnya_suffix = (
+                    f"Нужен Даня: план требует human gate (`{human_reason}`). "
+                    f"Жду `утвердить` в {state.get('topic_name')}."
+                )
+            else:
+                employee_suffix = "Nox PM: safe-план auto-approved; запускаю Фазу 1."
+                bashnya_suffix = "Nox PM: safe-план auto-approved; Фаза 1 запускается без Дани."
+            await self._send_nox_phase_state_message(
+                state,
+                target="employee",
+                content=(
+                    "🧭 ТЗ/план готов\n"
+                    f"run_id: `{run_id}`\n"
+                    f"Фаз найдено: {phase_count}\n"
+                    f"Approval: {approval_mode}\n\n"
+                    f"{plan}\n\n"
+                    f"{employee_suffix}"
+                ),
+            )
+            await self._send_nox_phase_state_message(
+                state,
+                target="bashnya",
+                content=(
+                    "Статус worker: план готов\n"
+                    f"Проект: {state.get('display')}\n"
+                    f"run_id: `{run_id}`\n"
+                    f"Фаз: {phase_count}\n"
+                    f"{bashnya_suffix}"
+                ),
+            )
+            if not human_reason:
+                try:
+                    next_phase, phase_task_id, _started = self._approve_and_start_nox_next_phase(
+                        run_id=run_id,
+                        state=state,
+                        approved_by="nox_pm",
+                        approval_mode="nox_pm_auto",
+                        approval_reason="safe_plan",
+                    )
+                    if phase_task_id:
+                        await self._send_nox_phase_state_message(
+                            _started,
+                            target="employee",
+                            content=(
+                                f"▶️ Nox PM запустил Фазу {next_phase}\n"
+                                f"run_id: `{run_id}`\n"
+                                f"task_id: `{phase_task_id}`"
+                            ),
+                        )
+                except Exception as exc:
+                    logger.exception("Nox PM auto-approval failed for %s", run_id)
+                    state = self._upsert_nox_phase_run(run_id, status="blocked", error=str(exc))
+                    await self._send_nox_phase_state_message(
+                        state,
+                        target="employee",
+                        content=f"❌ Nox PM auto-approval failed\nrun_id: `{run_id}`\nerror: {exc}",
+                    )
+        except Exception as exc:
+            logger.exception("Nox worker plan runner failed for %s", run_id)
+            state = self._upsert_nox_phase_run(
+                run_id,
+                status="blocked",
+                error=str(exc),
+                plan_task_id=task_id,
+            )
+            await self._send_nox_phase_state_message(
+                state,
+                target="employee",
+                content=f"❌ Worker plan failed\nrun_id: `{run_id}`\nerror: {exc}",
+            )
+
+    async def _run_nox_worker_phase(
+        self,
+        run_id: str,
+        route: Dict[str, Any],
+        state: Dict[str, Any],
+        task_id: str,
+    ) -> None:
+        del route
+        phase_number = int(state.get("phase_index") or 1)
+        try:
+            state = self._refresh_nox_phase_state(run_id, state)
+            phase_number = int(state.get("phase_index") or 1)
+            try:
+                max_turns = int(os.getenv("NOX_WORKER_PHASE_MAX_TURNS", str(_NOX_WORKER_PHASE_MAX_TURNS_DEFAULT)))
+            except (TypeError, ValueError):
+                max_turns = _NOX_WORKER_PHASE_MAX_TURNS_DEFAULT
+            prompt = self._build_nox_worker_phase_prompt(state, phase_number)
+            source = self._nox_worker_source_from_state(state)
+            result = await self._run_nox_worker_agent_once(
+                prompt=prompt,
+                source=source,
+                task_id=task_id,
+                max_iterations=max(1, max_turns),
+                run_id=run_id,
+            )
+            phase_count = int(state.get("phase_count") or 1)
+            next_phase = phase_number + 1
+            run_policy_human_reason = None
+            if str(state.get("approval_mode") or "") == "human":
+                run_policy_human_reason = str(state.get("approval_reason") or "human_gate")
+            phase_blocker_reason = self._nox_worker_output_human_gate_reason(result)
+            human_reason = phase_blocker_reason or run_policy_human_reason
+            if next_phase > phase_count:
+                status = "completed"
+            elif human_reason:
+                status = "awaiting_approval"
+            else:
+                status = "awaiting_nox_pm_approval"
+            updated = self._upsert_nox_phase_run(
+                run_id,
+                status=status,
+                phase_index=phase_number,
+                last_phase_task_id=task_id,
+                last_phase_result=result,
+                last_phase_completed_at=self._nox_now_iso(),
+                approval_mode=("human" if human_reason else "nox_pm_auto"),
+                approval_reason=(human_reason or "safe_continuation"),
+            )
+            if status == "awaiting_approval":
+                suffix = (
+                    f"\n\nGate: Нужен Даня перед Фазой {next_phase} — reason: `{human_reason}`. "
+                    "Напиши `утвердить`, если это разрешено."
+                )
+            elif status == "awaiting_nox_pm_approval":
+                suffix = f"\n\nNox PM: safe proof accepted; запускаю Фазу {next_phase}."
+            else:
+                suffix = "\n\nСтатус: все запланированные фазы завершены."
+            await self._send_nox_phase_state_message(
+                updated,
+                target="employee",
+                content=(
+                    f"✅ Фаза {phase_number} завершена\n"
+                    f"run_id: `{run_id}`\n"
+                    f"Approval: {status}\n\n"
+                    f"{result}{suffix}"
+                ),
+            )
+            await self._send_nox_phase_state_message(
+                updated,
+                target="bashnya",
+                content=(
+                    f"Worker proof: Фаза {phase_number} завершена\n"
+                    f"Проект: {updated.get('display')}\n"
+                    f"run_id: `{run_id}`\n"
+                    f"Статус: {status}"
+                ),
+            )
+            if status == "awaiting_nox_pm_approval":
+                try:
+                    started_phase, phase_task_id, started_state = self._approve_and_start_nox_next_phase(
+                        run_id=run_id,
+                        state=updated,
+                        approved_by="nox_pm",
+                        approval_mode="nox_pm_auto",
+                        approval_reason="safe_continuation",
+                    )
+                    if phase_task_id:
+                        await self._send_nox_phase_state_message(
+                            started_state,
+                            target="employee",
+                            content=(
+                                f"▶️ Nox PM запустил Фазу {started_phase}\n"
+                                f"run_id: `{run_id}`\n"
+                                f"task_id: `{phase_task_id}`"
+                            ),
+                        )
+                except Exception as exc:
+                    logger.exception("Nox PM continuation failed for %s", run_id)
+                    blocked = self._upsert_nox_phase_run(run_id, status="blocked", error=str(exc))
+                    await self._send_nox_phase_state_message(
+                        blocked,
+                        target="employee",
+                        content=f"❌ Nox PM continuation failed\nrun_id: `{run_id}`\nerror: {exc}",
+                    )
+        except Exception as exc:
+            logger.exception("Nox worker phase runner failed for %s", run_id)
+            updated = self._upsert_nox_phase_run(
+                run_id,
+                status="blocked",
+                error=str(exc),
+                last_phase_task_id=task_id,
+            )
+            await self._send_nox_phase_state_message(
+                updated,
+                target="employee",
+                content=f"❌ Worker phase failed\nrun_id: `{run_id}`\nФаза: {phase_number}\nerror: {exc}",
+            )
+
+    def _strip_nox_gateway_author_prefix(self, message_text: str) -> str:
+        """Remove the Telegram gateway's human-readable `[User] ` prefix.
+
+        `_prepare_inbound_message_text()` may turn a raw topic message like
+        `утвердить` into `[Exzy] утвердить` before deterministic gateway hooks
+        see it.  Approval parsing must use the command text, not that display
+        prefix, while still rejecting phrases like `утвердить не запускай`.
+        """
+        raw_text = (message_text or "").strip()
+        return re.sub(r"^\[[^\]\n]{1,80}\]\s*", "", raw_text).strip()
+
+    def _is_nox_worker_approval_candidate(self, message_text: str) -> bool:
+        raw_text = (message_text or "").strip()
+        raw_lower = raw_text.lower()
+        normalized = self._nox_bashnya_normalize_text(raw_text)
+        if not normalized:
+            return False
+        strong_exact = {
+            "+",
+            "утвердить",
+            "утверждаю",
+            "подтверждаю",
+            "approve",
+            "approved",
+            "confirm",
+        }
+        if normalized in strong_exact:
+            return True
+        return re.match(
+            r"^\s*(?:утвердить|approve)\s+`?bashnya-[a-z0-9-]+`?\s*$",
+            raw_lower,
+        ) is not None
+
+    def _nox_worker_approval_command_text(self, *texts: str) -> Optional[str]:
+        """Return the exact approval command after display-prefix cleanup.
+
+        Multiple texts are accepted so the hook can prefer the raw platform
+        event text when available and fall back to the prepared agent message.
+        """
+        seen: set[str] = set()
+        for text in texts:
+            raw_text = (text or "").strip()
+            if not raw_text:
+                continue
+            candidates = (raw_text, self._strip_nox_gateway_author_prefix(raw_text))
+            for candidate in candidates:
+                if not candidate or candidate in seen:
+                    continue
+                seen.add(candidate)
+                if self._is_nox_worker_approval_candidate(candidate):
+                    return candidate
+        return None
+
+    def _is_nox_worker_approval_text(self, message_text: str) -> bool:
+        return self._nox_worker_approval_command_text(message_text) is not None
+
+    def _nox_phase_state_matches_source(
+        self,
+        state: Dict[str, Any],
+        source: SessionSource,
+    ) -> bool:
+        chat_id = str(source.chat_id or "")
+        thread_id = str(source.thread_id or "")
+        employee_match = (
+            chat_id == str(state.get("employee_chat_id") or "")
+            and thread_id == str(state.get("employee_thread_id") or "")
+        )
+        bashnya_match = (
+            chat_id == str(state.get("bashnya_chat_id") or "")
+            and thread_id == str(state.get("bashnya_thread_id") or "")
+        )
+        return employee_match or bashnya_match
+
+    def _nox_project_employee_route_for_source(
+        self,
+        source: Optional[SessionSource],
+    ) -> Optional[Dict[str, Any]]:
+        if source is None or source.platform != Platform.TELEGRAM:
+            return None
+        chat_id = str(source.chat_id or "")
+        thread_id = str(source.thread_id or "")
+        if not chat_id or not thread_id:
+            return None
+        for route in self._load_nox_project_employee_routes().values():
+            if (
+                chat_id == str(route.get("chat_id") or "")
+                and thread_id == str(route.get("message_thread_id") or "")
+            ):
+                return route
+        return None
+
+    def _is_nox_project_employee_source(self, source: Optional[SessionSource]) -> bool:
+        return self._nox_project_employee_route_for_source(source) is not None
+
+    def _find_nox_approval_run(
+        self,
+        *,
+        source: SessionSource,
+        message_text: str,
+    ) -> tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
+        runs = self._load_nox_phase_runs()
+        if not runs:
+            return None, None, None
+        normalized = self._nox_bashnya_normalize_text(message_text)
+        raw_lower = (message_text or "").lower()
+        explicit_run_id = None
+        for run_id in runs:
+            run_id_text = str(run_id or "")
+            if not run_id_text:
+                continue
+            if (
+                run_id_text.lower() in raw_lower
+                or self._nox_bashnya_normalize_text(run_id_text) in normalized.lower()
+            ):
+                explicit_run_id = run_id_text
+                break
+        candidates: list[tuple[str, Dict[str, Any]]] = []
+        for run_id, state in runs.items():
+            if str(state.get("status") or "") != "awaiting_approval":
+                continue
+            if explicit_run_id and run_id != explicit_run_id:
+                continue
+            if self._nox_phase_state_matches_source(state, source):
+                candidates.append((run_id, state))
+        if not candidates:
+            return None, None, None
+        if len(candidates) > 1 and not explicit_run_id:
+            ids = ", ".join(run_id for run_id, _ in candidates[:5])
+            return None, None, f"Нужен run_id: в этом топике несколько фаз ждут утверждения ({ids})."
+        candidates.sort(key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+        run_id, state = candidates[0]
+        return run_id, state, None
+
+    async def _maybe_handle_nox_worker_approval(
+        self,
+        event: MessageEvent,
+        message_text: str,
+    ) -> Optional[str]:
+        source = getattr(event, "source", None)
+        if source is None or source.platform != Platform.TELEGRAM:
+            return None
+        try:
+            profile = self._active_profile_name()
+        except Exception:
+            profile = "default"
+        if str(profile or "default") != _NOX_BASHNYA_PROFILE:
+            return None
+        command_text = self._nox_worker_approval_command_text(
+            str(getattr(event, "text", "") or ""),
+            message_text,
+        )
+        if not command_text:
+            return None
+        run_id, state, error = self._find_nox_approval_run(source=source, message_text=command_text)
+        if error:
+            return f"Нужен Даня: {error}"
+        if not run_id or not state:
+            employee_route = self._nox_project_employee_route_for_source(source)
+            if self._is_nox_bashnya_source(source) or employee_route:
+                topic_name = "этом топике"
+                if employee_route:
+                    topic_name = str(employee_route.get("topic_name") or topic_name)
+                return f"Нет worker-фазы, которая сейчас ждёт `утвердить` в {topic_name}."
+            return None
+        phase_count = int(state.get("phase_count") or 1)
+        phase_index = int(state.get("phase_index") or 0)
+        next_phase = phase_index + 1
+        if next_phase > phase_count:
+            self._upsert_nox_phase_run(run_id, status="completed")
+            return f"Готово: run_id `{run_id}` уже прошёл все {phase_count} фаз."
+        next_phase, task_id, updated = self._approve_and_start_nox_next_phase(
+            run_id=run_id,
+            state=state,
+            approved_by=str(source.user_id or "danya"),
+            approval_mode="human",
+            approval_reason=str(state.get("approval_reason") or "manual_danya_approval"),
+        )
+        return (
+            f"Фаза {next_phase} запущена\n"
+            f"run_id: `{run_id}`\n"
+            f"Куда: {updated.get('topic_name')}\n"
+            f"task_id: `{task_id}`\n"
+            "Gate: дальше Nox PM продолжит safe-фазы сам; Даню спрошу только при риске."
+        )
+
+    async def _maybe_handle_nox_worker_live_steer(
+        self,
+        event: MessageEvent,
+        message_text: str,
+    ) -> Optional[str]:
+        """Persist/steer plain project-employee follow-ups into the active worker run.
+
+        This is the Telegram-topic equivalent of `/steer`: while a hidden
+        project worker is planning/running (or parked on a gate), Danya's
+        follow-up in the employee topic amends that run instead of starting a
+        fresh main LLM session in the same topic.
+        """
+        source = getattr(event, "source", None)
+        if source is None or source.platform != Platform.TELEGRAM:
+            return None
+        try:
+            profile = self._active_profile_name()
+        except Exception:
+            profile = "default"
+        if str(profile or "default") != _NOX_BASHNYA_PROFILE:
+            return None
+        if event.get_command():
+            return None
+        if not self._nox_project_employee_route_for_source(source):
+            return None
+        # Approval commands are handled by _maybe_handle_nox_worker_approval
+        # just before this hook.  Keep this guard for direct unit calls too.
+        if self._nox_worker_approval_command_text(str(getattr(event, "text", "") or ""), message_text):
+            return None
+        steer_text = self._nox_live_steer_text(event, message_text)
+        if not steer_text:
+            return None
+        run_id, state, error = self._find_nox_live_worker_run(source=source, message_text=steer_text)
+        if error:
+            return f"Нужен Даня: {error}"
+        if not run_id or not state:
+            return None
+        state, amendment = self._append_nox_live_amendment(
+            run_id=run_id,
+            state=state,
+            event=event,
+            text=steer_text,
+            delivery="saved_for_worker",
+        )
+        delivery = "saved_for_worker"
+        agent = self._nox_worker_agent_for_run(run_id)
+        if agent is not None and hasattr(agent, "steer"):
+            payload = self._nox_live_steer_payload(run_id=run_id, state=state, amendment=amendment)
+            try:
+                accepted = bool(agent.steer(payload))
+            except Exception as exc:
+                delivery = "saved_for_worker"
+                state = self._update_nox_live_amendment_delivery(
+                    run_id=run_id,
+                    amendment_id=str(amendment.get("id") or ""),
+                    delivery=delivery,
+                    delivery_error=str(exc),
+                )
+                logger.warning("Nox live steer failed for %s: %s", run_id, exc)
+            else:
+                if accepted:
+                    delivery = "delivered_live"
+                    state = self._update_nox_live_amendment_delivery(
+                        run_id=run_id,
+                        amendment_id=str(amendment.get("id") or ""),
+                        delivery=delivery,
+                    )
+        if delivery == "delivered_live":
+            return (
+                "Усвоил прямо сейчас: live steer доставлен worker'у\n"
+                f"run_id: `{run_id}`\n"
+                f"Куда: {state.get('topic_name') or 'project employee lane'}"
+            )
+        return (
+            "Принял: сохранил amendment для текущего worker-run\n"
+            f"run_id: `{run_id}`\n"
+            f"Куда: {state.get('topic_name') or 'project employee lane'}\n"
+            "Доставка: worker подхватит из durable ledger на следующем шаге/после рестарта."
+        )
+
+    def _build_nox_project_employee_packet(
+        self,
+        *,
+        event: MessageEvent,
+        message_text: str,
+        classification: Dict[str, Any],
+        route: Dict[str, Any],
+        run_id: str,
+    ) -> str:
+        """Build a compact visible packet for a project employee topic."""
+        goal = (message_text or "").strip()
+        try:
+            from agent.redact import redact_sensitive_text
+            goal = redact_sensitive_text(goal)
+        except Exception:
+            pass
+        if len(goal) > 1600:
+            goal = goal[:1600].rstrip() + "…"
+        source = event.source
+        source_ref = f"telegram:{source.chat_id}:{source.thread_id}"
+        if event.message_id:
+            source_ref += f" msg_id={event.message_id}"
+        weight = classification.get("weight") or "PROJECT"
+        return (
+            "PROJECT EMPLOYEE TASK\n"
+            f"run_id: {run_id}\n"
+            f"Project: {route['display']}\n"
+            f"Employee lane: {route['topic_name']}\n"
+            f"Mode: {weight}\n"
+            f"Source: {source_ref}\n"
+            "Goal:\n"
+            f"{goal}\n\n"
+            "Scope: execute outside `01 Башня управления`; keep work in this project lane.\n"
+            "Allowed actions: inspect project files/docs/logs, make safe scoped edits, run targeted checks/tests.\n"
+            "Forbidden without approval: destructive ops, credential exposure, purchases, production deploys/restarts.\n"
+            "Expected proof: changed files, commands/tests run, logs/docs inspected, report/proof pointer if created.\n"
+            "Return format:\n"
+            "- result\n"
+            "- proof\n"
+            "- inspected files/logs/docs\n"
+            "- commands/checks run\n"
+            "- risks\n"
+            "- blocker if any"
+        )
+
+    def _build_nox_bashnya_ack(
+        self,
+        *,
+        classification: Dict[str, Any],
+        route: Dict[str, Any],
+        run_id: str,
+        packet_message_id: Optional[str] = None,
+        plan_task_id: Optional[str] = None,
+    ) -> str:
+        proof_hint = "Reports / Proof + сообщение сотрудника"
+        if packet_message_id:
+            proof_hint = f"сообщение сотрудника `{packet_message_id}` + report/proof при завершении"
+        planner_hint = "Планер: запущен"
+        if plan_task_id:
+            planner_hint += f" (`{plan_task_id}`)"
+        return (
+            "Статус: взял в работу\n"
+            f"Режим: {classification.get('weight') or 'PROJECT'}\n"
+            f"Проект: {route['display']}\n"
+            f"Куда ушло: {route['topic_name']}\n"
+            f"run_id: `{run_id}`\n"
+            f"{planner_hint}\n"
+            f"Proof будет: {proof_hint}\n"
+            "Дальше: worker даст ТЗ/план; Nox PM auto-approve safe phases. Даню спрошу только при риске."
+        )
+
+    async def _maybe_route_nox_bashnya_task(
+        self,
+        event: MessageEvent,
+        message_text: str,
+    ) -> Optional[str]:
+        """Runtime-enforce Nox v2 Bashnya coordinator routing before main agent."""
+        source = getattr(event, "source", None)
+        if not self._is_nox_bashnya_source(source):
+            return None
+        if event.get_command():
+            return None
+
+        classification = self._nox_bashnya_classify_task(message_text, source=source)
+        weight = str(classification.get("weight") or "FAST").upper()
+        if weight == "FAST":
+            return None
+        if weight == "BLOCKER":
+            projects = classification.get("projects") or []
+            reason = str(classification.get("reason") or "")
+            if reason == "missing_project_for_substantial_task":
+                active = f" Активные проекты сейчас: {', '.join(projects)}." if projects else ""
+                return (
+                    "Нужен Даня: это похоже на проектную задачу/длинный бриф, "
+                    "но проект не указан."
+                    f"{active} Напиши проект одним словом (например `Ryadom`) "
+                    "или отправь задачу прямо в `<Project> · Сотрудник`. "
+                    "Main run в Башне не запускаю."
+                )
+            if projects:
+                return (
+                    "Нужен Даня: вижу несколько проектов "
+                    f"({', '.join(projects)}). Уточни один проект или скажи, что это cross-project run."
+                )
+            return (
+                "Нужен Даня: задача выглядит рискованной/деструктивной. "
+                "Подтверди разрешение и точный scope — пока не запускаю main run в Башне."
+            )
+        if weight not in {"PROJECT", "RUN"}:
+            return None
+
+        project_key = classification.get("project")
+        if not project_key:
+            return None
+        routes = self._load_nox_project_employee_routes()
+        route = routes.get(str(project_key).lower())
+        if not route:
+            return (
+                "⚠️ Роутер Башни остановил main run, но не нашёл mapped employee topic "
+                f"для проекта `{project_key}` в `{_NOX_PROJECT_EMPLOYEE_ROUTES_PATH}`."
+            )
+
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return (
+                "⚠️ Роутер Башни остановил main run, но Telegram adapter недоступен — "
+                "packet сотруднику не отправлен."
+            )
+
+        run_id = f"bashnya-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.urandom(2).hex()}"
+        packet = self._build_nox_project_employee_packet(
+            event=event,
+            message_text=message_text,
+            classification=classification,
+            route=route,
+            run_id=run_id,
+        )
+        state = self._build_nox_phase_state(
+            event=event,
+            message_text=message_text,
+            classification=classification,
+            route=route,
+            run_id=run_id,
+        )
+        try:
+            state = self._upsert_nox_phase_run(
+                run_id,
+                **{k: v for k, v in state.items() if k != "run_id"},
+            )
+        except Exception as exc:
+            logger.warning("Nox Bashnya router state persist failed before send: %s", exc)
+            return (
+                "⚠️ Роутер Башни остановил main run, но не смог сохранить durable state — "
+                "packet сотруднику не отправлен: "
+                f"{exc}"
+            )
+        try:
+            result = await adapter.send(
+                route["chat_id"],
+                packet,
+                metadata={"thread_id": route["message_thread_id"]},
+            )
+        except Exception as exc:
+            logger.warning("Nox Bashnya router send failed: %s", exc)
+            self._upsert_nox_phase_run(
+                run_id,
+                status="blocked",
+                error=f"employee packet send failed: {exc}",
+            )
+            return (
+                "⚠️ Роутер Башни остановил main run, но отправка packet сотруднику упала: "
+                f"{exc}\nrun_id: `{run_id}`"
+            )
+        if not getattr(result, "success", False):
+            err = getattr(result, "error", None) or "unknown send error"
+            self._upsert_nox_phase_run(
+                run_id,
+                status="blocked",
+                error=f"employee packet send failed: {err}",
+            )
+            return (
+                "⚠️ Роутер Башни остановил main run, но Telegram не принял packet сотруднику: "
+                f"{err}\nrun_id: `{run_id}`"
+            )
+
+        packet_message_id = getattr(result, "message_id", None)
+        state = self._upsert_nox_phase_run(run_id, packet_message_id=str(packet_message_id or ""))
+        try:
+            plan_task_id = self._start_nox_worker_plan_runner(
+                run_id=run_id,
+                route=route,
+                state=state,
+            )
+            self._upsert_nox_phase_run(run_id, plan_task_id=plan_task_id)
+        except Exception as exc:
+            logger.exception("Nox worker plan start failed for %s", run_id)
+            self._upsert_nox_phase_run(run_id, status="blocked", error=str(exc))
+            return (
+                "⚠️ Роутер Башни отправил packet сотруднику, но не смог запустить worker-plan: "
+                f"{exc}\nrun_id: `{run_id}`"
+            )
+
+        return self._build_nox_bashnya_ack(
+            classification=classification,
+            route=route,
+            run_id=run_id,
+            packet_message_id=packet_message_id,
+            plan_task_id=plan_task_id,
+        )
+
+    def _maybe_cap_nox_bashnya_fast_iterations(
+        self,
+        source: SessionSource,
+        message_text: str,
+        max_iterations: int,
+    ) -> int:
+        """Apply a small turn cap for direct FAST answers in Башня when safe."""
+        if not self._is_nox_bashnya_source(source):
+            return max_iterations
+        classification = self._nox_bashnya_classify_task(message_text, source=source)
+        if str(classification.get("weight") or "").upper() != "FAST":
+            return max_iterations
+        try:
+            cap = int(os.getenv("NOX_BASHNYA_FAST_MAX_TURNS", str(_NOX_BASHNYA_FAST_MAX_TURNS_DEFAULT)))
+        except (TypeError, ValueError):
+            cap = _NOX_BASHNYA_FAST_MAX_TURNS_DEFAULT
+        if cap <= 0:
+            return max_iterations
+        return min(max_iterations, cap)
 
     def _resolve_session_agent_runtime(
         self,
@@ -3034,9 +4901,26 @@ class GatewayRunner:
 
         self._busy_ack_ts[session_key] = now
 
-        # Build a status-rich acknowledgment
+        # Build a status-rich acknowledgment. On clean control surfaces
+        # (display.platforms.<platform>.status_messages: false), keep the ack
+        # human and omit raw internals like "iteration 0/90" / "running: tool".
+        status_details_enabled = True
+        try:
+            from gateway.display_config import resolve_display_setting as _resolve_display_setting
+            _busy_user_config = _load_gateway_config()
+            status_details_enabled = bool(
+                _resolve_display_setting(
+                    _busy_user_config,
+                    _platform_config_key(event.source.platform),
+                    "status_messages",
+                    True,
+                )
+            )
+        except Exception:
+            status_details_enabled = True
+
         status_parts = []
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if status_details_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
                 iteration = summary.get("api_call_count", 0)
@@ -3075,28 +4959,29 @@ class GatewayRunner:
         # while the agent is busy, append a one-time hint explaining the
         # queue/interrupt knob.  Flag is persisted to config.yaml so it never
         # fires again on this install.
-        try:
-            from agent.onboarding import (
-                BUSY_INPUT_FLAG,
-                busy_input_hint_gateway,
-                is_seen,
-                mark_seen,
-            )
-            _user_cfg = _load_gateway_config()
-            if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
-                if is_steer_mode:
-                    _hint_mode = "steer"
-                elif is_queue_mode:
-                    _hint_mode = "queue"
-                else:
-                    _hint_mode = "interrupt"
-                message = (
-                    f"{message}\n\n"
-                    f"{busy_input_hint_gateway(_hint_mode)}"
+        if status_details_enabled:
+            try:
+                from agent.onboarding import (
+                    BUSY_INPUT_FLAG,
+                    busy_input_hint_gateway,
+                    is_seen,
+                    mark_seen,
                 )
-                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
-        except Exception as _onb_err:
-            logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
+                _user_cfg = _load_gateway_config()
+                if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
+                    if is_steer_mode:
+                        _hint_mode = "steer"
+                    elif is_queue_mode:
+                        _hint_mode = "queue"
+                    else:
+                        _hint_mode = "interrupt"
+                    message = (
+                        f"{message}\n\n"
+                        f"{busy_input_hint_gateway(_hint_mode)}"
+                    )
+                    mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+            except Exception as _onb_err:
+                logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
@@ -8488,6 +10373,25 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+
+        # Nox v2 worker phase runner: approvals are handled deterministically
+        # before the main agent loop, so employee topics do not need to rely on
+        # the bot receiving its own outgoing messages as new updates.
+        _nox_worker_approval = await self._maybe_handle_nox_worker_approval(event, message_text)
+        if _nox_worker_approval is not None:
+            return _nox_worker_approval
+
+        _nox_worker_live_steer = await self._maybe_handle_nox_worker_live_steer(event, message_text)
+        if _nox_worker_live_steer is not None:
+            return _nox_worker_live_steer
+
+        # Nox v2 Башня coordinator router: known heavy project tasks must be
+        # packeted to the mapped `<Project> · Сотрудник` topic before the
+        # main agent loop starts. This keeps the control topic lightweight and
+        # prevents project work from consuming the coordinator lane.
+        _nox_bashnya_ack = await self._maybe_route_nox_bashnya_task(event, message_text)
+        if _nox_bashnya_ack is not None:
+            return _nox_bashnya_ack
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
@@ -15583,15 +17487,21 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        # Agent lifecycle/status bubbles (preflight compression, retry notices,
+        # auxiliary warnings) are intentionally configurable independently from
+        # tool progress. Control-room topics can keep the user-facing surface
+        # clean while CLI/team channels may still opt into diagnostic breadcrumbs.
+        status_messages_enabled = (
+            source.platform != Platform.WEBHOOK
+            and bool(resolve_display_setting(user_config, platform_key, "status_messages", True))
+        )
+
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
-            )
+            and bool(resolve_display_setting(user_config, platform_key, "interim_assistant_messages", True))
         )
         
         # Queue for progress messages (thread-safe)
@@ -16138,6 +18048,8 @@ class GatewayRunner:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
+            if not status_messages_enabled:
+                return
             if not _status_adapter or not _run_still_current():
                 return
             prepared_message = _prepare_gateway_status_message(
@@ -16185,8 +18097,20 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
+            # Re-read .env and config for fresh credentials (gateway is long-lived,
+            # keys may change without restart). Keep config.yaml authoritative for
+            # runtime budget settings bridged into env vars BEFORE reading the
+            # local per-turn max_iterations value.
+            _reload_runtime_env_preserving_config_authority()
+
+            # Read from env var or use default (same as CLI), then apply the
+            # Nox v2 Башня light-lane cap for FAST/direct coordinator turns.
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = self._maybe_cap_nox_bashnya_fast_iterations(
+                source,
+                message,
+                max_iterations,
+            )
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
@@ -16200,11 +18124,6 @@ class GatewayRunner:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
-
-            # Re-read .env and config for fresh credentials (gateway is long-lived,
-            # keys may change without restart). Keep config.yaml authoritative for
-            # runtime budget settings bridged into env vars.
-            _reload_runtime_env_preserving_config_authority()
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -16404,13 +18323,18 @@ class GatewayRunner:
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 
+            # Runtime budget is per turn. Cached agents preserve constructor-time
+            # fields, so refresh max_iterations after cache lookup; run_conversation()
+            # rebuilds IterationBudget from this value at turn start.
+            agent.max_iterations = max_iterations
+
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = _status_callback_sync if status_messages_enabled else None
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
@@ -17124,8 +19048,19 @@ class GatewayRunner:
         # Config: agent.gateway_notify_interval in config.yaml, or
         # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
         # 0 = disable notifications.
-        _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
-        _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        _agent_notify_cfg = user_config.get("agent", {}) if isinstance(user_config, dict) else {}
+        if isinstance(_agent_notify_cfg, dict) and "gateway_notify_interval" in _agent_notify_cfg:
+            try:
+                _NOTIFY_INTERVAL_RAW = float(_agent_notify_cfg.get("gateway_notify_interval") or 0)
+            except (TypeError, ValueError):
+                _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
+        else:
+            _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
+        _NOTIFY_INTERVAL = (
+            _NOTIFY_INTERVAL_RAW
+            if status_messages_enabled and _NOTIFY_INTERVAL_RAW > 0
+            else None
+        )
         _notify_start = time.time()
 
         async def _notify_long_running():

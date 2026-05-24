@@ -76,6 +76,32 @@ class _AuthRunner:
 
 
 # ===========================================================================
+# Creative Lab quick-action buttons
+# ===========================================================================
+
+class TestTelegramCreativeLabQuickActions:
+    """Creative Lab product buttons must stay scoped to the topic."""
+
+    def test_does_not_attach_buttons_from_message_text_only(self):
+        adapter = _make_adapter()
+
+        markup = adapter._creative_lab_quick_actions_markup(
+            "Для Creative Lab конкретно: source first", metadata={}
+        )
+
+        assert markup is None
+
+    def test_attaches_buttons_inside_creative_lab_topic(self):
+        adapter = _make_adapter()
+
+        markup = adapter._creative_lab_quick_actions_markup(
+            "Короткий ответ", metadata={"chat_topic": "Creative Lab"}
+        )
+
+        assert markup is not None
+
+
+# ===========================================================================
 # send_exec_approval — inline keyboard buttons
 # ===========================================================================
 

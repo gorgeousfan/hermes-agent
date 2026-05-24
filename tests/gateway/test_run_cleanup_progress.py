@@ -131,6 +131,22 @@ class FailingAgent:
         }
 
 
+class StatusAgent:
+    """Emits an agent lifecycle status message and returns normally."""
+
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = getattr(self, "status_callback", None)
+        if cb is not None:
+            cb("lifecycle", "📦 Preflight compression: test status")
+            time.sleep(0.05)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -154,7 +170,7 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool, platform_overrides=None):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -170,15 +186,18 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
 
-    # Wire the per-platform cleanup_progress flag via the config loader the
-    # gateway actually reads (``_load_gateway_config`` returns user config).
+    # Wire per-platform display flags via the config loader the gateway
+    # actually reads (``_load_gateway_config`` returns user config).
+    platform_cfg = {"cleanup_progress": True} if cleanup_on else {}
+    if platform_overrides:
+        platform_cfg.update(platform_overrides)
     cfg = {
         "display": {
             "platforms": {
-                "telegram": {"cleanup_progress": True},
+                "telegram": platform_cfg,
             }
         }
-    } if cleanup_on else {}
+    } if platform_cfg else {}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
 
@@ -219,6 +238,34 @@ async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_status_messages_platform_off_suppresses_lifecycle_bubbles(monkeypatch, tmp_path):
+    """display.platforms.<plat>.status_messages=false prevents agent
+    lifecycle/status callbacks from sending user-visible Telegram messages."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        StatusAgent,
+        cleanup_on=False,
+        platform_overrides={"status_messages": False},
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-status-off",
+        session_key="agent:main:telegram:group:-1001",
+    )
+
+    assert result["final_response"] == "done"
+    assert not any("Preflight compression" in entry["content"] for entry in adapter.sent)
 
 
 @pytest.mark.asyncio

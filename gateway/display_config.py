@@ -35,6 +35,15 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Lifecycle/status bubbles emitted by the agent itself (preflight
+    # compression, retry notices, auxiliary warnings).  Keep on by default for
+    # backwards compatibility, but allow chat platforms/topics that are meant
+    # to be clean control surfaces to disable them independently from tool
+    # progress.
+    "status_messages": True,
+    # Natural mid-turn assistant commentary.  Historically this was a global
+    # display flag; include it here so platforms/topics can opt out.
+    "interim_assistant_messages": True,
     # When true, delete tool-progress / "Still working..." / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -190,7 +199,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in {"show_reasoning", "streaming"}:
+    if setting in {"show_reasoning", "streaming", "status_messages", "interim_assistant_messages"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)

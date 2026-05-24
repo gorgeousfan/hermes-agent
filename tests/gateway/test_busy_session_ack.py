@@ -349,8 +349,11 @@ class TestBusySessionAck:
         assert adapter._send_with_retry.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_includes_status_detail(self):
+    async def test_includes_status_detail(self, monkeypatch):
         """Ack message should include iteration and tool info when available."""
+        import gateway.run as _gr
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
@@ -378,6 +381,47 @@ class TestBusySessionAck:
         assert "21/60" in content  # iteration
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
+
+    @pytest.mark.asyncio
+    async def test_status_messages_off_hides_raw_busy_ack_details(self, monkeypatch):
+        """Clean Telegram control lanes should not expose raw agent internals
+        like `Still working... iteration 0/90` or current tool names in the
+        busy acknowledgment."""
+        import gateway.run as _gr
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"status_messages": False}}}},
+        )
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="yo")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 21,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+        assert "21/60" not in content
+        assert "terminal" not in content
+        assert "First-time tip" not in content
 
     @pytest.mark.asyncio
     async def test_draining_still_works(self):

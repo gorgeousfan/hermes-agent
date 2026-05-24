@@ -2877,12 +2877,36 @@ def launchd_plist_is_current() -> bool:
     return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
 
 
+def _called_from_running_gateway_process() -> bool:
+    """Return True when this CLI process is a child of the live gateway.
+
+    Gateway tool calls execute as subprocesses below the gateway PID.  If one
+    of those subprocesses runs a command that bootouts the launchd job, launchd
+    kills the gateway *and the subprocess doing the bootstrap*, leaving the job
+    unloaded.  Detect that ancestry so self-repair paths can avoid unloading
+    their own parent process.
+    """
+    try:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid(cleanup_stale=False)
+    except Exception:
+        return False
+    return bool(pid and _is_pid_ancestor_of_current_process(pid))
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
-    ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
-    bootstrap to make launchd re-read the updated plist immediately.
+    ``launchctl kickstart`` cycle — no daemon-reload is needed.
+
+    Important macOS footgun: when this function is invoked from a gateway tool
+    call, the current CLI is a child process of the launchd-managed gateway.  A
+    synchronous ``launchctl bootout`` kills both the gateway and this child
+    before the following ``bootstrap`` can run, leaving the Telegram gateway
+    unloaded.  In that self-repair case we only update the plist on disk and let
+    an external restart (or the next launchd load) pick it up.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
@@ -2890,7 +2914,14 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
+    if _called_from_running_gateway_process():
+        print(
+            "↻ Updated gateway launchd service definition on disk "
+            "(reload deferred to avoid unloading the running gateway from its own tool call)"
+        )
+        return True
+
+    # Bootout/bootstrap so launchd picks up the new definition immediately.
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
     subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
