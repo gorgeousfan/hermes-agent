@@ -1,9 +1,12 @@
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
-from hermes_cli.env_loader import load_hermes_dotenv
+import hermes_cli.env_loader as env_loader
+from hermes_cli.env_loader import get_secret_source, load_hermes_dotenv
 
 
 def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
@@ -104,3 +107,325 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_nexus_bootstrap_overrides_local_dotenv_secret(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"secrets": {"TELEGRAM_BOT_TOKEN": "vault-token"}}).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()) as mock_urlopen:
+        loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [home / ".env"]
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "vault-token"
+    assert get_secret_source("TELEGRAM_BOT_TOKEN") == "Nexus vault"
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url == "https://nexus.example/api/v1/vault/bootstrap/athena"
+    assert req.headers["Authorization"] == f"Bearer {'x' * 64}"
+    stderr = capsys.readouterr().err
+    assert "TELEGRAM_BOT_TOKEN" in stderr
+    assert "local-token" not in stderr
+    assert "vault-token" not in stderr
+
+
+def test_nexus_bootstrap_is_skipped_without_required_env(monkeypatch, tmp_path):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.delenv("HERMES_NEXUS_BOOTSTRAP_URL", raising=False)
+    monkeypatch.delenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", raising=False)
+    monkeypatch.delenv("NEXUS_SERVICE_TOKEN", raising=False)
+    monkeypatch.delenv("NEXUS_TOKEN", raising=False)
+
+    with patch("hermes_cli.env_loader.urlopen") as mock_urlopen:
+        loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == []
+    mock_urlopen.assert_not_called()
+
+
+def test_nexus_bootstrap_ignores_empty_or_non_string_secrets(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example/")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_TOKEN", "nexus-token")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    original_path = os.getenv("PATH")
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "secrets": {
+                        "TELEGRAM_BOT_TOKEN": "   ",
+                        "OPENAI_API_KEY": 123,
+                        "PATH": "/tmp/malicious",
+                    }
+                }
+            ).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") is None
+    assert os.getenv("OPENAI_API_KEY") is None
+    assert os.getenv("PATH") == original_path
+
+
+def test_nexus_bootstrap_failure_does_not_override_local_secret(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    with patch("hermes_cli.env_loader.urlopen", side_effect=OSError("network down")):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+
+
+def test_nexus_bootstrap_rejects_non_https_url(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "http://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    with patch("hermes_cli.env_loader.urlopen") as mock_urlopen:
+        load_hermes_dotenv(hermes_home=home)
+
+    mock_urlopen.assert_not_called()
+    assert "must use https" in capsys.readouterr().err
+
+
+def test_nexus_bootstrap_kill_switch_skips_fetch(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    for disabled_value in ("0", "false", "no", "off"):
+        monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_ENABLED", disabled_value)
+        with patch("hermes_cli.env_loader.urlopen") as mock_urlopen:
+            load_hermes_dotenv(hermes_home=home)
+        mock_urlopen.assert_not_called()
+
+
+def test_nexus_bootstrap_url_encodes_integration_id_and_uses_timeout(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena/prod")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"secrets": {"TELEGRAM_BOT_TOKEN": "vault-token"}}).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()) as mock_urlopen:
+        load_hermes_dotenv(hermes_home=home)
+
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url == "https://nexus.example/api/v1/vault/bootstrap/athena%2Fprod"
+    assert mock_urlopen.call_args.kwargs["timeout"] == 15
+
+
+def test_nexus_bootstrap_non_dict_json_body_falls_back(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return b"[]"
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+
+
+def test_nexus_bootstrap_empty_secrets_response_falls_back(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"secrets": {}}).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+
+
+def test_nexus_bootstrap_non_utf8_body_falls_back(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return b"\xff\xfe\x00"
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+
+
+def test_nexus_bootstrap_oversized_response_falls_back(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            assert size == getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_BYTES") + 1
+            return b"{" + (b" " * getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_BYTES")) + b"}"
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+    assert "response too large" in capsys.readouterr().err
+
+
+def test_nexus_bootstrap_limits_applied_secrets(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    secrets = {
+        f"NEXUS_TEST_{idx}_TOKEN": f"value-{idx}"
+        for idx in range(getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_SECRETS") + 1)
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps({"secrets": secrets}).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    loaded = [key for key in secrets if os.getenv(key) is not None]
+    assert len(loaded) == getattr(env_loader, "_NEXUS_BOOTSTRAP_MAX_SECRETS")
+
+
+def test_nexus_bootstrap_invalid_env_value_is_skipped(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, *_args):
+            return json.dumps(
+                {
+                    "secrets": {
+                        "TELEGRAM_BOT_TOKEN": "vault-token\x00invalid",
+                        "OPENAI_API_KEY": "valid-key",
+                    }
+                }
+            ).encode("utf-8")
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") is None
+    assert os.getenv("OPENAI_API_KEY") == "valid-key"

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from utils import atomic_replace
@@ -15,6 +19,8 @@ from utils import atomic_replace
 # alter arbitrary user env vars, but credentials are known to require
 # pure ASCII (they become HTTP header values).
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
+_NEXUS_BOOTSTRAP_MAX_BYTES = 1_048_576
+_NEXUS_BOOTSTRAP_MAX_SECRETS = 128
 
 # Names we've already warned about during this process, so repeated
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
@@ -185,6 +191,103 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def _load_nexus_bootstrap_env() -> bool:
+    """Load runtime secrets from Nexus vault bootstrap when configured.
+
+    Opt-in env vars:
+    - HERMES_NEXUS_BOOTSTRAP_URL
+    - HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID
+    - NEXUS_SERVICE_TOKEN or NEXUS_TOKEN
+
+    When present, Nexus values override stale shell or dotenv values so the
+    central vault becomes the authority during cutover. External secret
+    sources that run later may still apply according to their own override
+    policy. Failures are swallowed: bootstrap secret loading must not block
+    Hermes startup or leak secret values.
+    """
+    enabled = os.getenv("HERMES_NEXUS_BOOTSTRAP_ENABLED", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return False
+
+    base_url = os.getenv("HERMES_NEXUS_BOOTSTRAP_URL", "").strip()
+    integration_id = os.getenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "").strip()
+    token = (os.getenv("NEXUS_SERVICE_TOKEN") or os.getenv("NEXUS_TOKEN") or "").strip()
+    if not (base_url and integration_id and token):
+        return False
+
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https":
+        print(
+            "  Nexus vault bootstrap: configured URL must use https; skipping.",
+            file=sys.stderr,
+        )
+        return False
+
+    safe_integration_id = quote(integration_id, safe="")
+    url = f"{base_url.rstrip('/')}/api/v1/vault/bootstrap/{safe_integration_id}"
+    req = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "HermesAgent/1.0",
+        },
+    )
+    try:
+        with urlopen(req, timeout=15) as resp:
+            raw_body = resp.read(_NEXUS_BOOTSTRAP_MAX_BYTES + 1)
+            if len(raw_body) > _NEXUS_BOOTSTRAP_MAX_BYTES:
+                print(
+                    "  Nexus vault bootstrap: response too large; using local fallback.",
+                    file=sys.stderr,
+                )
+                return False
+            payload = json.loads(raw_body.decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        print(
+            "  Nexus vault bootstrap: configured but unavailable; using local fallback.",
+            file=sys.stderr,
+        )
+        return False
+
+    if not isinstance(payload, dict):
+        return False
+
+    secrets = payload.get("secrets")
+    if not isinstance(secrets, dict):
+        return False
+
+    loaded: list[str] = []
+    for key, value in secrets.items():
+        if not isinstance(key, str) or not key.strip() or not isinstance(value, str):
+            continue
+        if not value.strip():
+            continue
+        name = key.strip()
+        if not any(name.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES):
+            continue
+        try:
+            os.environ[name] = value
+        except ValueError:
+            continue
+        _SECRET_SOURCES[name] = "Nexus vault"
+        loaded.append(name)
+        if len(loaded) >= _NEXUS_BOOTSTRAP_MAX_SECRETS:
+            break
+
+    if not loaded:
+        return False
+
+    _sanitize_loaded_credentials()
+    print(
+        f"  Nexus vault bootstrap: applied {len(loaded)} "
+        f"secret{'s' if len(loaded) != 1 else ''} "
+        f"({', '.join(sorted(loaded))})",
+        file=sys.stderr,
+    )
+    return True
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -218,6 +321,10 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
+    try:
+        _load_nexus_bootstrap_env()
+    except Exception:  # noqa: BLE001 — Nexus bootstrap must not block startup
+        pass
     _apply_external_secret_sources(home_path)
 
     return loaded
