@@ -1276,6 +1276,23 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
+    # If max_tokens is still unset, check custom_providers for a per-provider
+    # override (e.g. custom_providers[].models.<model>.max_tokens).
+    # This allows provider-scoped output-token caps without the global
+    # model.max_tokens affecting fallback providers.
+    if agent.max_tokens is None:
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, get_custom_provider_max_tokens
+            _cp_max_tokens = get_custom_provider_max_tokens(
+                model=agent.model,
+                base_url=agent.base_url,
+                custom_providers=get_compatible_custom_providers(_agent_cfg),
+            )
+            if _cp_max_tokens is not None:
+                agent.max_tokens = int(_cp_max_tokens)
+        except Exception:
+            pass
+
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):
         _config_context_length = _model_cfg.get("context_length")
