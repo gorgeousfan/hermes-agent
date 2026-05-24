@@ -355,6 +355,7 @@ export const ru: Translations = {
       tts: "Синтез речи",
       stt: "Распознавание речи",
       logging: "Журналирование",
+      telegram: "Telegram",
       discord: "Discord",
       auxiliary: "Вспомогательные",
     },

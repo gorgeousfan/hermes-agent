@@ -355,6 +355,7 @@ export const uk: Translations = {
       tts: "Синтез мовлення",
       stt: "Розпізнавання мовлення",
       logging: "Журналювання",
+      telegram: "Telegram",
       discord: "Discord",
       auxiliary: "Додатково",
     },
