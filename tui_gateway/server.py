@@ -1961,6 +1961,12 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
         "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
+        "parent_session_id": getattr(agent, "session_id", None),
+        "root_session_id": getattr(agent, "_root_session_id", None),
+        "session_kind": "background_command",
+        "creator_kind": "command",
+        "creator_command": "/background",
+        "is_user_facing": False,
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
@@ -1996,7 +2002,18 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     return info
 
 
-def _make_agent(sid: str, key: str, session_id: str | None = None):
+def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    *,
+    parent_session_id: str | None = None,
+    session_kind: str = "main",
+    root_session_id: str | None = None,
+    creator_kind: str | None = None,
+    creator_command: str | None = None,
+    is_user_facing: bool = True,
+):
     from run_agent import AIAgent
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -2022,31 +2039,40 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
-    return AIAgent(
-        model=model,
-        max_iterations=_cfg_max_turns(cfg, 90),
-        provider=runtime.get("provider"),
-        base_url=runtime.get("base_url"),
-        api_key=runtime.get("api_key"),
-        api_mode=runtime.get("api_mode"),
-        acp_command=runtime.get("command"),
-        acp_args=runtime.get("args"),
-        credential_pool=runtime.get("credential_pool"),
-        quiet_mode=True,
-        verbose_logging=_load_tool_progress_mode() == "verbose",
-        reasoning_config=_load_reasoning_config(),
-        service_tier=_load_service_tier(),
-        enabled_toolsets=_load_enabled_toolsets(),
-        platform="tui",
-        session_id=session_id or key,
-        session_db=_get_db(),
-        ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
-        pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
-        skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+    agent_kwargs: dict[str, Any] = {
+        "model": model,
+        "max_iterations": _cfg_max_turns(cfg, 90),
+        "provider": runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_key": runtime.get("api_key"),
+        "api_mode": runtime.get("api_mode"),
+        "acp_command": runtime.get("command"),
+        "acp_args": runtime.get("args"),
+        "credential_pool": runtime.get("credential_pool"),
+        "quiet_mode": True,
+        "verbose_logging": _load_tool_progress_mode() == "verbose",
+        "reasoning_config": _load_reasoning_config(),
+        "service_tier": _load_service_tier(),
+        "enabled_toolsets": _load_enabled_toolsets(),
+        "platform": "tui",
+        "session_id": session_id or key,
+        "session_db": _get_db(),
+        "session_kind": session_kind,
+        "creator_kind": creator_kind,
+        "creator_command": creator_command,
+        "is_user_facing": is_user_facing,
+        "ephemeral_system_prompt": system_prompt or None,
+        "checkpoints_enabled": is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        "pass_session_id": is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
+        "skip_context_files": is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        "skip_memory": is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         **_agent_cbs(sid),
-    )
+    }
+    if parent_session_id is not None:
+        agent_kwargs["parent_session_id"] = parent_session_id
+    if root_session_id is not None:
+        agent_kwargs["root_session_id"] = root_session_id
+    return AIAgent(**agent_kwargs)
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
@@ -2827,8 +2853,22 @@ def _(rid, params: dict) -> dict:
                 else f"{current} (branch)"
             )
         db.create_session(
-            new_key, source="tui", model=_resolve_model(), parent_session_id=old_key
+            new_key,
+            source="tui",
+            model=_resolve_model(),
+            parent_session_id=old_key,
+            session_kind="branch",
+            creator_kind="command",
+            creator_command="/branch",
+            is_user_facing=True,
         )
+        branch_root_session_id = old_key
+        try:
+            branch_root_session_id = (
+                db.get_session(new_key) or {}
+            ).get("root_session_id") or old_key
+        except Exception:
+            pass
         for msg in history:
             db.append_message(
                 session_id=new_key,
@@ -2842,7 +2882,17 @@ def _(rid, params: dict) -> dict:
     try:
         tokens = _set_session_context(new_key)
         try:
-            agent = _make_agent(new_sid, new_key, session_id=new_key)
+            agent = _make_agent(
+                new_sid,
+                new_key,
+                session_id=new_key,
+                parent_session_id=old_key,
+                root_session_id=branch_root_session_id,
+                session_kind="branch",
+                creator_kind="command",
+                creator_command="/branch",
+                is_user_facing=True,
+            )
         finally:
             _clear_session_context(tokens)
         _init_session(
