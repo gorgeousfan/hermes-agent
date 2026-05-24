@@ -8394,6 +8394,27 @@ def _cmd_update_check():
 
         print(f"  Run '{recommended_update_command()}' to install.")
 
+        # Show the pending commit list so users can see what changed
+        # without needing to delete ~/.hermes/.update_check (issue #23681)
+        try:
+            log_result = subprocess.run(
+                git_cmd + ["log", "HEAD..origin/main",
+                           "--oneline", "--no-decorate",
+                           f"--max-count={min(behind, 10)}"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if log_result.returncode == 0 and log_result.stdout.strip():
+                print()
+                print("  Pending commits:")
+                for line in log_result.stdout.strip().splitlines():
+                    print(f"    {line}")
+                if behind > 10:
+                    print(f"    ... and {behind - 10} more")
+        except Exception:
+            pass
+
 
 def _ensure_fhs_path_guard() -> None:
     """Ensure /usr/local/bin is on PATH for RHEL-family root non-login shells.

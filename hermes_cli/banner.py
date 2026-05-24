@@ -259,8 +259,31 @@ def check_for_updates() -> Optional[int]:
         else:
             behind = _check_via_local_git(repo_dir)
 
+    # Also cache the pending commit list so callers can show it without
+    # re-running git log (issue #23681).
+    pending_commits = []
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        repo_dir = _resolve_repo_dir()
+        if repo_dir and isinstance(behind, int) and behind > 0:
+            log_result = subprocess.run(
+                ["git", "log", "HEAD..origin/main",
+                 "--oneline", "--no-decorate",
+                 f"--max-count={min(behind, 10)}"],
+                cwd=str(repo_dir),
+                capture_output=True, text=True, timeout=5,
+            )
+            if log_result.returncode == 0 and log_result.stdout.strip():
+                pending_commits = log_result.stdout.strip().splitlines()
+    except Exception:
+        pass
+
+    try:
+        cache_file.write_text(json.dumps({
+            "ts": now,
+            "behind": behind,
+            "rev": embedded_rev,
+            "commits": pending_commits,
+        }))
     except Exception:
         pass
 
@@ -662,6 +685,15 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
+                # Show cached commit list if available (issue #23681)
+                try:
+                    cached = json.loads((get_hermes_home() / ".update_check").read_text())
+                    for commit_line in cached.get("commits", [])[:5]:
+                        right_lines.append(f"[dim yellow]  {commit_line}[/]")
+                    if behind > 5:
+                        right_lines.append(f"[dim yellow]  ... and {behind - 5} more[/]")
+                except Exception:
+                    pass
             else:
                 # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
                 # exists but not by how much, and we don't know how the user
