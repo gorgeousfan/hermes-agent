@@ -62,6 +62,14 @@ export function startMemoryMonitor({
   const dumped = new Set<Exclude<MemoryLevel, 'normal'>>()
   const inFlight = new Set<Exclude<MemoryLevel, 'normal'>>()
 
+  // Cooldown prevents repeated auto dumps when heap oscillates around the
+  // threshold (issue #21767). `dumped` alone is not enough — it clears on
+  // every transition back to `normal`.
+  const cooldownRaw = process.env.HERMES_AUTO_HEAPDUMP_COOLDOWN_MS?.trim()
+  const cooldownParsed = cooldownRaw ? Number(cooldownRaw) : NaN
+  const cooldownMs = Number.isFinite(cooldownParsed) && cooldownParsed >= 0 ? cooldownParsed : 600_000
+  let lastAutoDumpAt = 0
+
   const tick = async () => {
     const { heapUsed, rss } = process.memoryUsage()
     const level: MemoryLevel = heapUsed >= criticalBytes ? 'critical' : heapUsed >= highBytes ? 'high' : 'normal'
@@ -75,7 +83,12 @@ export function startMemoryMonitor({
       return
     }
 
+    if (Date.now() - lastAutoDumpAt < cooldownMs) {
+      return
+    }
+
     inFlight.add(level)
+    lastAutoDumpAt = Date.now()
 
     // Prune Ink content caches before dump/exit — half on 'high' (recoverable),
     // full on 'critical' (post-dump RSS reduction, keeps user running).
