@@ -18,7 +18,7 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
-    hermes honcho setup                    # Configure Honcho AI memory integration
+    hermes honcho setup                    # Legacy alias → redirects to `hermes memory setup`
     hermes honcho status                   # Show Honcho config and connection status
     hermes honcho sessions                 # List directory → session name mappings
     hermes honcho map <name>               # Map current directory to a session name
@@ -10761,7 +10761,10 @@ def _plugin_cli_discovery_needed() -> bool:
     first = _first_positional_argv()
     if first is None:
         # Bare ``hermes`` or only flags → defaults to ``chat``.
-        return False
+        # Keep plugin CLI discovery enabled for root help so legacy aliases like
+        # ``hermes honcho setup`` remain visible to users before a provider is
+        # activated.
+        return any(arg in ("-h", "--help") for arg in sys.argv[1:])
     if first in _BUILTIN_SUBCOMMANDS:
         return False
     # Unknown token — could be a plugin subcommand, OR a chat prompt

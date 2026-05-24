@@ -233,7 +233,8 @@ hermes insights [--days N]  Usage analytics
 hermes update               Update to latest version
 hermes pairing list/approve/revoke  DM authorization
 hermes plugins list/install/remove  Plugin management
-hermes honcho setup/status  Honcho memory integration (requires honcho plugin)
+hermes honcho setup         Legacy Honcho setup alias → redirects to `hermes memory setup`
+hermes honcho status        Honcho status/tools when provider is active
 hermes memory setup/status/off  Memory provider config
 hermes completion bash|zsh  Shell completions
 hermes acp                  ACP server (IDE integration)

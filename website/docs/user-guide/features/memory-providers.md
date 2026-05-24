@@ -66,7 +66,7 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 hermes memory setup        # select "honcho" — runs the Honcho-specific post-setup
 ```
 
-The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
+The legacy `hermes honcho setup` command still works (it redirects to `hermes memory setup`) so old docs and muscle memory keep working, but the rest of the Honcho CLI remains registered only when Honcho is the active memory provider.
 
 **Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 

@@ -113,13 +113,17 @@ class TestMemoryPluginCliDiscovery:
         assert callable(cmds[0]["setup_fn"])
         assert cmds[0]["handler_fn"].__name__ == "testplugin_command"
 
-    def test_returns_nothing_when_no_active_provider(self, tmp_path, monkeypatch):
-        """No commands when memory.provider is not set in config."""
-        plugin_dir = tmp_path / "testplugin"
+    def test_returns_legacy_honcho_setup_when_no_active_provider(self, tmp_path, monkeypatch):
+        """No active provider still exposes the legacy honcho setup alias only."""
+        plugin_dir = tmp_path / "honcho"
         plugin_dir.mkdir()
         (plugin_dir / "__init__.py").write_text("pass\n")
         (plugin_dir / "cli.py").write_text(
-            "def register_cli(subparser):\n    pass\n"
+            "def honcho_command(args):\n"
+            "    return None\n"
+            "\n"
+            "def register_cli(subparser):\n"
+            "    subparser.add_argument('--full')\n"
         )
 
         import plugins.memory as pm
@@ -128,10 +132,24 @@ class TestMemoryPluginCliDiscovery:
         monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: None)
         try:
             cmds = pm.discover_plugin_cli_commands()
+            parser = argparse.ArgumentParser()
+            subparsers = parser.add_subparsers(dest="command")
+            honcho_parser = subparsers.add_parser(cmds[0]["name"])
+            cmds[0]["setup_fn"](honcho_parser)
         finally:
             monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
+            sys.modules.pop("plugins.memory.honcho.cli", None)
 
-        assert len(cmds) == 0
+        assert len(cmds) == 1
+        assert cmds[0]["name"] == "honcho"
+        assert "redirects" in cmds[0]["help"]
+        assert cmds[0]["handler_fn"].__name__ == "honcho_command"
+
+        subparsers_action = next(
+            action for action in honcho_parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        assert set(subparsers_action.choices) == {"setup"}
 
     def test_skips_plugin_without_register_cli(self, tmp_path, monkeypatch):
         """An active plugin with cli.py but no register_cli returns nothing."""
@@ -187,3 +205,19 @@ class TestProviderCollectorCliNoop:
         )
         # Should not store anything — CLI is discovered via file convention
         assert not hasattr(collector, "_cli_commands")
+
+
+class TestPluginCliDiscoveryGate:
+    def test_root_help_triggers_plugin_cli_discovery(self, monkeypatch):
+        """Root help should still include legacy plugin aliases like honcho."""
+        from hermes_cli import main as main_mod
+
+        monkeypatch.setattr(sys, "argv", ["hermes", "--help"])
+        assert main_mod._plugin_cli_discovery_needed() is True
+
+    def test_bare_cli_still_skips_plugin_cli_discovery(self, monkeypatch):
+        """Bare interactive chat should keep the fast path."""
+        from hermes_cli import main as main_mod
+
+        monkeypatch.setattr(sys, "argv", ["hermes"])
+        assert main_mod._plugin_cli_discovery_needed() is False

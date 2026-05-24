@@ -47,16 +47,20 @@ Honcho provides AI-native cross-session user modeling. It learns who the user is
 ### Cloud (app.honcho.dev)
 
 ```bash
-hermes honcho setup
-# select "cloud", paste API key from https://app.honcho.dev
+hermes memory setup
+# select "honcho", then choose "cloud" and paste the API key from https://app.honcho.dev
 ```
+
+Legacy alias: `hermes honcho setup`
 
 ### Self-hosted
 
 ```bash
-hermes honcho setup
-# select "local", enter base URL (e.g. http://localhost:8000)
+hermes memory setup
+# select "honcho", then choose "local" and enter the base URL (e.g. http://localhost:8000)
 ```
+
+Legacy alias: `hermes honcho setup`
 
 See: https://docs.honcho.dev/v3/guides/integrations/hermes#running-honcho-locally-with-hermes
 
@@ -404,7 +408,7 @@ This fix addresses edge cases where raw user conclusions containing markup or sp
 ## Troubleshooting
 
 ### "Honcho not configured"
-Run `hermes honcho setup`. Ensure `memory.provider: honcho` is in `~/.hermes/config.yaml`.
+Run `hermes memory setup` and select `honcho`. Legacy alias: `hermes honcho setup`.
 
 ### Memory not persisting across sessions
 Check `hermes honcho status` -- verify `saveMessages: true` and `writeFrequency` isn't `session` (which only writes on exit).
@@ -428,7 +432,8 @@ Session summary requires at least one prior turn in the current Honcho session. 
 
 | Command | Description |
 |---------|-------------|
-| `hermes honcho setup` | Interactive setup wizard (cloud/local, identity, observation, recall, sessions) |
+| `hermes memory setup` | Preferred entrypoint — choose `honcho` in the unified memory wizard |
+| `hermes honcho setup` | Legacy alias — redirects to `hermes memory setup` |
 | `hermes honcho status` | Show resolved config, connection test, peer info for active profile |
 | `hermes honcho enable` | Enable Honcho for the active profile (creates host block if needed) |
 | `hermes honcho disable` | Disable Honcho for the active profile |

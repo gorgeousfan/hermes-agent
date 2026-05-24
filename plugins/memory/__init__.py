@@ -320,22 +320,58 @@ def _get_active_memory_provider() -> Optional[str]:
         return None
 
 
+def _load_memory_cli_module(provider_name: str, plugin_dir: Path):
+    """Import and return a provider's lightweight ``cli.py`` module."""
+    cli_file = plugin_dir / "cli.py"
+    if not cli_file.exists():
+        return None
+
+    _is_bundled = _MEMORY_PLUGINS_DIR in plugin_dir.parents or plugin_dir.parent == _MEMORY_PLUGINS_DIR
+    module_name = (
+        f"plugins.memory.{provider_name}.cli"
+        if _is_bundled else f"_hermes_user_memory.{provider_name}.cli"
+    )
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    spec = importlib.util.spec_from_file_location(module_name, str(cli_file))
+    if not spec or not spec.loader:
+        return None
+
+    cli_mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = cli_mod
+    spec.loader.exec_module(cli_mod)
+    return cli_mod
+
+
+def _register_honcho_legacy_cli(subparser) -> None:
+    """Register a minimal legacy ``hermes honcho`` compatibility surface."""
+    subparser.add_argument(
+        "--target-profile", metavar="NAME", dest="target_profile",
+        help="Target a specific profile's Honcho config without switching",
+    )
+    subparser.description = (
+        "Legacy Honcho entrypoint. Use 'hermes memory setup' for first-time setup; "
+        "'hermes honcho setup' is kept as a compatibility alias that redirects there."
+    )
+    subs = subparser.add_subparsers(dest="honcho_command")
+    subs.add_parser(
+        "setup",
+        help="Legacy alias for 'hermes memory setup' (Honcho provider setup)",
+        description=(
+            "Legacy alias for 'hermes memory setup'. Select the Honcho provider "
+            "from the unified memory wizard."
+        ),
+    )
+
+
 def discover_plugin_cli_commands() -> List[dict]:
-    """Return CLI commands for the **active** memory plugin only.
+    """Return CLI commands for the active memory plugin.
 
-    Only one memory provider can be active at a time (set via
-    ``memory.provider`` in config.yaml).  This function reads that
-    value and only loads CLI registration for the matching plugin.
-    If no provider is active, no commands are registered.
-
-    Looks for a ``register_cli(subparser)`` function in the active
-    plugin's ``cli.py``.  Returns a list of at most one dict with
-    keys: ``name``, ``help``, ``description``, ``setup_fn``,
-    ``handler_fn``.
-
-    This is a lightweight scan — it only imports ``cli.py``, not the
-    full plugin module.  Safe to call during argparse setup before
-    any provider is loaded.
+    When no memory provider is active, we still expose a minimal legacy
+    ``hermes honcho`` entrypoint so existing docs, skills, and user habits can
+    discover ``hermes honcho setup`` and get redirected into ``hermes memory
+    setup``. Provider-specific CLIs remain active-provider-gated otherwise.
     """
     results: List[dict] = []
     if not _MEMORY_PLUGINS_DIR.is_dir():
@@ -343,6 +379,26 @@ def discover_plugin_cli_commands() -> List[dict]:
 
     active_provider = _get_active_memory_provider()
     if not active_provider:
+        honcho_dir = find_provider_dir("honcho")
+        if not honcho_dir:
+            return results
+        try:
+            cli_mod = _load_memory_cli_module("honcho", honcho_dir)
+            if cli_mod is None:
+                return results
+            results.append({
+                "name": "honcho",
+                "help": "Legacy Honcho setup alias (redirects to 'hermes memory setup')",
+                "description": (
+                    "Compatibility entrypoint for Honcho memory setup. "
+                    "Use 'hermes memory setup' for normal configuration."
+                ),
+                "setup_fn": _register_honcho_legacy_cli,
+                "handler_fn": getattr(cli_mod, "honcho_command", None),
+                "plugin": "honcho",
+            })
+        except Exception as e:
+            logger.debug("Failed to scan legacy CLI for memory plugin 'honcho': %s", e)
         return results
 
     # Only look at the active provider's directory
@@ -350,25 +406,10 @@ def discover_plugin_cli_commands() -> List[dict]:
     if not plugin_dir:
         return results
 
-    cli_file = plugin_dir / "cli.py"
-    if not cli_file.exists():
-        return results
-
-    _is_bundled = _MEMORY_PLUGINS_DIR in plugin_dir.parents or plugin_dir.parent == _MEMORY_PLUGINS_DIR
-    module_name = f"plugins.memory.{active_provider}.cli" if _is_bundled else f"_hermes_user_memory.{active_provider}.cli"
     try:
-        # Import the CLI module (lightweight — no SDK needed)
-        if module_name in sys.modules:
-            cli_mod = sys.modules[module_name]
-        else:
-            spec = importlib.util.spec_from_file_location(
-                module_name, str(cli_file)
-            )
-            if not spec or not spec.loader:
-                return results
-            cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
+        cli_mod = _load_memory_cli_module(active_provider, plugin_dir)
+        if cli_mod is None:
+            return results
 
         register_cli = getattr(cli_mod, "register_cli", None)
         if not callable(register_cli):
