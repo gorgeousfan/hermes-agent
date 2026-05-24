@@ -1113,6 +1113,28 @@ class MessageEvent:
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args
 
+    def get_command_remainder(self) -> str:
+        """Return the text that follows the first newline of a command message.
+
+        Slash commands like ``/model`` are single-line by design. When a user
+        sends a multi-line message such as ``/model X\\nfollow-up question``
+        (e.g. via Element/Matrix's Shift+Enter), command handlers can use
+        this helper to recover the trailing text — for example, to surface
+        a clearer error or route the remainder as a regular user message.
+
+        Returns an empty string when:
+
+        * the message is not a command (``is_command()`` is false),
+        * the message has no newline,
+        * or the remainder is empty after stripping.
+        """
+        if not self.is_command():
+            return ""
+        _, sep, rest = self.text.partition("\n")
+        if not sep:
+            return ""
+        return rest.strip()
+
 
 @dataclass
 class TextDebounceState:

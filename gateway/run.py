@@ -9992,6 +9992,30 @@ class GatewayRunner:
         )
         from hermes_cli.providers import get_label
 
+        # `/model` is a single-line command by design. When a user sends a
+        # multi-line message — e.g. Element/Matrix's Shift+Enter inserts a
+        # newline within one send — the newline + follow-up text propagate
+        # into the model name and trigger the misleading
+        # "Model names cannot contain spaces" error from `apply_model`. Reject
+        # the multi-line form early with an accurate, actionable message
+        # instead. Refs issue #22716.
+        if event.get_command_remainder():
+            raw_args = event.get_command_args()
+            # `/model X\nFoo`  → get_command_args() = "X\nFoo" → take "X"
+            # `/model\nFoo`    → get_command_args() consumes the \n as the
+            #                    arg separator and returns "Foo", which is
+            #                    really the remainder. Treat the model arg
+            #                    as empty in that case.
+            if "\n" in raw_args:
+                args_only = raw_args.split("\n", 1)[0].strip()
+            else:
+                args_only = ""
+            suggestion = f"`/model {args_only}`" if args_only else "`/model <name>`"
+            return (
+                f"`/model` is a single-line command. "
+                f"Send {suggestion} first, then send your follow-up message "
+                f"separately."
+            )
         raw_args = event.get_command_args().strip()
 
         # Parse --provider and --global flags

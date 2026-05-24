@@ -119,6 +119,50 @@ class TestMessageEventGetCommandArgs:
         assert event.get_command_args() == "hello world"
 
 
+class TestMessageEventGetCommandRemainder:
+    """Regression tests for ``MessageEvent.get_command_remainder``.
+
+    Covers the multi-line slash command path described in issue #22716,
+    where Matrix/Element ``Shift+Enter`` produces ``/cmd X\\nfollow-up``
+    in a single message.
+    """
+
+    def test_single_line_command_has_no_remainder(self):
+        event = MessageEvent(text="/model openai/gpt-5.5")
+        assert event.get_command_remainder() == ""
+
+    def test_command_only_no_remainder(self):
+        event = MessageEvent(text="/model")
+        assert event.get_command_remainder() == ""
+
+    def test_multiline_command_returns_remainder(self):
+        event = MessageEvent(text="/model openai/gpt-5.5\nWhat is 2+2?")
+        assert event.get_command_remainder() == "What is 2+2?"
+
+    def test_multiline_command_strips_remainder(self):
+        event = MessageEvent(text="/model openai/gpt-5.5\n   Bonjour test  \n")
+        assert event.get_command_remainder() == "Bonjour test"
+
+    def test_multiline_command_preserves_inner_newlines(self):
+        event = MessageEvent(text="/model openai/gpt-5.5\nline 1\nline 2")
+        assert event.get_command_remainder() == "line 1\nline 2"
+
+    def test_command_followed_by_blank_line_returns_empty(self):
+        event = MessageEvent(text="/model openai/gpt-5.5\n   \n  ")
+        assert event.get_command_remainder() == ""
+
+    def test_not_a_command_returns_empty(self):
+        event = MessageEvent(text="hello\nworld")
+        assert event.get_command_remainder() == ""
+
+    def test_remainder_does_not_alter_get_command_args(self):
+        # get_command_args() must keep its existing behavior so callers
+        # like /queue and /steer that legitimately accept multi-line text
+        # continue to work unchanged.
+        event = MessageEvent(text="/queue line1\nline2\nline3")
+        assert event.get_command_args() == "line1\nline2\nline3"
+
+
 # ---------------------------------------------------------------------------
 # extract_images
 # ---------------------------------------------------------------------------
