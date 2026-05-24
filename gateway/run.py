@@ -5248,14 +5248,27 @@ class GatewayRunner:
                 return (resolved, None, None)
             return (resolved, stat.st_mtime_ns, stat.st_size)
 
-        def _is_corrupt_board_db_error(exc: Exception) -> bool:
+        def _disabled_board_db_error_message(exc: Exception) -> str | None:
             if not isinstance(exc, sqlite3.DatabaseError):
-                return False
+                return None
             msg = str(exc).lower()
-            return (
+            if (
                 "file is not a database" in msg
                 or "database disk image is malformed" in msg
-            )
+            ):
+                return (
+                    "is not a valid SQLite database; disabling dispatch for this "
+                    "board until the file changes or the gateway restarts. Move "
+                    "or restore the file, then run `hermes kanban init` if you "
+                    "need a fresh board."
+                )
+            if "disk i/o error" in msg:
+                return (
+                    "hit SQLite disk I/O errors; disabling dispatch for this board "
+                    "until the file changes or the gateway restarts. Check the "
+                    "filesystem and restore the board database before retrying."
+                )
+            return None
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -5294,16 +5307,14 @@ class GatewayRunner:
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
             except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
+                disabled_reason = _disabled_board_db_error_message(exc)
+                if disabled_reason is not None:
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; disabling dispatch for this board "
-                        "until the file changes or the gateway restarts. Move "
-                        "or restore the file, then run `hermes kanban init` if "
-                        "you need a fresh board.",
+                        "kanban dispatcher: board %s database %s %s",
                         slug,
                         fingerprint[0],
+                        disabled_reason,
                     )
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
