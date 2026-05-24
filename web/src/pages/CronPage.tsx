@@ -289,7 +289,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -305,7 +305,7 @@ export default function CronPage() {
 
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{t.cron.profile ?? "Profile"}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -405,13 +405,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{t.cron.profile ?? "Profile"}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{t.cron.allProfiles ?? "All profiles"}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}
@@ -431,6 +431,7 @@ export default function CronPage() {
 
         {jobs.map((job) => {
           const state = getJobState(job);
+          const stateLabels: Record<string, string> = { scheduled: t.cron.jobStateScheduled ?? "Scheduled", disabled: t.cron.jobStateDisabled ?? "Disabled", paused: t.cron.jobStatePaused ?? "Paused" };
           const promptText = getJobPrompt(job);
           const title = getJobTitle(job);
           const hasName = Boolean(getJobName(job));
@@ -447,7 +448,7 @@ export default function CronPage() {
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
-                      {state}
+                      {stateLabels[state] ?? state}
                     </Badge>
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {deliver && deliver !== "local" && (

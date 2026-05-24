@@ -42,6 +42,7 @@ export interface Translations {
     inactive: string;
     unknown: string;
     untitled: string;
+    all?: string;
     none: string;
     form: string;
     noResults: string;
@@ -106,6 +107,7 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    pluginLabels?: Record<string, string>;
   };
 
   // ── Status page ──
@@ -217,6 +219,18 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+    fileAgent?: string;
+    fileErrors?: string;
+    fileGateway?: string;
+    levelDebug?: string;
+    levelInfo?: string;
+    levelWarning?: string;
+    levelError?: string;
+    compGateway?: string;
+    compAgent?: string;
+    compTools?: string;
+    compCli?: string;
+    compCron?: string;
   };
 
   // ── Cron page ──
@@ -245,6 +259,14 @@ export interface Translations {
       slack: string;
       email: string;
     };
+    profile?: string;
+    allProfiles?: string;
+    jobStateIdle?: string;
+    jobStateRunning?: string;
+    jobStatePaused?: string;
+    jobStateError?: string;
+    jobStateScheduled?: string;
+    jobStateDisabled?: string;
   };
 
   // ── Plugins page ──
@@ -361,6 +383,10 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
+    themes?: {
+      labels: Record<string, string>;
+      descriptions: Record<string, string>;
+    };
     categories: {
       general: string;
       agent: string;

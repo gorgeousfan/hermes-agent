@@ -25,6 +25,7 @@ export const zh: Translations = {
     inactive: "未激活",
     unknown: "未知",
     untitled: "无标题",
+    all: "全部",
     none: "无",
     form: "表单",
     noResults: "无结果",
@@ -89,6 +90,10 @@ export const zh: Translations = {
     statusOverview: "状态概览",
     system: "系统",
     webUi: "管理面板",
+    pluginLabels: {
+      Achievements: "技能",
+      Kanban: "看板",
+    },
   },
 
   status: {
@@ -195,6 +200,18 @@ export const zh: Translations = {
     component: "组件",
     lines: "行数",
     noLogLines: "未找到日志记录",
+    fileAgent: "Agent",
+    fileErrors: "错误",
+    fileGateway: "网关",
+    levelDebug: "调试",
+    levelInfo: "信息",
+    levelWarning: "警告",
+    levelError: "错误",
+    compGateway: "网关",
+    compAgent: "Agent",
+    compTools: "工具",
+    compCli: "CLI",
+    compCron: "定时任务",
   },
 
   cron: {
