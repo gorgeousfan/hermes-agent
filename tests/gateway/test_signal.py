@@ -1953,3 +1953,138 @@ class TestSignalGroupV2Routing:
 
         assert len(captured) == 1
         assert captured[0].source.chat_type == "dm"
+
+
+# ---------------------------------------------------------------------------
+# require_mention UUID lookup
+# ---------------------------------------------------------------------------
+
+class TestSignalRequireMentionUuidLookup:
+    """require_mention=true must accept @mentions that carry only a UUID,
+    no phone number, in the mention metadata (Signal phone-privacy mode).
+
+    Regression for the case where m.get("uuid") was compared against
+    _account_normalized (a phone number) — a comparison that always fails.
+    """
+
+    BOT_ACCOUNT = "+15550000001"
+    BOT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    SENDER = "+15559998888"
+    SENDER_UUID = "11111111-2222-3333-4444-555555555555"
+    GROUP_ID = "testgroup=="
+
+    def _group_envelope(self, data_message: dict) -> dict:
+        return {
+            "envelope": {
+                "sourceNumber": self.SENDER,
+                "sourceUuid": self.SENDER_UUID,
+                "sourceName": "Alice",
+                "timestamp": 1700000001000,
+                "dataMessage": {"groupV2": {"id": self.GROUP_ID}, **data_message},
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_uuid_only_mention_passes_when_uuid_cached(self, monkeypatch):
+        """A mention with UUID only (no number field) is accepted when the
+        bot's own UUID is already in _recipient_uuid_by_number."""
+        adapter = _make_signal_adapter(
+            monkeypatch, account=self.BOT_ACCOUNT,
+            group_allowed="*", require_mention=True,
+        )
+        adapter._recipient_uuid_by_number[self.BOT_ACCOUNT] = self.BOT_UUID
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._group_envelope({
+            "message": "￼ hello",
+            "mentions": [{"uuid": self.BOT_UUID, "start": 0, "length": 1}],
+        })
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1, "UUID-only mention should pass when bot UUID is cached"
+
+    @pytest.mark.asyncio
+    async def test_uuid_only_mention_dropped_when_uuid_not_cached(self, monkeypatch):
+        """Before any phone-number mention caches the bot UUID, a UUID-only
+        mention for a different UUID is dropped."""
+        adapter = _make_signal_adapter(
+            monkeypatch, account=self.BOT_ACCOUNT,
+            group_allowed="*", require_mention=True,
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._group_envelope({
+            "message": "￼ hello",
+            "mentions": [{"uuid": "unknown-uuid-0000-0000-000000000000", "start": 0, "length": 1}],
+        })
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 0, "UUID for an unknown bot should be dropped"
+
+    @pytest.mark.asyncio
+    async def test_phone_mention_caches_bot_uuid(self, monkeypatch):
+        """A mention that includes both number and uuid must cache the bot's
+        UUID so future UUID-only @mentions resolve correctly."""
+        adapter = _make_signal_adapter(
+            monkeypatch, account=self.BOT_ACCOUNT,
+            group_allowed="*", require_mention=True,
+        )
+        assert self.BOT_ACCOUNT not in adapter._recipient_uuid_by_number
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._group_envelope({
+            "message": "￼ hello",
+            "mentions": [
+                {"number": self.BOT_ACCOUNT, "uuid": self.BOT_UUID, "start": 0, "length": 1}
+            ],
+        })
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert adapter._recipient_uuid_by_number.get(self.BOT_ACCOUNT) == self.BOT_UUID
+
+    @pytest.mark.asyncio
+    async def test_uuid_only_mention_passes_after_phone_mention_cached_uuid(self, monkeypatch):
+        """End-to-end: first @mention (phone+uuid) caches the UUID; second
+        @mention (uuid only, phone-privacy sender) still reaches the handler."""
+        adapter = _make_signal_adapter(
+            monkeypatch, account=self.BOT_ACCOUNT,
+            group_allowed="*", require_mention=True,
+        )
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        # First message: phone+uuid mention caches bot UUID
+        await adapter._handle_envelope(self._group_envelope({
+            "message": "￼ hi",
+            "mentions": [
+                {"number": self.BOT_ACCOUNT, "uuid": self.BOT_UUID, "start": 0, "length": 1}
+            ],
+        }))
+        assert len(captured) == 1
+
+        # Second message: UUID-only mention (privacy-enabled sender)
+        await adapter._handle_envelope(self._group_envelope({
+            "message": "￼ follow-up",
+            "mentions": [{"uuid": self.BOT_UUID, "start": 0, "length": 1}],
+        }))
+        assert len(captured) == 2, "UUID-only mention should pass after UUID was cached"

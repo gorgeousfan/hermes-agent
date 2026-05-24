@@ -539,14 +539,27 @@ class SignalAdapter(BasePlatformAdapter):
         # Mention filter: in groups, only process messages that @mention the bot account
         if is_group and self.require_mention:
             account_norm = self._account_normalized
-            # Check rendered mention tags OR raw mention metadata
+            # Signal senders with phone privacy enabled emit UUID-only mention
+            # metadata (no "number" field). Look up the bot's own cached UUID so
+            # those @mentions are not silently dropped.
+            _own_uuid = self._recipient_uuid_by_number.get(account_norm)
+            raw_mentions = data_message.get("mentions") or []
             mentioned_in_text = account_norm and (
                 f"@{account_norm}" in (text or "")
             )
             mentioned_in_metadata = any(
-                m.get("number") == account_norm or m.get("uuid") == account_norm
-                for m in (data_message.get("mentions") or [])
+                m.get("number") == account_norm
+                or m.get("uuid") == account_norm
+                or (_own_uuid and m.get("uuid") == _own_uuid)
+                for m in raw_mentions
             )
+            # Opportunistically cache bot's own UUID from phone-number-matched
+            # mentions so subsequent UUID-only @mentions resolve correctly.
+            if not _own_uuid:
+                for _m in raw_mentions:
+                    if _m.get("number") == account_norm and _m.get("uuid"):
+                        self._remember_recipient_identifiers(account_norm, _m["uuid"])
+                        break
             if not mentioned_in_text and not mentioned_in_metadata:
                 logger.debug(
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
