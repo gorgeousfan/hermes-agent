@@ -119,6 +119,247 @@ def test_detect_concurrent_is_noop_off_windows(_winp, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Launcher-shim ancestor exclusion (issue #29341)
+# ---------------------------------------------------------------------------
+#
+# On Windows ``hermes`` is a distlib-generated ``Scripts\\hermes.exe`` console
+# launcher that spawns a child ``python.exe`` and stays alive waiting on it.
+# Detection runs inside the *child* (where ``os.getpid()`` lives), so the
+# launcher PID is left in ``process_iter`` and gets reported as "another
+# hermes.exe is running". The fix walks the parent chain and excludes every
+# consecutive ancestor whose ``exe`` resolves to one of the shim paths.
+
+
+def _fake_psutil_with_chain(
+    procs, *, parent_chain, my_pid: int | None = None,
+):
+    """Build a psutil stand-in with both ``process_iter`` and ancestor walk.
+
+    ``parent_chain`` is the list of ``(pid, exe)`` returned by
+    ``Process().parent()...parent()`` starting from the current process.
+    The first element is the immediate parent; an empty list means the
+    current process has no parent (terminates the walk).
+    """
+    if my_pid is None:
+        my_pid = os.getpid()
+
+    class _FakeProc:
+        def __init__(self, pid, exe):
+            self.pid = pid
+            self._exe = exe
+            self._idx = -1  # index into parent_chain
+
+        def exe(self):
+            return self._exe
+
+        def parent(self):
+            nxt = self._idx + 1
+            if nxt >= len(parent_chain):
+                return None
+            pid, exe = parent_chain[nxt]
+            p = _FakeProc(pid, exe)
+            p._idx = nxt
+            return p
+
+    def _Process(pid=None):
+        return _FakeProc(my_pid, None)
+
+    return types.SimpleNamespace(
+        process_iter=lambda attrs: iter(procs),
+        Process=_Process,
+        Error=Exception,
+        NoSuchProcess=Exception,
+        AccessDenied=Exception,
+    )
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_excludes_launcher_shim_parent(_winp, tmp_path):
+    """The distlib ``hermes.exe`` launcher (parent of this Python) is excluded.
+
+    Reproduces the exact scenario from #29341: PowerShell → hermes.exe (PID
+    18608) → python.exe (current). Without the parent-chain walk, 18608
+    would be flagged as a concurrent peer every time.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    launcher_pid = os.getpid() + 1
+    procs = [
+        _make_proc(launcher_pid, str(shim), "hermes.exe"),
+    ]
+    fake = _fake_psutil_with_chain(
+        procs,
+        parent_chain=[(launcher_pid, str(shim))],
+    )
+    with patch.dict(sys.modules, {"psutil": fake}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_still_flags_unrelated_hermes_peer(_winp, tmp_path):
+    """Excluding the launcher ancestor must NOT mask genuinely concurrent peers.
+
+    A second ``hermes.exe`` somewhere else in the process table (e.g. Hermes
+    Desktop's backend child, or a second terminal) is a sibling, not an
+    ancestor — the walk must not exclude it.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    launcher_pid = os.getpid() + 1
+    real_peer_pid = os.getpid() + 2  # NOT in the parent chain
+    procs = [
+        _make_proc(launcher_pid, str(shim), "hermes.exe"),
+        _make_proc(real_peer_pid, str(shim), "hermes.exe"),
+    ]
+    fake = _fake_psutil_with_chain(
+        procs,
+        parent_chain=[(launcher_pid, str(shim))],
+    )
+    with patch.dict(sys.modules, {"psutil": fake}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == [(real_peer_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_walks_multiple_shim_ancestors(_winp, tmp_path):
+    """Walk keeps climbing while ancestors are shims, stops at first non-shim.
+
+    Some installer layouts double-wrap: ``hermes.exe`` (outer) →
+    ``hermes-gateway.exe`` (inner, for some niche commands) → python.
+    Both should be excluded; the shell ancestor above them must not be
+    walked through (and isn't a shim anyway).
+    """
+    scripts_dir = tmp_path
+    outer = scripts_dir / "hermes.exe"
+    inner = scripts_dir / "hermes-gateway.exe"
+    outer.write_bytes(b"")
+    inner.write_bytes(b"")
+    outer_pid = os.getpid() + 10
+    inner_pid = os.getpid() + 11
+    shell_pid = os.getpid() + 12
+    procs = [
+        _make_proc(outer_pid, str(outer), "hermes.exe"),
+        _make_proc(inner_pid, str(inner), "hermes-gateway.exe"),
+        _make_proc(shell_pid, r"C:\\Windows\\System32\\cmd.exe", "cmd.exe"),
+    ]
+    fake = _fake_psutil_with_chain(
+        procs,
+        parent_chain=[
+            (inner_pid, str(inner)),
+            (outer_pid, str(outer)),
+            (shell_pid, r"C:\\Windows\\System32\\cmd.exe"),
+        ],
+    )
+    with patch.dict(sys.modules, {"psutil": fake}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    assert result == []
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_walk_stops_at_first_non_shim_ancestor(_winp, tmp_path):
+    """A non-shim ancestor terminates the walk so deeper shims stay visible.
+
+    Concocted but important contract: if the immediate parent is a shell
+    and there happens to be a ``hermes.exe`` further up the tree (e.g. a
+    user wrapper script), we do NOT skip past the shell to exclude it.
+    Anything beyond the first non-shim ancestor is treated as foreign.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    shell_pid = os.getpid() + 20
+    far_hermes_pid = os.getpid() + 21
+    procs = [
+        _make_proc(far_hermes_pid, str(shim), "hermes.exe"),
+    ]
+    fake = _fake_psutil_with_chain(
+        procs,
+        parent_chain=[
+            (shell_pid, r"C:\\Windows\\System32\\cmd.exe"),
+            (far_hermes_pid, str(shim)),
+        ],
+    )
+    with patch.dict(sys.modules, {"psutil": fake}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    # The hermes.exe above the cmd.exe ancestor is NOT excluded — it's a
+    # genuinely separate Hermes process from this invocation's POV.
+    assert result == [(far_hermes_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_walk_tolerates_psutil_errors(_winp, tmp_path):
+    """An exception in the parent walk must not crash detection.
+
+    psutil routinely raises ``AccessDenied`` / ``NoSuchProcess`` on the
+    PID 0 / PID 4 ancestors on Windows. The walk should degrade
+    gracefully — at worst the launcher gets reported, but the rest of
+    the gate must keep working.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+    peer_pid = os.getpid() + 30
+
+    class _ExplodingProc:
+        pid = -1
+
+        def parent(self):
+            raise RuntimeError("simulated AccessDenied")
+
+        def exe(self):
+            raise RuntimeError("simulated AccessDenied")
+
+    procs = [_make_proc(peer_pid, str(shim), "hermes.exe")]
+    fake = types.SimpleNamespace(
+        process_iter=lambda attrs: iter(procs),
+        Process=lambda pid=None: _ExplodingProc(),
+        Error=Exception,
+    )
+    with patch.dict(sys.modules, {"psutil": fake}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    # The peer is reported (no special launcher to exclude got found), and
+    # nothing crashed.
+    assert result == [(peer_pid, "hermes.exe")]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_concurrent_walk_is_bounded(_winp, tmp_path):
+    """A pathological parent chain must not loop forever.
+
+    Defensive: walk caps at 16 hops so a buggy psutil/proc table can't
+    hang ``hermes update``.
+    """
+    scripts_dir = tmp_path
+    shim = scripts_dir / "hermes.exe"
+    shim.write_bytes(b"")
+
+    # Build an infinite-looking chain of shim ancestors. The walk must
+    # terminate on its own bound and not stack-overflow / hang.
+    long_chain = [(os.getpid() + 100 + i, str(shim)) for i in range(64)]
+    procs = [_make_proc(pid, exe, "hermes.exe") for pid, exe in long_chain]
+
+    fake = _fake_psutil_with_chain(procs, parent_chain=long_chain)
+    with patch.dict(sys.modules, {"psutil": fake}):
+        result = cli_main._detect_concurrent_hermes_instances(scripts_dir)
+
+    # First 16 ancestors are excluded; the remaining 48 are reported. The
+    # exact split is implementation-detail-coupled to the bound, but the
+    # invariant we care about is: detection terminated AND did not
+    # exclude more than the bound.
+    excluded = len(long_chain) - len(result)
+    assert excluded <= 16 + 1  # +1 for os.getpid()
+    assert len(result) >= len(long_chain) - 16
+
+
+# ---------------------------------------------------------------------------
 # _format_concurrent_instances_message
 # ---------------------------------------------------------------------------
 

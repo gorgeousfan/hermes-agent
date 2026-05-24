@@ -89,6 +89,8 @@ $ hermes update
 
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
+The detector deliberately ignores the distlib-generated `Scripts\hermes.exe` console launcher that started the current invocation — that launcher is a parent of the Python process doing the update, not a separate Hermes session. If you do see a PID reported, it really is a different process (Hermes Desktop's backend child, a second terminal's REPL, the gateway, …), not the launcher shim that just printed this message.
+
 Expected output looks like:
 
 ```

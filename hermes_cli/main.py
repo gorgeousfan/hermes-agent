@@ -7651,6 +7651,60 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     ]
 
 
+def _walk_shim_ancestor_pids(psutil_mod, shim_paths: set[str]) -> set[int]:
+    """Collect PIDs of ancestor processes whose ``exe`` matches a shim path.
+
+    On Windows the ``hermes`` console-script is a distlib-generated
+    ``Scripts\\hermes.exe`` launcher that spawns a child ``python.exe`` and
+    waits for it. Detection runs inside that child, where ``os.getpid()``
+    returns the *child* PID — so the launcher's PID is left dangling in
+    ``psutil.process_iter`` and gets reported as "another hermes.exe" even
+    though it's the very shim that started this invocation (issue #29341).
+
+    Walk the ancestor chain and treat every consecutive ancestor whose
+    executable resolves to one of our shim paths as part of the same
+    logical invocation. Stop at the first non-shim ancestor so a legitimate
+    second ``hermes`` somewhere in the tree (e.g. a Hermes Desktop child
+    sitting *under* a non-Hermes parent) is still flagged.
+
+    The walk is bounded (max 16 hops) so a misbehaving ``parent()`` chain
+    can't loop us forever. Every psutil/OS error is swallowed: this is a
+    best-effort assist for the existing ``os.getpid()`` exclusion.
+    """
+    extra: set[int] = set()
+    if not shim_paths:
+        return extra
+    try:
+        proc = psutil_mod.Process()
+    except Exception:
+        return extra
+    for _ in range(16):
+        try:
+            parent = proc.parent()
+        except Exception:
+            break
+        if parent is None:
+            break
+        try:
+            parent_exe = parent.exe()
+        except Exception:
+            break
+        if not parent_exe:
+            break
+        try:
+            parent_exe_norm = str(Path(parent_exe).resolve()).lower()
+        except (OSError, ValueError):
+            parent_exe_norm = str(parent_exe).lower()
+        if parent_exe_norm not in shim_paths:
+            break
+        try:
+            extra.add(int(parent.pid))
+        except Exception:
+            break
+        proc = parent
+    return extra
+
+
 def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None
 ) -> list[tuple[int, str]]:
@@ -7665,8 +7719,9 @@ def _detect_concurrent_hermes_instances(
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
     shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
-    process_name)`` pairs. The caller's own PID is excluded so the running
-    ``hermes update`` invocation never reports itself.
+    process_name)`` pairs. The caller's own PID is excluded, and so is the
+    chain of immediate ancestor shims that spawned the current Python
+    process (the distlib console-script launcher — see issue #29341).
 
     Returns an empty list off-Windows, on missing psutil, or when no other
     instances exist. Never raises — process enumeration is best-effort.
@@ -7679,8 +7734,8 @@ def _detect_concurrent_hermes_instances(
     except Exception:
         return []
 
-    if exclude_pid is None:
-        exclude_pid = os.getpid()
+    seed_pid = exclude_pid if exclude_pid is not None else os.getpid()
+    exclude_pids: set[int] = {seed_pid}
 
     # Resolve every shim path to its canonical form once for cheap comparison.
     shim_paths: set[str] = set()
@@ -7691,6 +7746,12 @@ def _detect_concurrent_hermes_instances(
             shim_paths.add(str(shim).lower())
     if not shim_paths:
         return []
+
+    # Exclude the launcher-shim ancestor chain so the very ``hermes.exe``
+    # that started this invocation isn't reported as a concurrent peer
+    # (#29341). Without this, ``hermes update`` would always require
+    # ``--force`` on Windows even when no other Hermes process is alive.
+    exclude_pids.update(_walk_shim_ancestor_pids(psutil, shim_paths))
 
     matches: list[tuple[int, str]] = []
     try:
@@ -7705,7 +7766,7 @@ def _detect_concurrent_hermes_instances(
             continue
         pid = info.get("pid")
         exe = info.get("exe")
-        if not exe or pid is None or pid == exclude_pid:
+        if not exe or pid is None or pid in exclude_pids:
             continue
         try:
             exe_norm = str(Path(exe).resolve()).lower()
