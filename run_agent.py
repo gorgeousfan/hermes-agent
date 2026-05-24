@@ -1578,7 +1578,7 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
-                if msg.get("role") == "assistant" and msg.get("content"):
+                if msg.get("role") == "assistant" and isinstance(msg.get("content"), str) and msg.get("content"):
                     msg = dict(msg)
                     msg["content"] = self._clean_session_content(msg["content"])
                 cleaned.append(msg)
