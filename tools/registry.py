@@ -56,7 +56,9 @@ def _module_registers_tools(module_path: Path) -> bool:
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     """Import built-in self-registering tool modules and return their module names."""
-    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    tools_path = (
+        Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    )
     module_names = [
         f"tools.{path.stem}"
         for path in sorted(tools_path.glob("*.py"))
@@ -70,7 +72,13 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
             importlib.import_module(mod_name)
             imported.append(mod_name)
         except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
+            logger.warning(
+                "Could not import tool module %s: %s. "
+                "Check that all dependencies are installed "
+                "(see 'hermes docs' or pip install hermes-agent[full]).",
+                mod_name,
+                e,
+            )
     return imported
 
 
@@ -78,14 +86,33 @@ class ToolEntry:
     """Metadata for a single registered tool."""
 
     __slots__ = (
-        "name", "toolset", "schema", "handler", "check_fn",
-        "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "name",
+        "toolset",
+        "schema",
+        "handler",
+        "check_fn",
+        "requires_env",
+        "is_async",
+        "description",
+        "emoji",
+        "max_result_size_chars",
+        "dynamic_schema_overrides",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+    def __init__(
+        self,
+        name,
+        toolset,
+        schema,
+        handler,
+        check_fn,
+        requires_env,
+        is_async,
+        description,
+        emoji,
+        max_result_size_chars=None,
+        dynamic_schema_overrides=None,
+    ):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -134,7 +161,13 @@ def _check_fn_cached(fn: Callable) -> bool:
                 return value
     try:
         value = bool(fn())
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Tool check_fn raised %s: %s. "
+            "Tool will be marked unavailable. Check dependencies or config.",
+            type(exc).__name__,
+            exc,
+        )
         value = False
     with _check_fn_cache_lock:
         _check_fn_cache[fn] = (now, value)
@@ -185,8 +218,15 @@ class ToolRegistry:
             return True
         try:
             return bool(check())
-        except Exception:
-            logger.debug("Toolset %s check raised; marking unavailable", toolset)
+        except Exception as exc:
+            logger.warning(
+                "Toolset '%s' check raised %s: %s. "
+                "Marking entire toolset unavailable. "
+                "Check dependencies or config for this toolset.",
+                toolset,
+                type(exc).__name__,
+                exc,
+            )
             return False
 
     def get_entry(self, name: str) -> Optional[ToolEntry]:
@@ -201,8 +241,7 @@ class ToolRegistry:
     def get_tool_names_for_toolset(self, toolset: str) -> List[str]:
         """Return sorted tool names registered under a given toolset."""
         return sorted(
-            entry.name for entry in self._snapshot_entries()
-            if entry.toolset == toolset
+            entry.name for entry in self._snapshot_entries() if entry.toolset == toolset
         )
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
@@ -212,7 +251,9 @@ class ToolRegistry:
             if existing and existing != toolset:
                 logger.warning(
                     "Toolset alias collision: '%s' (%s) overwritten by %s",
-                    alias, existing, toolset,
+                    alias,
+                    existing,
+                    toolset,
                 )
             self._toolset_aliases[alias] = toolset
             self._generation += 1
@@ -244,47 +285,33 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
-        override: bool = False,
     ):
-        """Register a tool.  Called at module-import time by each tool file.
-
-        ``override=True`` is an explicit opt-in for plugins that intend to
-        replace an existing built-in tool implementation (e.g. swap the
-        default browser tool for a headed-Chrome CDP backend). Without it,
-        registrations that would shadow an existing tool from a different
-        toolset are rejected to prevent accidental overwrites.
-        """
+        """Register a tool.  Called at module-import time by each tool file."""
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
                 # Allow MCP-to-MCP overwrites (legitimate: server refresh,
                 # or two MCP servers with overlapping tool names).
-                both_mcp = (
-                    existing.toolset.startswith("mcp-")
-                    and toolset.startswith("mcp-")
+                both_mcp = existing.toolset.startswith("mcp-") and toolset.startswith(
+                    "mcp-"
                 )
                 if both_mcp:
                     logger.debug(
                         "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
-                        name, toolset, existing.toolset,
-                    )
-                elif override:
-                    # Explicit plugin opt-in: replace the existing tool.
-                    # Logged at INFO so the override is auditable in agent.log.
-                    logger.info(
-                        "Tool '%s': toolset '%s' overriding existing toolset '%s' "
-                        "(override=True opt-in)",
-                        name, toolset, existing.toolset,
+                        name,
+                        toolset,
+                        existing.toolset,
                     )
                 else:
                     # Reject shadowing — prevent plugins/MCP from overwriting
                     # built-in tools or vice versa.
                     logger.error(
                         "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Pass "
-                        "override=True to register() if the replacement is "
-                        "intentional, or deregister the existing tool first.",
-                        name, toolset, existing.toolset,
+                        "shadow existing tool from toolset '%s'. Deregister the "
+                        "existing tool first if this is intentional.",
+                        name,
+                        toolset,
+                        existing.toolset,
                     )
                     return
             self._tools[name] = ToolEntry(
@@ -354,6 +381,13 @@ class ToolRegistry:
         for name in sorted(tool_names):
             entry = entries_by_name.get(name)
             if not entry:
+                if not quiet:
+                    logger.warning(
+                        "Tool '%s' requested but not found in registry. "
+                        "Check tool name spelling or run 'hermes tools list' "
+                        "to see available tools.",
+                        name,
+                    )
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
@@ -378,7 +412,8 @@ class ToolRegistry:
                     logger.warning(
                         "dynamic_schema_overrides for tool %s raised %s; "
                         "using static schema",
-                        name, exc,
+                        name,
+                        exc,
                     )
             result.append({"type": "function", "function": schema_with_name})
         return result
@@ -396,30 +431,30 @@ class ToolRegistry:
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({
+                "error": f"Unknown tool: '{name}'. "
+                f"Run 'hermes tools list' to see available tools.",
+            })
         try:
             if entry.is_async:
                 from model_tools import _run_async
+
                 return _run_async(entry.handler(args, **kwargs))
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
-            # Route through the sanitizer so framing tokens / CDATA / fences
-            # in exception strings don't reach the model as structural noise.
-            # See model_tools._sanitize_tool_error for rationale.
-            raw = f"Tool execution failed: {type(e).__name__}: {e}"
-            try:
-                from model_tools import _sanitize_tool_error
-                sanitized = _sanitize_tool_error(raw)
-            except Exception:
-                sanitized = raw  # defensive: never let the sanitizer block error propagation
-            return json.dumps({"error": sanitized})
+            return json.dumps({
+                "error": f"Tool execution failed: {type(e).__name__}: {e}. "
+                f"Check ~/.hermes/logs/errors.log for full traceback.",
+            })
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+    def get_max_result_size(
+        self, name: str, default: int | float | None = None
+    ) -> int | float:
         """Return per-tool max result size, or *default* (or global default)."""
         entry = self.get_entry(name)
         if entry and entry.max_result_size_chars is not None:
@@ -427,6 +462,7 @@ class ToolRegistry:
         if default is not None:
             return default
         from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
+
         return DEFAULT_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:
@@ -450,7 +486,7 @@ class ToolRegistry:
     def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Return the emoji for a tool, or *default* if unset."""
         entry = self.get_entry(name)
-        return (entry.emoji if entry and entry.emoji else default)
+        return entry.emoji if entry and entry.emoji else default
 
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Return ``{tool_name: toolset_name}`` for every registered tool."""
@@ -464,7 +500,14 @@ class ToolRegistry:
         """
         with self._lock:
             check = self._toolset_checks.get(toolset)
-        return self._evaluate_toolset_check(toolset, check)
+        available = self._evaluate_toolset_check(toolset, check)
+        if not available:
+            logger.info(
+                "Toolset '%s' is unavailable. "
+                "Set required env vars or install missing dependencies.",
+                toolset,
+            )
+        return available
 
     def check_toolset_requirements(self) -> Dict[str, bool]:
         """Return ``{toolset: available_bool}`` for every toolset."""
@@ -482,14 +525,18 @@ class ToolRegistry:
         for entry in entries:
             ts = entry.toolset
             if ts not in toolsets:
+                is_available = self._evaluate_toolset_check(ts, toolset_checks.get(ts))
                 toolsets[ts] = {
-                    "available": self._evaluate_toolset_check(
-                        ts, toolset_checks.get(ts)
-                    ),
+                    "available": is_available,
                     "tools": [],
                     "description": "",
                     "requirements": [],
                 }
+                if not is_available:
+                    toolsets[ts]["reason"] = (
+                        "unavailable - missing deps or env vars. "
+                        "Run 'hermes tools status' for details."
+                    )
             toolsets[ts]["tools"].append(entry.name)
             if entry.requires_env:
                 for env in entry.requires_env:
@@ -532,10 +579,17 @@ class ToolRegistry:
             if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
                 available.append(ts)
             else:
+                env_vars = entry.requires_env or []
+                reason_parts = []
+                if env_vars:
+                    reason_parts.append(f"missing env vars: {', '.join(env_vars)}")
+                if not reason_parts:
+                    reason_parts.append("check function failed (no env vars defined)")
                 unavailable.append({
                     "name": ts,
-                    "env_vars": entry.requires_env,
+                    "env_vars": env_vars,
                     "tools": [e.name for e in entries if e.toolset == ts],
+                    "reason": "; ".join(reason_parts),
                 })
         return available, unavailable
 

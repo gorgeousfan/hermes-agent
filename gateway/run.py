@@ -14389,11 +14389,18 @@ class GatewayRunner:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
+                    transcript = (result.get("transcript") or "").strip()
+                    if transcript:
+                        enriched_parts.append(
+                            f'[The user sent a voice message~ '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
+                    else:
+                        enriched_parts.append(
+                            "[The user sent a voice message but the transcription returned empty — "
+                            "the audio may be silent or in an unsupported format. "
+                            f"Audio file: {path}]"
+                        )
                 else:
                     error = result.get("error", "unknown error")
                     if (
