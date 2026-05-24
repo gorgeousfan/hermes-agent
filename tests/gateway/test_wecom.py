@@ -1,5 +1,6 @@
 """Tests for the WeCom platform adapter."""
 
+import asyncio
 import base64
 import os
 from pathlib import Path
@@ -218,6 +219,163 @@ class TestWeComReplyMode:
         assert args[0] == "req-1"
         assert args[1] == {"msgtype": "image", "image": {"media_id": "media-1"}}
 
+    def test_supports_native_draft_streaming_even_without_message_editing(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+        assert adapter.supports_draft_streaming(chat_type="group") is True
+
+    @pytest.mark.asyncio
+    async def test_send_draft_uses_native_stream_payload_from_metadata_reply_context(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._last_chat_req_ids["chat-123"] = "stale-req"
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._send_json = AsyncMock()
+
+        result = await adapter.send_draft(
+            chat_id="chat-123",
+            draft_id=42,
+            content="partial answer",
+            metadata={"reply_to_message_id": "msg-1"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "stream-42"
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["headers"]["req_id"] == "req-1"
+        assert frame["body"] == {
+            "msgtype": "stream",
+            "stream": {
+                "id": "stream-42",
+                "finish": False,
+                "content": "partial answer",
+            },
+        }
+        assert adapter._active_stream_replies["req-1"] == "stream-42"
+
+    @pytest.mark.asyncio
+    async def test_final_send_closes_existing_native_stream(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._active_stream_replies["req-1"] = "stream-42"
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._send_json = AsyncMock()
+
+        result = await adapter.send("chat-123", "final answer", reply_to="msg-1")
+
+        assert result.success is True
+        adapter._send_json.assert_awaited_once()
+        frame = adapter._send_json.await_args.args[0]
+        assert frame["cmd"] == APP_CMD_RESPONSE
+        assert frame["headers"]["req_id"] == "req-1"
+        assert frame["body"] == {
+            "msgtype": "stream",
+            "stream": {
+                "id": "stream-42",
+                "finish": True,
+                "content": "final answer",
+            },
+        }
+        assert "req-1" not in adapter._active_stream_replies
+
+    @pytest.mark.asyncio
+    async def test_send_draft_requires_reply_context(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter.send_draft(
+            chat_id="chat-123",
+            draft_id=1,
+            content="partial",
+            metadata=None,
+        )
+
+        assert result.success is False
+        assert "reply context" in (result.error or "")
+
+    def test_truncate_utf8_does_not_split_multibyte_characters(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        text = "你好abc"
+
+        assert WeComAdapter._truncate_utf8(text, 7) == "你好a"
+        assert WeComAdapter._truncate_utf8(text, 6) == "你好"
+
+    def test_thread_metadata_carries_wecom_reply_anchor_without_thread(self):
+        from gateway.platforms.base import _thread_metadata_for_source
+
+        source = SimpleNamespace(
+            platform=Platform.WECOM,
+            chat_type="group",
+            thread_id=None,
+        )
+
+        assert _thread_metadata_for_source(source, "msg-1") == {
+            "reply_to_message_id": "msg-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_drives_wecom_native_stream_to_final_frame(self):
+        from gateway.platforms.wecom import APP_CMD_RESPONSE, WeComAdapter
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._send_json = AsyncMock()
+        cfg = StreamConsumerConfig(
+            transport="draft",
+            chat_type="group",
+            edit_interval=0.01,
+            buffer_threshold=5,
+            cursor="",
+        )
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat-123",
+            cfg,
+            metadata={"reply_to_message_id": "msg-1"},
+            initial_reply_to_id="msg-1",
+        )
+
+        consumer.on_delta("hello ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("world")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer.final_response_sent is True
+        assert adapter._active_stream_replies == {}
+        stream_frames = [
+            call.args[0]
+            for call in adapter._send_json.await_args_list
+            if call.args and call.args[0].get("cmd") == APP_CMD_RESPONSE
+        ]
+        assert len(stream_frames) >= 2
+        first_payload = stream_frames[0]["body"]
+        final_payload = stream_frames[-1]["body"]
+        assert first_payload["msgtype"] == "stream"
+        assert first_payload["stream"]["finish"] is False
+        assert final_payload == {
+            "msgtype": "stream",
+            "stream": {
+                "id": first_payload["stream"]["id"],
+                "finish": True,
+                "content": "hello world",
+            },
+        }
 
 class TestExtractText:
     def test_extracts_plain_text(self):
