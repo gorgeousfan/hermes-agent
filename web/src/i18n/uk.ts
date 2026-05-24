@@ -47,6 +47,7 @@ export const uk: Translations = {
       "Не вдалося завантажити скрипт цього плагіна. Перевірте вкладку Network (dashboard-plugins/…) та шлях до плагінів на сервері.",
     pluginNotRegistered:
       "Скрипт плагіна не викликав register(), або у скрипті сталася помилка. Відкрийте консоль браузера, щоб побачити деталі.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const uk: Translations = {
       config: "Конфігурація",
       cron: "Cron",
       documentation: "Документація",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Ключі",
       logs: "Журнали",
       models: "Моделі",
@@ -82,6 +86,10 @@ export const uk: Translations = {
     },
     modelToolsSheetSubtitle: "та інструменти",
     modelToolsSheetTitle: "Модель",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Навігація",
     openDocumentation: "Відкрити документацію в новій вкладці",
     openNavigation: "Відкрити навігацію",
@@ -90,6 +98,38 @@ export const uk: Translations = {
     statusOverview: "Огляд стану",
     system: "Система",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const uk: Translations = {
     toolCalls: "виклики інструментів",
     noModelsData: "Немає даних про використання моделей за цей період",
     startSession: "Почніть сесію, щоб побачити дані моделей тут",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -333,7 +381,7 @@ export const uk: Translations = {
     rawYaml: "Сирий YAML-конфіг",
     searchResults: "Результати пошуку",
     fields: "поле(ів)",
-    noFieldsMatch: 'Немає полів, що відповідають \"{query}\"',
+    noFieldsMatch: 'Немає полів, що відповідають "{query}"',
     configSaved: "Конфігурацію збережено",
     yamlConfigSaved: "YAML-конфігурацію збережено",
     failedToSave: "Не вдалося зберегти",
@@ -341,6 +389,7 @@ export const uk: Translations = {
     failedToLoadRaw: "Не вдалося завантажити сирий конфіг",
     configImported: "Конфігурацію імпортовано — перегляньте та збережіть",
     invalidJson: "Недійсний файл JSON",
+    yaml: "YAML",
     categories: {
       general: "Загальне",
       agent: "Агент",
@@ -381,7 +430,17 @@ export const uk: Translations = {
     showValue: "Показати справжнє значення",
     hideValue: "Сховати значення",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Входи постачальників (OAuth)",
     providerLogins: "Входи постачальників (OAuth)",
@@ -419,6 +478,9 @@ export const uk: Translations = {
       external: "Зовнішній CLI",
     },
     expiresIn: "завершується через {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const uk: Translations = {
   theme: {
     title: "Тема",
     switchTheme: "Змінити тему",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

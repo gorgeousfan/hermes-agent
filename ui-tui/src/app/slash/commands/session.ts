@@ -10,6 +10,7 @@ import type {
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { translate, type TranslationKey } from '../../../i18n/index.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
@@ -96,7 +97,7 @@ export const sessionCommands: SlashCommand[] = [
     help: 'browse and resume previous sessions',
     name: 'sessions',
     run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+      if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
         return
       }
       if (!arg.trim()) {
@@ -111,7 +112,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
         ctx.guarded<ImageAttachResponse>(r => {
-          ctx.transcript.sys(attachedImageNotice(r))
+          ctx.transcript.sys(attachedImageNotice(r, ctx.ui.locale))
 
           if (r.remainder) {
             ctx.composer.setInput(r.remainder)
@@ -229,6 +230,7 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
+      const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(ctx.ui.locale, key, vars)
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
@@ -264,17 +266,17 @@ export const sessionCommands: SlashCommand[] = [
           if (action === 'status') {
             const mode = r.enabled ? 'ON' : 'OFF'
             const tts = r.tts ? 'ON' : 'OFF'
-            ctx.transcript.sys('Voice Mode Status')
-            ctx.transcript.sys(`  Mode:       ${mode}`)
-            ctx.transcript.sys(`  TTS:        ${tts}`)
-            ctx.transcript.sys(`  Record key: ${recordKeyLabel}`)
+            ctx.transcript.sys(ti('voice.statusTitle'))
+            ctx.transcript.sys(`  ${ti('voice.modeLabel')}:       ${mode}`)
+            ctx.transcript.sys(`  ${ti('voice.ttsLabel')}:        ${tts}`)
+            ctx.transcript.sys(`  ${ti('voice.recordKeyLabel')}: ${recordKeyLabel}`)
 
             // CLI's "Requirements:" block — surfaces STT/audio setup issues
             // so the user sees "STT provider: MISSING ..." instead of
             // silently failing on every record-key press.
             if (r.details) {
               ctx.transcript.sys('')
-              ctx.transcript.sys('  Requirements:')
+              ctx.transcript.sys(`  ${ti('voice.requirements')}:`)
 
               for (const line of r.details.split('\n')) {
                 if (line.trim()) {
@@ -287,7 +289,7 @@ export const sessionCommands: SlashCommand[] = [
           }
 
           if (action === 'tts') {
-            ctx.transcript.sys(`Voice TTS ${r.tts ? 'enabled' : 'disabled'}.`)
+            ctx.transcript.sys(`${r.tts ? ti('voice.ttsEnabled') : ti('voice.ttsDisabled')}`)
 
             return
           }
@@ -295,12 +297,12 @@ export const sessionCommands: SlashCommand[] = [
           // on/off — mirror cli.py:_enable_voice_mode's 3-line output
           if (r.enabled) {
             const tts = r.tts ? ' (TTS enabled)' : ''
-            ctx.transcript.sys(`Voice mode enabled${tts}`)
-            ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
-            ctx.transcript.sys('  /voice tts  to toggle speech output')
-            ctx.transcript.sys('  /voice off  to disable voice mode')
+            ctx.transcript.sys(ti('voice.modeEnabled', { tts }))
+            ctx.transcript.sys(ti('voice.recordHint', { key: recordKeyLabel }))
+            ctx.transcript.sys(ti('voice.ttsToggleHint'))
+            ctx.transcript.sys(ti('voice.disableHint'))
           } else {
-            ctx.transcript.sys('Voice mode disabled.')
+            ctx.transcript.sys(ti('voice.modeDisabled'))
           }
         })
       )
@@ -354,7 +356,7 @@ export const sessionCommands: SlashCommand[] = [
           // uses the new style without waiting for the 5s mtime poll
           // to re-apply config.full.
           patchUiState({ indicatorStyle: value as IndicatorStyle })
-          ctx.transcript.sys(`indicator → ${r.value}`)
+          ctx.transcript.sys(translate(ctx.ui.locale, 'sys.indicatorStyle', { value: r.value }))
         })
       )
     }
@@ -366,7 +368,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (_arg, ctx) => {
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
-        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)))
+        .then(ctx.guarded<ConfigSetResponse>(r => ctx.transcript.sys(translate(ctx.ui.locale, r.value === '1' ? 'sys.yoloOn' : 'sys.yoloOff'))))
     }
   },
 
@@ -523,31 +525,40 @@ export const sessionCommands: SlashCommand[] = [
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
         const cost = r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
+        const t = (key: TranslationKey, vars?: Record<string, string | number>) =>
+          translate(ctx.ui.locale, key, vars)
+
         const rows: [string, string][] = [
-          ['Model', r.model ?? ''],
-          ['Input tokens', f(r.input)],
-          ['Cache read tokens', f(r.cache_read)],
-          ['Cache write tokens', f(r.cache_write)],
-          ['Output tokens', f(r.output)],
-          ['Total tokens', f(r.total)],
-          ['API calls', f(r.calls)]
+          [t('usage.model'), r.model ?? ''],
+          [t('usage.inputTokens'), f(r.input)],
+          [t('usage.cacheReadTokens'), f(r.cache_read)],
+          [t('usage.cacheWriteTokens'), f(r.cache_write)],
+          [t('usage.outputTokens'), f(r.output)],
+          [t('usage.totalTokens'), f(r.total)],
+          [t('usage.apiCalls'), f(r.calls)]
         ]
 
         if (cost) {
-          rows.push(['Cost', cost])
+          rows.push([t('usage.cost'), cost])
         }
 
         const sections: PanelSection[] = [{ rows }]
 
         if (r.context_max) {
-          sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+          sections.push({
+            text: t('usage.context', {
+              max: f(r.context_max),
+              percent: String(r.context_percent),
+              used: f(r.context_used)
+            })
+          })
         }
 
         if (r.compressions) {
-          sections.push({ text: `Compressions: ${r.compressions}` })
+          sections.push({ text: t('usage.compressions', { count: String(r.compressions) }) })
         }
 
-        ctx.transcript.panel('Usage', sections)
+        ctx.transcript.panel(t('usage.panelTitle'), sections)
       })
     }
   }

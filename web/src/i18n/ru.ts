@@ -47,6 +47,7 @@ export const ru: Translations = {
       "Не удалось загрузить скрипт этого плагина. Проверьте вкладку «Сеть» (dashboard-plugins/…) и путь к плагинам на сервере.",
     pluginNotRegistered:
       "Скрипт плагина не вызвал register() или завершился с ошибкой. Откройте консоль браузера для подробностей.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const ru: Translations = {
       config: "Конфигурация",
       cron: "Cron",
       documentation: "Документация",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Ключи",
       logs: "Журналы",
       models: "Модели",
@@ -82,6 +86,10 @@ export const ru: Translations = {
     },
     modelToolsSheetSubtitle: "и инструменты",
     modelToolsSheetTitle: "Модель",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Навигация",
     openDocumentation: "Открыть документацию в новой вкладке",
     openNavigation: "Открыть навигацию",
@@ -90,6 +98,38 @@ export const ru: Translations = {
     statusOverview: "Обзор статуса",
     system: "Система",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const ru: Translations = {
     toolCalls: "вызовы инструментов",
     noModelsData: "Нет данных по моделям за этот период",
     startSession: "Начните сессию, чтобы увидеть данные по моделям",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const ru: Translations = {
     failedToLoadRaw: "Не удалось загрузить исходную конфигурацию",
     configImported: "Конфигурация импортирована — проверьте и сохраните",
     invalidJson: "Некорректный JSON-файл",
+    yaml: "YAML",
     categories: {
       general: "Общие",
       agent: "Агент",
@@ -381,7 +430,17 @@ export const ru: Translations = {
     showValue: "Показать реальное значение",
     hideValue: "Скрыть значение",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Входы провайдеров (OAuth)",
     providerLogins: "Входы провайдеров (OAuth)",
@@ -419,6 +478,9 @@ export const ru: Translations = {
       external: "Внешний CLI",
     },
     expiresIn: "истекает через {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const ru: Translations = {
   theme: {
     title: "Тема",
     switchTheme: "Сменить тему",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

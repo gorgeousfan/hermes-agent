@@ -47,6 +47,7 @@ export const ga: Translations = {
       "Níorbh fhéidir script an plugin seo a luchtú. Seiceáil an cluaisín Network (dashboard-plugins/…) agus conair plugin an fhreastalaí.",
     pluginNotRegistered:
       "Níor ghlaoigh script an plugin ar register(), nó tharla earráid sa script. Oscail consól an bhrabhsálaí le haghaidh sonraí.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const ga: Translations = {
       config: "Cumraíocht",
       cron: "Cron",
       documentation: "Doiciméadú",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Eochracha",
       logs: "Logaí",
       models: "Samhlacha",
@@ -82,6 +86,10 @@ export const ga: Translations = {
     },
     modelToolsSheetSubtitle: "agus uirlisí",
     modelToolsSheetTitle: "Samhail",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Nascleanúint",
     openDocumentation: "Oscail an doiciméadú i gcluaisín nua",
     openNavigation: "Oscail an nascleanúint",
@@ -90,6 +98,38 @@ export const ga: Translations = {
     statusOverview: "Forbhreathnú stádais",
     system: "Córas",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const ga: Translations = {
     toolCalls: "glaonna uirlise",
     noModelsData: "Gan sonraí úsáide samhla don tréimhse seo",
     startSession: "Tosaigh seisiún chun sonraí samhla a fheiceáil anseo",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const ga: Translations = {
     failedToLoadRaw: "Theip ar luchtú na cumraíochta amh",
     configImported: "Cumraíocht iompórtáilte — athbhreithnigh agus sábháil",
     invalidJson: "Comhad JSON neamhbhailí",
+    yaml: "YAML",
     categories: {
       general: "Ginearálta",
       agent: "Agent",
@@ -381,7 +430,17 @@ export const ga: Translations = {
     showValue: "Taispeáin an fíorluach",
     hideValue: "Folaigh an luach",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Logálacha isteach soláthraí (OAuth)",
     providerLogins: "Logálacha isteach soláthraí (OAuth)",
@@ -419,6 +478,9 @@ export const ga: Translations = {
       external: "CLI seachtrach",
     },
     expiresIn: "as feidhm i {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const ga: Translations = {
   theme: {
     title: "Téama",
     switchTheme: "Athraigh téama",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

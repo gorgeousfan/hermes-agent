@@ -8,7 +8,6 @@ import type { IndicatorStyle } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
@@ -16,14 +15,35 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+import { getThinkingVerbs, LOCALES, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Terminal display width: ASCII=1, CJK/fullwidth=2
+const charDispWidth = (c: string) => {
+  const code = c.codePointAt(0) ?? 0
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6)
+  ) ? 2 : 1
+}
+export const displayWidth = (s: string) => { let w = 0; for (const c of s) w += charDispWidth(c); return w }
+
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const VERB_PAD_LEN = Math.max(...LOCALES.flatMap(l => getThinkingVerbs(l)).map(v => displayWidth(v))) + 1 // + ellipsis
+export const padVerb = (verb: string) => {
+  const text = `${verb}…`
+  const pad = Math.max(0, VERB_PAD_LEN - displayWidth(text))
+  return text + ' '.repeat(pad)
+}
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -78,8 +98,9 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const ui = useStore($uiState)
   const style = ui.indicatorStyle
+  const { locale, verbs } = useI18n()
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
   const [now, setNow] = useState(() => Date.now())
 
   // Pre-compute cadence + verb-visibility for the active style so an
@@ -106,8 +127,8 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   }, [intervalMs, showVerb])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbs[verbTick % verbs.length] ?? ''
+  const verbSegment = showVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -287,13 +308,14 @@ export function StatusRule({
   voiceLabel,
   t
 }: StatusRuleProps) {
+  const i18n = useI18n()
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
 
   const ctxLabel = usage.context_max
     ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
     : usage.total > 0
-      ? `${fmtK(usage.total)} tok`
+      ? `${fmtK(usage.total)} ${i18n.t('usage.tokensShort')}`
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
@@ -307,7 +329,7 @@ export function StatusRule({
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
           ) : (
-            <Text color={statusColor}>{status}</Text>
+            <Text color={statusColor}>{i18n.tStatus(status)}</Text>
           )}
           <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
           {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
@@ -327,7 +349,7 @@ export function StatusRule({
             <Text color={t.color.muted}>
               {' │ '}
               <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
-                cmp {usage.compressions}
+                {i18n.t('usage.compressionsShort')} {usage.compressions}
               </Text>
             </Text>
           ) : null}
@@ -342,7 +364,7 @@ export function StatusRule({
               {voiceLabel}
             </Text>
           ) : null}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
+          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} {i18n.t('background.short')}</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
             <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}
@@ -372,8 +394,9 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
 }
 
 export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
+  const { locale } = useI18n()
   const { atBottom, bottom, top } = useViewportSnapshot(scrollRef)
-  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom, locale)
 
   useEffect(() => onChange(text), [onChange, text])
 

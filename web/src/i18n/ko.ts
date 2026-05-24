@@ -47,6 +47,7 @@ export const ko: Translations = {
       "이 플러그인의 스크립트를 로드할 수 없습니다. Network 탭(dashboard-plugins/…)과 서버의 플러그인 경로를 확인하세요.",
     pluginNotRegistered:
       "플러그인 스크립트가 register()를 호출하지 않았거나 스크립트에 오류가 발생했습니다. 자세한 내용은 브라우저 콘솔을 열어 확인하세요.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const ko: Translations = {
       config: "설정",
       cron: "Cron",
       documentation: "문서",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "키",
       logs: "로그",
       models: "모델",
@@ -82,6 +86,10 @@ export const ko: Translations = {
     },
     modelToolsSheetSubtitle: "및 도구",
     modelToolsSheetTitle: "모델",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "내비게이션",
     openDocumentation: "새 탭에서 문서 열기",
     openNavigation: "내비게이션 열기",
@@ -90,6 +98,38 @@ export const ko: Translations = {
     statusOverview: "상태 개요",
     system: "시스템",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const ko: Translations = {
     toolCalls: "도구 호출",
     noModelsData: "이 기간에 대한 모델 사용 데이터가 없습니다",
     startSession: "세션을 시작하면 여기에 모델 데이터가 표시됩니다",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -333,7 +381,7 @@ export const ko: Translations = {
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
     fields: "개 필드",
-    noFieldsMatch: '\"{query}\"와(과) 일치하는 필드가 없습니다',
+    noFieldsMatch: '"{query}"와(과) 일치하는 필드가 없습니다',
     configSaved: "설정이 저장되었습니다",
     yamlConfigSaved: "YAML 설정이 저장되었습니다",
     failedToSave: "저장에 실패했습니다",
@@ -341,6 +389,7 @@ export const ko: Translations = {
     failedToLoadRaw: "원본 설정 로드에 실패했습니다",
     configImported: "설정을 가져왔습니다 — 검토 후 저장하세요",
     invalidJson: "잘못된 JSON 파일입니다",
+    yaml: "YAML",
     categories: {
       general: "일반",
       agent: "에이전트",
@@ -381,7 +430,17 @@ export const ko: Translations = {
     showValue: "실제 값 표시",
     hideValue: "값 숨기기",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "제공자 로그인 (OAuth)",
     providerLogins: "제공자 로그인 (OAuth)",
@@ -419,6 +478,9 @@ export const ko: Translations = {
       external: "외부 CLI",
     },
     expiresIn: "{time} 후 만료",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const ko: Translations = {
   theme: {
     title: "테마",
     switchTheme: "테마 전환",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

@@ -47,6 +47,7 @@ export const es: Translations = {
       "No se pudo cargar el script de este complemento. Revisa la pestaña Network (dashboard-plugins/…) y la ruta del complemento del servidor.",
     pluginNotRegistered:
       "El script del complemento no llamó a register(), o falló. Abre la consola del navegador para más detalles.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const es: Translations = {
       config: "Configuración",
       cron: "Cron",
       documentation: "Documentación",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Claves",
       logs: "Registros",
       models: "Modelos",
@@ -82,6 +86,10 @@ export const es: Translations = {
     },
     modelToolsSheetSubtitle: "y herramientas",
     modelToolsSheetTitle: "Modelo",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Navegación",
     openDocumentation: "Abrir documentación en una nueva pestaña",
     openNavigation: "Abrir navegación",
@@ -90,6 +98,38 @@ export const es: Translations = {
     statusOverview: "Resumen de estado",
     system: "Sistema",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const es: Translations = {
     toolCalls: "llamadas de herramientas",
     noModelsData: "No hay datos de uso de modelos para este período",
     startSession: "Inicia una sesión para ver datos de modelos aquí",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const es: Translations = {
     failedToLoadRaw: "No se pudo cargar la configuración en bruto",
     configImported: "Configuración importada — revisa y guarda",
     invalidJson: "Archivo JSON no válido",
+    yaml: "YAML",
     categories: {
       general: "General",
       agent: "Agente",
@@ -381,7 +430,17 @@ export const es: Translations = {
     showValue: "Mostrar valor real",
     hideValue: "Ocultar valor",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Inicios de sesión de proveedores (OAuth)",
     providerLogins: "Inicios de sesión de proveedores (OAuth)",
@@ -419,6 +478,9 @@ export const es: Translations = {
       external: "CLI externa",
     },
     expiresIn: "caduca en {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const es: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Cambiar tema",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
   achievements: {
     hero: {

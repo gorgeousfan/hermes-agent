@@ -4,7 +4,8 @@ import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import { useCallback, type RefObject } from 'react'
 
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -91,6 +92,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [rpc]
   )
 
+  const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
+
   const resetSession = useCallback(() => {
     turnController.fullReset()
     setVoiceRecording(false)
@@ -127,7 +130,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
       if (setup?.provider_configured === false) {
-        panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+        const { locale } = getUiState()
+        panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
         patchUiState({ status: 'setup required' })
 
         return
@@ -160,11 +164,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       if (info?.credential_warning) {
-        sys(`warning: ${info.credential_warning}`)
+        sys(ti('transcript.credentialWarning', { message: info.credential_warning }))
       }
 
       if (info?.config_warning) {
-        sys(`warning: ${info.config_warning}`)
+        sys(ti('transcript.configWarning', { message: info.config_warning }))
       }
 
       if (msg) {
@@ -183,7 +187,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const nextTitle = (result.title ?? requestedTitle).trim()
             const suffix = result.pending ? ' (queued while session initializes)' : ''
-            sys(`session title set: ${nextTitle}${suffix}`)
+            sys(ti('session.titleSet', { title: nextTitle, suffix }))
           })
           .catch((err: unknown) => {
             if (getUiState().sid !== r.session_id) {
@@ -191,7 +195,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const message = err instanceof Error ? err.message : String(err)
-            sys(`warning: failed to set session title: ${message}`)
+            sys(ti('session.titleSetFailed', { message }))
           })
       }
     },
@@ -205,7 +209,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
-          panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+          const { locale } = getUiState()
+          panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
           patchUiState({ status: 'setup required' })
 
           return
@@ -218,7 +223,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               const r = asRpcResult<SessionResumeResponse>(raw)
 
               if (!r) {
-                sys('error: invalid response: session.resume')
+                sys(ti('errors.invalidResponse', { method: 'session.resume' }))
 
                 return patchUiState({ status: 'ready' })
               }
@@ -239,7 +244,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
             })
             .catch((e: Error) => {
-              sys(`error: ${e.message}`)
+              sys(ti('errors.rpc', { message: e.message }))
               patchUiState({ status: 'ready' })
             })
         )
@@ -254,7 +259,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return false
       }
 
-      sys(`interrupt the current turn before trying to ${what}`)
+      sys(ti('session.switchBusy', { what }))
 
       return true
     },

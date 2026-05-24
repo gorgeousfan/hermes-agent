@@ -47,6 +47,7 @@ export const zhHant: Translations = {
       "無法載入此外掛的指令碼。請檢查網路請求（dashboard-plugins/…）以及伺服器上的外掛路徑。",
     pluginNotRegistered:
       "外掛指令碼未呼叫 register()，或執行時發生錯誤。請開啟瀏覽器主控台查看詳細資訊。",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const zhHant: Translations = {
       config: "設定",
       cron: "排程任務",
       documentation: "文件",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "金鑰",
       logs: "日誌",
       models: "模型",
@@ -82,6 +86,10 @@ export const zhHant: Translations = {
     },
     modelToolsSheetSubtitle: "與工具",
     modelToolsSheetTitle: "模型",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "導覽",
     openDocumentation: "在新分頁開啟文件",
     openNavigation: "開啟導覽",
@@ -90,6 +98,38 @@ export const zhHant: Translations = {
     statusOverview: "狀態總覽",
     system: "系統",
     webUi: "管理面板",
+    loadingChat: "Loading chat\u2026",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const zhHant: Translations = {
     toolCalls: "工具呼叫",
     noModelsData: "此時間範圍內無模型使用資料",
     startSession: "開始工作階段後將於此處顯示模型資料",
+    overrideAuto: "(override \u2014 auto: {value})",
+    autoDetected: "Auto-detected",
+    loading: "Loading model info\u2026",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const zhHant: Translations = {
     failedToLoadRaw: "載入原始設定失敗",
     configImported: "設定已匯入 — 請檢視後儲存",
     invalidJson: "無效的 JSON 檔案",
+    yaml: "YAML",
     categories: {
       general: "一般",
       agent: "代理",
@@ -381,7 +430,17 @@ export const zhHant: Translations = {
     showValue: "顯示實際值",
     hideValue: "隱藏值",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "提供者登入（OAuth）",
     providerLogins: "提供者登入（OAuth）",
@@ -418,7 +477,11 @@ export const zhHant: Translations = {
       device_code: "裝置代碼",
       external: "外部 CLI",
     },
-    expiresIn: "{time}後過期",
+    expiresIn: "將在 {time} 後過期",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription:
+      "This will remove the stored OAuth token for {provider}. You will need to re-authorize to continue using it.",
   },
 
   language: {
@@ -428,6 +491,10 @@ export const zhHant: Translations = {
   theme: {
     title: "主題",
     switchTheme: "切換主題",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

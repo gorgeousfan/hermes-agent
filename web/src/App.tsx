@@ -204,6 +204,7 @@ function buildNavItems(
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
+      labelKey: manifest.labelKey,
       icon: resolveIcon(manifest.icon),
     };
 
@@ -630,7 +631,7 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Spinner />
-                          <span>Loading chat…</span>
+                          <span>{t.app.loadingChat}</span>
                         </div>
                       </div>
                     ) : null

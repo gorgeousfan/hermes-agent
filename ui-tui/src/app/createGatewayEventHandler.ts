@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE, setupRequiredTitle } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -9,6 +9,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { normalizeLocale, translate, type TranslationKey } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -206,9 +207,15 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
-  const handleReady = (skin?: GatewaySkin) => {
-    if (skin) {
-      applySkin(skin)
+  const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
+
+  const handleReady = (payload?: { language?: string; skin?: GatewaySkin }) => {
+    if (payload?.language) {
+      patchUiState({ locale: normalizeLocale(payload.language) })
+    }
+
+    if (payload?.skin) {
+      applySkin(payload.skin)
     }
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
@@ -229,7 +236,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(String(r.warning), 'warn')
         }
       })
-      .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
+      .catch((e: unknown) => turnController.pushActivity(ti('gateway.commandCatalogUnavailable', { message: rpcErrorMessage(e) }), 'info'))
 
     if (STARTUP_RESUME_ID) {
       patchUiState({ status: 'resuming…' })
@@ -287,7 +294,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
-        handleReady(ev.payload?.skin)
+        handleReady(ev.payload)
 
         return
 
@@ -428,7 +435,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setVoiceEnabled(false)
           setVoiceRecording(false)
           setVoiceProcessing(false)
-          sys('voice: no speech detected 3 times, continuous mode stopped')
+          sys(ti('voice.noSpeechStopped'))
 
           return
         }
@@ -458,7 +465,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
-        turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+        turnController.pushActivity(ti('gateway.startupTimedOut', { trace }), 'error')
 
         // Surface the most useful stderr lines inline so users can tell
         // "wrong python", "missing dep", and "config parse failure"
@@ -488,11 +495,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (!turnController.protocolWarned) {
           turnController.protocolWarned = true
-          turnController.pushActivity('protocol noise detected · /logs to inspect', 'info')
+          turnController.pushActivity(ti('gateway.protocolNoiseDetected'), 'info')
         }
 
         if (ev.payload?.preview) {
-          turnController.pushActivity(`protocol noise: ${String(ev.payload.preview).slice(0, 120)}`, 'info')
+          turnController.pushActivity(ti('gateway.protocolNoise', { preview: String(ev.payload.preview).slice(0, 120) }), 'info')
         }
 
         return
@@ -518,7 +525,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.generating':
         if (ev.payload?.name) {
-          turnController.pushTrail(`drafting ${ev.payload.name}…`)
+          turnController.pushTrail(ti('tool.drafting', { name: ev.payload.name }))
         }
 
         return
@@ -595,7 +602,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
-        sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
+        sys(ti('transcript.bgComplete', { taskId: ev.payload.task_id, text: ev.payload.text }))
 
         return
       case 'review.summary': {
@@ -737,13 +744,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(message, 'error')
 
           if (NO_PROVIDER_RE.test(message)) {
-            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+            const { locale } = getUiState()
+            panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
             setStatus('setup required')
 
             return
           }
 
-          sys(`error: ${message}`)
+          sys(ti('errors.rpc', { message }))
           setStatus('ready')
         }
     }

@@ -47,6 +47,7 @@ export const hu: Translations = {
       "Nem sikerült betölteni a bővítmény szkriptjét. Ellenőrizze a Network fület (dashboard-plugins/…) és a kiszolgáló bővítmény-elérési útját.",
     pluginNotRegistered:
       "A bővítmény szkriptje nem hívta meg a register() függvényt, vagy hibára futott. A részletekért nyissa meg a böngésző konzolját.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const hu: Translations = {
       config: "Beállítások",
       cron: "Cron",
       documentation: "Dokumentáció",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Kulcsok",
       logs: "Naplók",
       models: "Modellek",
@@ -82,6 +86,10 @@ export const hu: Translations = {
     },
     modelToolsSheetSubtitle: "és eszközök",
     modelToolsSheetTitle: "Modell",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Navigáció",
     openDocumentation: "Dokumentáció megnyitása új lapon",
     openNavigation: "Navigáció megnyitása",
@@ -90,6 +98,38 @@ export const hu: Translations = {
     statusOverview: "Állapot áttekintése",
     system: "Rendszer",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const hu: Translations = {
     toolCalls: "eszközhívások",
     noModelsData: "Nincs modellhasználati adat erre az időszakra",
     startSession: "Indítson munkamenetet a modelladatok megtekintéséhez",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const hu: Translations = {
     failedToLoadRaw: "Nem sikerült betölteni a nyers konfigurációt",
     configImported: "Konfiguráció importálva — ellenőrizze és mentse",
     invalidJson: "Érvénytelen JSON-fájl",
+    yaml: "YAML",
     categories: {
       general: "Általános",
       agent: "Ügynök",
@@ -381,7 +430,17 @@ export const hu: Translations = {
     showValue: "Tényleges érték megjelenítése",
     hideValue: "Érték elrejtése",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Szolgáltatói bejelentkezések (OAuth)",
     providerLogins: "Szolgáltatói bejelentkezések (OAuth)",
@@ -419,6 +478,9 @@ export const hu: Translations = {
       external: "Külső CLI",
     },
     expiresIn: "lejár {time} múlva",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const hu: Translations = {
   theme: {
     title: "Téma",
     switchTheme: "Téma váltása",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

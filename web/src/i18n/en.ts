@@ -47,6 +47,7 @@ export const en: Translations = {
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
       "The plugin’s script did not call register(), or the script errored. Open the browser console for details.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const en: Translations = {
       config: "Config",
       cron: "Cron",
       documentation: "Documentation",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Keys",
       logs: "Logs",
       models: "Models",
@@ -82,6 +86,10 @@ export const en: Translations = {
     },
     modelToolsSheetSubtitle: "& tools",
     modelToolsSheetTitle: "Model",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Navigation",
     openDocumentation: "Open documentation in a new tab",
     openNavigation: "Open navigation",
@@ -90,6 +98,38 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const en: Translations = {
     toolCalls: "tool calls",
     noModelsData: "No model usage data for this period",
     startSession: "Start a session to see model data here",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const en: Translations = {
     failedToLoadRaw: "Failed to load raw config",
     configImported: "Config imported — review and save",
     invalidJson: "Invalid JSON file",
+    yaml: "YAML",
     categories: {
       general: "General",
       agent: "Agent",
@@ -382,6 +431,16 @@ export const en: Translations = {
     hideValue: "Hide value",
   },
 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+
   oauth: {
     title: "Provider Logins (OAuth)",
     providerLogins: "Provider Logins (OAuth)",
@@ -419,6 +478,9 @@ export const en: Translations = {
       external: "External CLI",
     },
     expiresIn: "expires in {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const en: Translations = {
   theme: {
     title: "Theme",
     switchTheme: "Switch theme",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

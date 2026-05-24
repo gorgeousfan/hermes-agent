@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from '../gatewayTypes.js'
+import { useI18n } from '../i18n/index.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -12,18 +13,18 @@ const VISIBLE = 15
 const MIN_WIDTH = 60
 const MAX_WIDTH = 120
 
-const age = (ts: number) => {
+const age = (ts: number, ti: ReturnType<typeof useI18n>['t']) => {
   const d = (Date.now() / 1000 - ts) / 86400
 
   if (d < 1) {
-    return 'today'
+    return ti('time.today')
   }
 
   if (d < 2) {
-    return 'yesterday'
+    return ti('time.yesterday')
   }
 
-  return `${Math.floor(d)}d ago`
+  return ti('time.daysAgo', { count: String(Math.floor(d)) })
 }
 
 export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps) {
@@ -35,6 +36,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   // a second `d`/`D` to confirm deletion.  Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | number>(null)
   const [deleting, setDeleting] = useState(false)
+  const { t: ti } = useI18n()
 
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -142,14 +144,14 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading sessions…</Text>
+    return <Text color={t.color.muted}>{ti('session.loading')}</Text>
   }
 
   if (err && !items.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <Text color={t.color.label}>{ti('sys.error', { message: err })}</Text>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -157,8 +159,8 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   if (!items.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.muted}>no previous sessions</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <Text color={t.color.muted}>{ti('session.nonePrevious')}</Text>
+        <OverlayHint t={t}>{ti('picker.cancel')}</OverlayHint>
       </Box>
     )
   }
@@ -168,10 +170,10 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Resume Session
+        {ti('session.resumeTitle')}
       </Text>
 
-      {offset > 0 && <Text color={t.color.muted}>  ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>  {ti('sys.moreAbove', { count: String(offset) })}</Text>}
 
       {items.slice(offset, offset + VISIBLE).map((s, vi) => {
         const i = offset + vi
@@ -192,7 +194,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
             <Box width={30}>
               <Text bold={selected} color={selected ? t.color.accent : t.color.muted} inverse={selected}>
-                ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
+                ({ti('session.messagesShort', { count: String(s.message_count) })}, {age(s.started_at, ti)}, {s.source || 'tui'})
               </Text>
             </Box>
 
@@ -202,18 +204,18 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
               inverse={selected}
               wrap="truncate-end"
             >
-              {pendingDelete ? 'press d again to delete' : s.title || s.preview || '(untitled)'}
+              {pendingDelete ? ti('session.deleteAgain') : s.title || s.preview || ti('session.untitled')}
             </Text>
           </Box>
         )
       })}
 
-      {offset + VISIBLE < items.length && <Text color={t.color.muted}>  ↓ {items.length - offset - VISIBLE} more</Text>}
-      {err && <Text color={t.color.label}>error: {err}</Text>}
+      {offset + VISIBLE < items.length && <Text color={t.color.muted}>  {ti('sys.moreBelow', { count: String(items.length - offset - VISIBLE) })}</Text>}
+      {err && <Text color={t.color.label}>{ti('sys.error', { message: err })}</Text>}
       {deleting ? (
-        <OverlayHint t={t}>deleting…</OverlayHint>
+        <OverlayHint t={t}>{ti('session.deleting')}</OverlayHint>
       ) : (
-        <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>{ti('picker.sessionHint')}</OverlayHint>
       )}
     </Box>
   )

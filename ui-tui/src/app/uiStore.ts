@@ -16,6 +16,7 @@ const buildUiState = (): UiState => ({
   indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
   inlineDiffs: true,
+  locale: 'en',
   mouseTracking: MOUSE_TRACKING,
   sections: {},
   showCost: false,

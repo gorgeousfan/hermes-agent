@@ -47,6 +47,7 @@ export const af: Translations = {
       "Kon nie hierdie inprop se skrip laai nie. Kontroleer die Netwerk-oortjie (dashboard-plugins/…) en die bediener se inprop-pad.",
     pluginNotRegistered:
       "Die inprop se skrip het nie register() geroep nie, of die skrip het 'n fout gegee. Maak die blaaier-konsole oop vir besonderhede.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const af: Translations = {
       config: "Konfigurasie",
       cron: "Cron",
       documentation: "Dokumentasie",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Sleutels",
       logs: "Logs",
       models: "Modelle",
@@ -82,6 +86,10 @@ export const af: Translations = {
     },
     modelToolsSheetSubtitle: "& gereedskap",
     modelToolsSheetTitle: "Model",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Navigasie",
     openDocumentation: "Maak dokumentasie in 'n nuwe oortjie oop",
     openNavigation: "Maak navigasie oop",
@@ -90,6 +98,38 @@ export const af: Translations = {
     statusOverview: "Statusoorsig",
     system: "Stelsel",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const af: Translations = {
     toolCalls: "gereedskap-oproepe",
     noModelsData: "Geen modelgebruiksdata vir hierdie tydperk nie",
     startSession: "Begin 'n sessie om modeldata hier te sien",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const af: Translations = {
     failedToLoadRaw: "Kon nie rou konfigurasie laai nie",
     configImported: "Konfigurasie ingevoer — kontroleer en stoor",
     invalidJson: "Ongeldige JSON-lêer",
+    yaml: "YAML",
     categories: {
       general: "Algemeen",
       agent: "Agent",
@@ -381,7 +430,17 @@ export const af: Translations = {
     showValue: "Wys werklike waarde",
     hideValue: "Versteek waarde",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Verskaffer-aanmeldings (OAuth)",
     providerLogins: "Verskaffer-aanmeldings (OAuth)",
@@ -419,6 +478,9 @@ export const af: Translations = {
       external: "Eksterne CLI",
     },
     expiresIn: "verval oor {time}",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const af: Translations = {
   theme: {
     title: "Tema",
     switchTheme: "Wissel tema",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

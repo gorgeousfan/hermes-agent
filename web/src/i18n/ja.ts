@@ -47,6 +47,7 @@ export const ja: Translations = {
       "このプラグインのスクリプトを読み込めませんでした。Network タブ（dashboard-plugins/…）とサーバーのプラグインパスをご確認ください。",
     pluginNotRegistered:
       "プラグインのスクリプトが register() を呼び出していないか、スクリプトでエラーが発生しました。詳細はブラウザのコンソールをご確認ください。",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const ja: Translations = {
       config: "設定",
       cron: "Cron",
       documentation: "ドキュメント",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "キー",
       logs: "ログ",
       models: "モデル",
@@ -82,6 +86,10 @@ export const ja: Translations = {
     },
     modelToolsSheetSubtitle: "とツール",
     modelToolsSheetTitle: "モデル",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "ナビゲーション",
     openDocumentation: "ドキュメントを新しいタブで開く",
     openNavigation: "ナビゲーションを開く",
@@ -90,6 +98,38 @@ export const ja: Translations = {
     statusOverview: "ステータス概要",
     system: "システム",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const ja: Translations = {
     toolCalls: "ツール呼び出し",
     noModelsData: "この期間のモデル使用データはありません",
     startSession: "セッションを開始するとモデルデータがここに表示されます",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const ja: Translations = {
     failedToLoadRaw: "生の設定の読み込みに失敗しました",
     configImported: "設定をインポートしました — 確認して保存してください",
     invalidJson: "無効な JSON ファイル",
+    yaml: "YAML",
     categories: {
       general: "一般",
       agent: "エージェント",
@@ -381,7 +430,17 @@ export const ja: Translations = {
     showValue: "実際の値を表示",
     hideValue: "値を非表示",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "プロバイダーログイン (OAuth)",
     providerLogins: "プロバイダーログイン (OAuth)",
@@ -419,6 +478,9 @@ export const ja: Translations = {
       external: "外部 CLI",
     },
     expiresIn: "{time} 後に期限切れ",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const ja: Translations = {
   theme: {
     title: "テーマ",
     switchTheme: "テーマを切り替え",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
 
   achievements: {

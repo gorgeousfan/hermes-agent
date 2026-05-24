@@ -47,6 +47,7 @@ export const de: Translations = {
       "Das Skript dieses Plugins konnte nicht geladen werden. Prüfe den Netzwerk-Tab (dashboard-plugins/…) und den Plugin-Pfad des Servers.",
     pluginNotRegistered:
       "Das Skript des Plugins hat register() nicht aufgerufen oder ist fehlgeschlagen. Öffne die Browser-Konsole für Details.",
+    listPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -72,6 +73,9 @@ export const de: Translations = {
       config: "Konfiguration",
       cron: "Cron",
       documentation: "Dokumentation",
+      achievements: "Achievements",
+      example: "Example",
+      kanban: "Kanban",
       keys: "Schlüssel",
       logs: "Protokolle",
       models: "Modelle",
@@ -82,6 +86,10 @@ export const de: Translations = {
     },
     modelToolsSheetSubtitle: "& Werkzeuge",
     modelToolsSheetTitle: "Modell",
+    copyLastResponse: "Copy last response",
+    copyLastResponseTitle: "Copy last assistant response as raw markdown",
+    copyLastResponseAria: "Copy last assistant response",
+    copied: "Copied",
     navigation: "Navigation",
     openDocumentation: "Dokumentation in neuem Tab öffnen",
     openNavigation: "Navigation öffnen",
@@ -90,6 +98,38 @@ export const de: Translations = {
     statusOverview: "Statusübersicht",
     system: "System",
     webUi: "Web UI",
+    loadingChat: "Loading chat…",
+  },
+
+  chatSidebar: {
+    model: "model",
+    switchModel: "switch model",
+    reconnect: "reconnect",
+    tools: "tools",
+    noToolCalls: "no tool calls yet",
+    eventsDisconnected:
+      "events feed disconnected — tool calls may not appear",
+    eventsRejected: "events feed rejected ({code}) — reload the page",
+  },
+
+  modelPicker: {
+    title: "Switch Model",
+    close: "Close",
+    filterPlaceholder: "Filter providers and models…",
+    currentTag: "current",
+    cancel: "Cancel",
+    switch_: "Switch",
+    noMatches: "no matches",
+    noAuthProviders: "no authenticated providers",
+    loading: "loading…",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsListed: "no models listed for this provider",
+    persistGlobal: "Persist globally (otherwise this session only)",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    modelsCount: "{count} models",
+    unknownModel: "(unknown)",
+    currentModelLabel: "current: {model}",
   },
 
   status: {
@@ -187,6 +227,14 @@ export const de: Translations = {
     toolCalls: "Werkzeug-Aufrufe",
     noModelsData: "Keine Modellnutzungsdaten für diesen Zeitraum",
     startSession: "Starte eine Sitzung, um hier Modelldaten zu sehen",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    maxOutput: "Max Output",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
   },
 
   logs: {
@@ -341,6 +389,7 @@ export const de: Translations = {
     failedToLoadRaw: "Rohe Konfiguration konnte nicht geladen werden",
     configImported: "Konfiguration importiert — überprüfen und speichern",
     invalidJson: "Ungültige JSON-Datei",
+    yaml: "YAML",
     categories: {
       general: "Allgemein",
       agent: "Agent",
@@ -381,7 +430,17 @@ export const de: Translations = {
     showValue: "Echten Wert anzeigen",
     hideValue: "Wert ausblenden",
   },
-
+ 
+  toolCall: {
+    running: "running",
+    error: "error",
+    done: "done",
+    context: "Context",
+    streaming: "Streaming",
+    diff: "Diff",
+    result: "Result",
+  },
+ 
   oauth: {
     title: "Anbieter-Logins (OAuth)",
     providerLogins: "Anbieter-Logins (OAuth)",
@@ -419,6 +478,9 @@ export const de: Translations = {
       external: "Externe CLI",
     },
     expiresIn: "läuft in {time} ab",
+    tokenExchangeFailed: "Token exchange failed",
+    openDocs: "Open {provider} docs",
+    disconnectDescription: "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
   },
 
   language: {
@@ -428,6 +490,10 @@ export const de: Translations = {
   theme: {
     title: "Design",
     switchTheme: "Design wechseln",
+    presets: {
+      dock: { label: "Dock" },
+      minimal: { label: "Minimal" },
+    },
   },
   achievements: {
     hero: {
