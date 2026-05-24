@@ -469,6 +469,65 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         raise
 
 
+def _verify_persistence(file_path: Path, expected_content: str, label: str = "") -> Optional[Dict[str, Any]]:
+    """
+    Verify that a file was actually persisted to disk after an atomic write.
+    
+    Checks:
+    1. The file exists at the expected path
+    2. The content matches what was written
+    
+    Retries the write once if the file is missing, then surfaces the error.
+    Returns None on success, or an error dict on failure.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    if file_path.exists():
+        try:
+            written = file_path.read_text(encoding="utf-8")
+            if written == expected_content:
+                return None  # All good
+            logger.warning(
+                "Content mismatch for %s: expected %d bytes, got %d bytes",
+                label, len(expected_content), len(written),
+            )
+        except Exception as e:
+            logger.error("Failed to read back %s: %s", file_path, e)
+    
+    # File missing or content mismatch — retry once
+    logger.warning("Retrying write for %s after persistence verification failed", label)
+    try:
+        _atomic_write_text(file_path, expected_content)
+    except Exception as e:
+        return {"success": False, "error": f"Failed to persist {label}: {e}"}
+    
+    if file_path.exists():
+        try:
+            written = file_path.read_text(encoding="utf-8")
+            if written == expected_content:
+                logger.info("Retry succeeded for %s", label)
+                return None
+            return {
+                "success": False,
+                "error": (
+                    f"Content mismatch for {label} after retry. "
+                    f"Expected {len(expected_content)} bytes, got {len(written)} bytes. "
+                    f"Check disk space and permissions at {file_path.parent}."
+                ),
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read back {label} after retry: {e}"}
+    
+    return {
+        "success": False,
+        "error": (
+            f"Failed to persist {label}. File not found at {file_path} after write and retry. "
+            f"Check disk space, permissions, and that the parent directory {file_path.parent} is writable."
+        ),
+    }
+
+
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -509,6 +568,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
+    # Post-write persistence verification — retry once on failure
+    persist_err = _verify_persistence(skill_md, content, f"skill '{name}'")
+    if persist_err:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        return persist_err
+
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
@@ -548,6 +613,13 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
+
+    # Post-write persistence verification — retry once on failure
+    persist_err = _verify_persistence(skill_md, content, f"skill '{name}'")
+    if persist_err:
+        if original_content is not None:
+            _atomic_write_text(skill_md, original_content)
+        return persist_err
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
@@ -644,6 +716,12 @@ def _patch_skill(
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
+
+    # Post-write persistence verification — retry once on failure
+    persist_err = _verify_persistence(target, new_content, f"skill '{name}'")
+    if persist_err:
+        _atomic_write_text(target, original_content)
+        return persist_err
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -749,6 +827,15 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
+
+    # Post-write persistence verification — retry once on failure
+    persist_err = _verify_persistence(target, file_content, f"file '{file_path}' in skill '{name}'")
+    if persist_err:
+        if original_content is not None:
+            _atomic_write_text(target, original_content)
+        else:
+            target.unlink(missing_ok=True)
+        return persist_err
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
