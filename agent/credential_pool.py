@@ -86,7 +86,7 @@ CUSTOM_POOL_PREFIX = "custom:"
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
-    "agent_key_obtained_at", "tls",
+    "agent_key_obtained_at", "tls", "account_id",
 })
 
 
@@ -537,6 +537,11 @@ class CredentialPool:
                 }
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
+                extra_updates = dict(entry.extra)
+                account_id = tokens.get("account_id")
+                if account_id is not None:
+                    extra_updates["account_id"] = account_id
+                    field_updates["extra"] = extra_updates
                 updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
@@ -1711,6 +1716,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "refresh_token": tokens.get("refresh_token"),
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
+                    "account_id": tokens.get("account_id"),
                     "label": label_from_token(tokens.get("access_token", ""), "device_code"),
                 },
             )
