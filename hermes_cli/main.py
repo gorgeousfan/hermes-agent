@@ -12030,11 +12030,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-    hermes debug share              Upload debug report and print URL
-    hermes debug share --lines 500  Include more log lines
-    hermes debug share --expire 30  Keep paste for 30 days
+    hermes debug share              Upload report (requires confirmation)
+    hermes debug share --yes        Skip confirmation (for scripts/CI)
     hermes debug share --local      Print report locally (no upload)
-    hermes debug share --no-redact  Disable upload-time secret redaction
+    hermes debug share --lines 500  Include more log lines
+    hermes debug share --no-redact  Disable secret redaction (not recommended)
     hermes debug delete <url>       Delete a previously uploaded paste
 """,
     )
@@ -12059,6 +12059,11 @@ Examples:
         "--local",
         action="store_true",
         help="Print the report locally instead of uploading",
+    )
+    share_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip confirmation prompt and upload immediately",
     )
     share_parser.add_argument(
         "--no-redact",

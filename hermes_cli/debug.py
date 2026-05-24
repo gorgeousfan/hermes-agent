@@ -183,16 +183,21 @@ def _best_effort_sweep_expired_pastes() -> None:
 # ---------------------------------------------------------------------------
 
 _PRIVACY_NOTICE = """\
-⚠️  This will upload the following to a public paste service:
-  • System info (OS, Python version, Hermes version, provider, which API keys
-    are configured — NOT the actual keys)
-  • Recent log lines (agent.log, errors.log, gateway.log — may contain
-    conversation fragments and file paths)
-  • Full agent.log and gateway.log (up to 512 KB each — likely contains
-    conversation content, tool outputs, and file paths)
+⚠️  WARNING: Logs contain UNREDACTED personal data and conversation content.
 
-Pastes auto-delete after 6 hours.
+The existing redaction pipeline masks cryptographic secrets (API keys, tokens,
+passwords) but does NOT redact:
+  • Your display name and persistent platform user ID
+  • Verbatim content of your recent messages
+  • Local filesystem paths
+  • Any other PII present in logs
+
+This URL will be PUBLIC and accessible to anyone with the link.
+Pastes auto-delete after 6 hours, but may be archived by third parties.
+
+Use --local to view the report locally without uploading.
 """
+
 
 _GATEWAY_PRIVACY_NOTICE = (
     "⚠️ **Privacy notice:** This uploads system info + recent log tails "
@@ -592,6 +597,25 @@ def run_debug_share(args):
 
     if not local_only:
         print(_PRIVACY_NOTICE)
+        yes = bool(getattr(args, "yes", False))
+        if not yes:
+            # Non-interactive mode (no TTY) requires --yes to prevent
+            # accidental data exposure in scripts/CI pipelines.
+            if not sys.stdin.isatty():
+                print(
+                    "ERROR: Non-interactive mode requires --yes to confirm upload.\n"
+                    "       This prevents accidental exposure of personal data.\n"
+                    "       Use --local to view the report without uploading.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                answer = input("Upload debug report? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer not in ("y", "yes"):
+                print("Aborted.")
+                return
 
     print("Collecting debug report...")
 
