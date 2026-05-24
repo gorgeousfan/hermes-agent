@@ -2597,3 +2597,125 @@ class TestCreateMatrixSession:
                     assert session.connector is fake_connector
                 finally:
                     await session.close()
+
+
+# ---------------------------------------------------------------------------
+# Pending-invite join — boot-loop regression guard (#29303)
+# ---------------------------------------------------------------------------
+
+class TestMatrixJoinPendingInvitesTimeout:
+    """A dead invited room must not be able to block initial-sync forever."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._refresh_dm_cache = AsyncMock()
+        self.adapter._joined_rooms = set()
+
+    @pytest.mark.asyncio
+    async def test_join_room_times_out_on_unresponsive_homeserver(self):
+        """`_join_room_by_id` returns False (not hangs) when the homeserver
+        never responds — bounding each invite at ``timeout`` seconds."""
+
+        async def never_returns(_room):
+            await asyncio.sleep(60.0)
+
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = never_returns
+
+        start = time.monotonic()
+        result = await self.adapter._join_room_by_id(
+            "!dead:dead.example.org", timeout=0.1
+        )
+        elapsed = time.monotonic() - start
+
+        assert result is False
+        assert elapsed < 1.0, f"join_room blocked for {elapsed:.2f}s — timeout not enforced"
+        assert "!dead:dead.example.org" not in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_join_pending_invites_runs_concurrently(self):
+        """One dead room must not serialise the rest into an aggregate stall.
+        With concurrent joins, total time should be bounded by the per-room
+        timeout, not (timeout × number_of_dead_rooms)."""
+        live_room = "!live:example.org"
+        dead_rooms = [f"!dead{i}:dead.example.org" for i in range(5)]
+
+        async def fake_join(room_id):
+            if str(room_id) == live_room:
+                return None
+            await asyncio.sleep(60.0)  # dead homeserver — hangs
+
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = fake_join
+
+        sync_data = {
+            "rooms": {
+                "invite": {r: {} for r in [*dead_rooms, live_room]},
+            }
+        }
+
+        start = time.monotonic()
+        # Monkey-patch the per-room timeout via a wrapping call.
+        original = self.adapter._join_room_by_id
+        async def short_timeout(room_id):
+            return await original(room_id, timeout=0.1)
+        self.adapter._join_room_by_id = short_timeout
+
+        await self.adapter._join_pending_invites(sync_data)
+        elapsed = time.monotonic() - start
+
+        # Sequential would be ~5 × 0.1 = 0.5s minimum; concurrent is ~0.1s.
+        # Allow 0.4s of slack for scheduler jitter on slow CI.
+        assert elapsed < 0.4, (
+            f"_join_pending_invites took {elapsed:.2f}s — joins not parallelised"
+        )
+        assert live_room in self.adapter._joined_rooms
+        for dead in dead_rooms:
+            assert dead not in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_join_pending_invites_skips_already_joined(self):
+        """Rooms already in ``_joined_rooms`` should not be re-joined."""
+        self.adapter._joined_rooms = {"!already:example.org"}
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+
+        sync_data = {"rooms": {"invite": {"!already:example.org": {}}}}
+        await self.adapter._join_pending_invites(sync_data)
+
+        self.adapter._client.join_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_join_pending_invites_empty_sync_is_noop(self):
+        """A sync with no invite section should be a clean noop, not crash."""
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+
+        await self.adapter._join_pending_invites({})
+        await self.adapter._join_pending_invites({"rooms": {}})
+        await self.adapter._join_pending_invites({"rooms": {"invite": None}})
+
+        self.adapter._client.join_room.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_join_room_logs_timeout_distinct_from_other_errors(self, caplog):
+        """A timeout should produce a recognisable log line ('timed out joining')
+        so that operators can distinguish a dead room from a generic join error
+        when triaging the loop in #29303."""
+        import logging
+
+        async def never_returns(_room):
+            await asyncio.sleep(60.0)
+
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = never_returns
+
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.matrix"):
+            await self.adapter._join_room_by_id(
+                "!dead:dead.example.org", timeout=0.05
+            )
+
+        assert any(
+            "timed out joining" in rec.message and "!dead:dead.example.org" in rec.message
+            for rec in caplog.records
+        )
