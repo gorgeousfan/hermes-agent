@@ -6,7 +6,7 @@ import json
 import re
 import tomllib
 from pathlib import Path
-import xml.etree.ElementTree as ET
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "acp_registry" / "agent.json"
@@ -67,7 +67,7 @@ def test_agent_json_pins_uvx_package_to_pyproject_version():
 
 
 def test_icon_svg_is_16x16_current_color():
-    root = ET.fromstring(ICON.read_text(encoding="utf-8"))
+    root = _safe_fromstring(ICON.read_text(encoding="utf-8"))
 
     assert root.attrib["viewBox"] == "0 0 16 16"
     assert root.attrib["width"] == "16"
@@ -82,7 +82,7 @@ def test_icon_svg_has_no_hardcoded_colors_or_gradients():
     assert "url(#" not in text
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", text)
 
-    root = ET.fromstring(text)
+    root = _safe_fromstring(text)
     for element in root.iter():
         for attr in ("fill", "stroke"):
             value = element.attrib.get(attr)

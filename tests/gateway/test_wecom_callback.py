@@ -1,7 +1,7 @@
 """Tests for the WeCom callback-mode adapter."""
 
 import asyncio
-from xml.etree import ElementTree as ET
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 import pytest
 
@@ -35,7 +35,7 @@ class TestWecomCrypto:
         encrypted_xml = crypt.encrypt(
             "<xml><Content>hello</Content></xml>", nonce="nonce123", timestamp="123456",
         )
-        root = ET.fromstring(encrypted_xml)
+        root = _safe_fromstring(encrypted_xml)
         decrypted = crypt.decrypt(
             root.findtext("MsgSignature", default=""),
             root.findtext("TimeStamp", default=""),
@@ -48,7 +48,7 @@ class TestWecomCrypto:
         app = _app()
         crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
         encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
-        root = ET.fromstring(encrypted_xml)
+        root = _safe_fromstring(encrypted_xml)
         from gateway.platforms.wecom_crypto import SignatureError
         with pytest.raises(SignatureError):
             crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))

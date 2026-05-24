@@ -64,6 +64,11 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # XXE-safe XML parsing — drop-in replacement for xml.etree.ElementTree
+  # that blocks external entities, DTD fetching, and entity expansion.
+  # Used by gateway/wecom_callback, skills/watch_rss, skills/simplify_redlines,
+  # skills/search_arxiv, etc.  Zero transitive deps.
+  "defusedxml==0.7.1",
 ]
 
 [project.optional-dependencies]

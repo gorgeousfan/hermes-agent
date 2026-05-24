@@ -19,6 +19,8 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from defusedxml.ElementTree import fromstring as _safe_fromstring
+from defusedxml import DefusedXmlException
 from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -35,8 +37,8 @@ def _parse_feed(xml_bytes: bytes):
     Handles both RSS 2.0 ``<item>`` and Atom ``<entry>``.
     """
     try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
+        root = _safe_fromstring(xml_bytes)
+    except (ET.ParseError, DefusedXmlException) as e:
         print(f"watch_rss: invalid XML: {e}", file=sys.stderr)
         sys.exit(2)
 
