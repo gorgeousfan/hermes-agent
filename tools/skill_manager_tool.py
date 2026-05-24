@@ -111,6 +111,65 @@ SKILLS_DIR = HERMES_HOME / "skills"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
+AUTHORITY_PRESERVATION_REFUSAL = (
+    "Refusing skill update because it would remove human authority or "
+    "restrict human actions. Hermes skills may not be modified in a way "
+    "that demotes the user's ultimate authority, deletes an existing human-"
+    "authority instruction, or adds an agent-side restriction on human action."
+)
+
+AUTHORITY_PHRASES = (
+    "ultimate human authority",
+    "human authority",
+    "human is the authority",
+    "human remains the authority",
+    "user authority",
+    "sebastian is the ultimate",
+    "sebastian is the admin",
+)
+
+HUMAN_TARGET_TERMS = (
+    "human",
+    "user",
+    "sebastian",
+    "christy",
+    "operator",
+    "owner",
+    "admin",
+)
+
+RESTRICTION_TERMS = (
+    "restrict",
+    "restriction",
+    "prevent",
+    "forbid",
+    "block",
+    "deny",
+    "refuse",
+    "override",
+    "overrule",
+    "demote",
+    "remove authority",
+    "reduce authority",
+)
+
+CONDITIONAL_RESTRICTION_TERMS = (
+    "not allowed",
+    "cannot",
+    "must not",
+    "may not",
+)
+
+RESTRICTION_CONTEXT_TERMS = (
+    "act",
+    "action",
+    "authority",
+    "choose",
+    "choice",
+    "decide",
+    "decision",
+)
+
 
 def _containing_skills_root(skill_path: Path) -> Path:
     """Return the skills root directory (local or external_dirs entry) that
@@ -174,6 +233,56 @@ ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 # =============================================================================
 # Validation helpers
 # =============================================================================
+
+
+def _normalized_authority_lines(content: str) -> set[str]:
+    """Return normalized lines that carry explicit human-authority meaning."""
+    lines: set[str] = set()
+    for line in content.splitlines():
+        normalized = " ".join(line.lower().split())
+        if any(phrase in normalized for phrase in AUTHORITY_PHRASES):
+            lines.add(normalized)
+    return lines
+
+
+def _added_lines(old_content: str, new_content: str) -> list[str]:
+    old_lines = set(old_content.splitlines())
+    return [line for line in new_content.splitlines() if line not in old_lines]
+
+
+def _restricts_human_actions(line: str) -> bool:
+    normalized = " ".join(line.lower().split())
+    if not any(target in normalized for target in HUMAN_TARGET_TERMS):
+        return False
+    if any(term in normalized for term in RESTRICTION_TERMS):
+        return True
+    return (
+        any(term in normalized for term in CONDITIONAL_RESTRICTION_TERMS)
+        and any(term in normalized for term in RESTRICTION_CONTEXT_TERMS)
+    )
+
+
+def _authority_preservation_error(old_content: str, new_content: str) -> Optional[str]:
+    """Refuse skill edits that delete authority or add human restrictions.
+
+    Skills can steer future agent behavior. If a skill already contains explicit
+    human-authority language, an agent must not be able to silently erase it.
+    Likewise, a skill update must not introduce new language that restricts a
+    human/user/operator's ability to act. These checks are deliberately local
+    to updates: creating ordinary skills is still allowed, and benign edits to
+    unrelated text continue to work.
+    """
+    old_authority = _normalized_authority_lines(old_content)
+    if old_authority:
+        new_authority = _normalized_authority_lines(new_content)
+        if not old_authority.issubset(new_authority):
+            return AUTHORITY_PRESERVATION_REFUSAL
+
+    if any(_restricts_human_actions(line) for line in _added_lines(old_content, new_content)):
+        return AUTHORITY_PRESERVATION_REFUSAL
+
+    return None
+
 
 def _validate_name(name: str) -> Optional[str]:
     """Validate a skill name. Returns error message or None if valid."""
@@ -444,6 +553,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+    if original_content is not None:
+        err = _authority_preservation_error(original_content, content)
+        if err:
+            return {"success": False, "error": err}
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -538,6 +651,9 @@ def _patch_skill(
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
+        err = _authority_preservation_error(content, new_content)
+        if err:
+            return {"success": False, "error": err}
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
@@ -593,6 +709,12 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
             }
 
     skill_dir = existing["path"]
+    skill_md = skill_dir / "SKILL.md"
+    if skill_md.exists():
+        authority_content = skill_md.read_text(encoding="utf-8")
+        if _normalized_authority_lines(authority_content):
+            return {"success": False, "error": AUTHORITY_PRESERVATION_REFUSAL}
+
     skills_root = _containing_skills_root(skill_dir)
     shutil.rmtree(skill_dir)
 
