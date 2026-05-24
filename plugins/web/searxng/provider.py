@@ -27,6 +27,7 @@ import os
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
+from plugins.web.retry_policy import call_with_429_retry
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +68,15 @@ class SearXNGWebSearchProvider(WebSearchProvider):
         }
 
         try:
-            resp = httpx.get(
-                f"{base_url}/search",
-                params=params,
-                timeout=15,
-                headers={"Accept": "application/json"},
+            resp = call_with_429_retry(
+                lambda: httpx.get(
+                    f"{base_url}/search",
+                    params=params,
+                    timeout=15,
+                    headers={"Accept": "application/json"},
+                ),
+                provider_name="SearXNG",
             )
-            resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("SearXNG HTTP error: %s", exc)
             return {

@@ -317,6 +317,24 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Web Tool Configuration
+# =============================================================================
+# Controls backend selection and HTTP 429 retry behavior for web providers
+# (Brave Search, SearXNG, Tavily).
+web:
+  # Shared fallback backend used when per-capability backend keys are empty.
+  # Valid values include: "firecrawl", "parallel", "tavily", "exa",
+  # "searxng", "brave-free", "ddgs"
+  backend: ""
+  # Optional per-capability backend overrides.
+  search_backend: ""
+  extract_backend: ""
+  # HTTP 429 retry policy (applies to providers that return 429).
+  retry_on_429: true
+  retry_count: 3
+  retry_interval: 60
+
+# =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed

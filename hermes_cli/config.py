@@ -673,6 +673,9 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "retry_on_429": True,    # retry HTTP 429 responses from web providers
+        "retry_count": 3,        # retries after the first 429 response
+        "retry_interval": 60.0,  # fallback wait seconds between 429 retries
     },
 
     "browser": {

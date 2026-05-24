@@ -24,6 +24,7 @@ import os
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
+from plugins.web.retry_policy import call_with_429_retry
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +74,18 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         count = max(1, min(int(limit), 20))
 
         try:
-            resp = httpx.get(
-                _BRAVE_ENDPOINT,
-                params={"q": query, "count": count},
-                headers={
-                    "X-Subscription-Token": api_key,
-                    "Accept": "application/json",
-                },
-                timeout=15,
+            resp = call_with_429_retry(
+                lambda: httpx.get(
+                    _BRAVE_ENDPOINT,
+                    params={"q": query, "count": count},
+                    headers={
+                        "X-Subscription-Token": api_key,
+                        "Accept": "application/json",
+                    },
+                    timeout=15,
+                ),
+                provider_name="Brave Search",
             )
-            resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
             logger.warning("Brave Search HTTP error: %s", exc)
             return {

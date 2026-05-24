@@ -37,6 +37,7 @@ import os
 from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
+from plugins.web.retry_policy import call_with_429_retry
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +68,10 @@ def _tavily_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     # /search and /extract are body-only.
     headers = {"Authorization": f"Bearer {api_key}"} if endpoint.strip("/") == "crawl" else {}
 
-    response = httpx.post(url, json=payload, headers=headers, timeout=60)
-    response.raise_for_status()
+    response = call_with_429_retry(
+        lambda: httpx.post(url, json=payload, headers=headers, timeout=60),
+        provider_name="Tavily",
+    )
     return response.json()
 
 
