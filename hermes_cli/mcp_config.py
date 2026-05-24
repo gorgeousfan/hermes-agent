@@ -548,6 +548,10 @@ def cmd_mcp_test(args):
     headers = cfg.get("headers", {})
     if auth_type == "oauth":
         _info("Auth: OAuth 2.1 PKCE")
+    elif auth_type == "oauth_client_credentials":
+        scope = (cfg.get("oauth") or {}).get("scope", "") if isinstance(cfg.get("oauth"), dict) else ""
+        suffix = f" (scope={scope})" if scope else ""
+        _info(f"Auth: OAuth 2.0 client_credentials{suffix}")
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):

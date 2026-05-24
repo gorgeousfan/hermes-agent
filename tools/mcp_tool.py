@@ -90,6 +90,8 @@ import sys
 import threading
 import time
 from datetime import datetime
+
+import httpx
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -331,6 +333,113 @@ def _exc_str(exc: BaseException) -> str:
     """
     text = str(exc).strip()
     return text if text else repr(exc)
+
+
+class _OAuthClientCredentialsAuth(httpx.Auth):
+    """httpx auth helper for machine-to-machine MCP OAuth clients.
+
+    This is intentionally separate from the interactive OAuth/PKCE manager.
+    GBrain's read-only MCP client uses a pre-issued client id/secret and a
+    ``client_credentials`` token exchange; it must not open a browser flow.
+    """
+
+    def __init__(self, server_name: str, oauth_config: dict):
+        self.server_name = server_name
+        resolved = _interpolate_env_vars(dict(oauth_config or {}))
+        self.oauth_config: dict = resolved if isinstance(resolved, dict) else {}
+        self._token: Optional[str] = None
+        self._expires_at: float = 0.0
+        self._lock: Optional[asyncio.Lock] = None
+
+    def _lock_for_loop(self) -> asyncio.Lock:
+        # Auth objects may be created before the MCP loop is running. Create
+        # the lock lazily inside the active loop.
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    def _required(self, key: str) -> str:
+        value = str(self.oauth_config.get(key) or "").strip()
+        if not value or value.startswith("${"):
+            raise ValueError(
+                f"MCP server '{self.server_name}' oauth_client_credentials "
+                f"requires oauth.{key}"
+            )
+        return value
+
+    def _validate_token_url(self, token_url: str) -> None:
+        parsed = urlparse(token_url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme == "https":
+            return
+        if (
+            parsed.scheme == "http"
+            and host in {"localhost", "127.0.0.1", "::1"}
+            and self.oauth_config.get("allow_insecure_token_url") is True
+        ):
+            return
+        raise ValueError(
+            f"MCP server '{self.server_name}' oauth_client_credentials "
+            "requires an https token_url"
+        )
+
+    async def _ensure_token(self, *, force: bool = False) -> str:
+        async with self._lock_for_loop():
+            if (
+                not force
+                and self._token
+                and time.monotonic() < self._expires_at - 60
+            ):
+                return self._token
+
+            import httpx
+
+            token_url = self._required("token_url")
+            self._validate_token_url(token_url)
+            client_id = self._required("client_id")
+            client_secret = self._required("client_secret")
+            scope = str(self.oauth_config.get("scope") or "").strip()
+
+            data = {
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }
+            if scope:
+                data["scope"] = scope
+
+            timeout = float(self.oauth_config.get("timeout", 30))
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    token_url,
+                    data=data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+
+            token = str(payload.get("access_token") or "").strip()
+            if not token:
+                raise ValueError(
+                    f"MCP server '{self.server_name}' token endpoint did not "
+                    "return access_token"
+                )
+            try:
+                expires_in = float(payload.get("expires_in") or 900)
+            except (TypeError, ValueError):
+                expires_in = 900.0
+            self._token = token
+            self._expires_at = time.monotonic() + max(expires_in, 60.0)
+            return token
+
+    async def async_auth_flow(self, request):
+        token = await self._ensure_token()
+        request.headers["Authorization"] = f"Bearer {token}"
+        response = yield request
+        if response.status_code == 401:
+            token = await self._ensure_token(force=True)
+            request.headers["Authorization"] = f"Bearer {token}"
+            yield request
 
 
 # ---------------------------------------------------------------------------
@@ -1363,12 +1472,13 @@ class MCPServerTask:
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
         ssl_verify = config.get("ssl_verify", True)
 
-        # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
-        # same provider instance is reused across reconnects, pre-flow
-        # disk-watch is active, and config-time CLI code paths share state.
-        # If OAuth setup fails (e.g. non-interactive env without cached
-        # tokens), re-raise so this server is reported as failed without
-        # blocking other MCP servers from connecting.
+        # OAuth auth for HTTP transports.
+        # - ``oauth`` is interactive OAuth/PKCE and routes through the central
+        #   MCPOAuthManager.
+        # - ``oauth_client_credentials`` is a non-interactive machine client
+        #   used by read-only remote MCP servers such as GBrain.
+        # If OAuth setup fails, re-raise so this server is reported as failed
+        # without blocking other MCP servers from connecting.
         _oauth_auth = None
         if self._auth_type == "oauth":
             try:
@@ -1378,6 +1488,17 @@ class MCPServerTask:
                 )
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+                raise
+        elif self._auth_type == "oauth_client_credentials":
+            try:
+                _oauth_auth = _OAuthClientCredentialsAuth(
+                    self.name, config.get("oauth") or {},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MCP OAuth client_credentials setup failed for '%s': %s",
+                    self.name, exc,
+                )
                 raise
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}

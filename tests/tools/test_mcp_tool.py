@@ -1569,6 +1569,143 @@ class TestHTTPConfig:
         assert captured["legacy_headers"]["MCP-Protocol-Version"] == "custom-version"
         assert "mcp-protocol-version" not in captured["legacy_headers"]
 
+    def test_http_client_credentials_auth_object_passed_to_http_client(self):
+        from tools.mcp_tool import MCPServerTask, _OAuthClientCredentialsAuth
+
+        server = MCPServerTask("remote")
+        server._auth_type = "oauth_client_credentials"
+        captured = {}
+
+        class DummyAsyncClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummyTransportCtx:
+            async def __aenter__(self):
+                return MagicMock(), MagicMock(), (lambda: None)
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummySession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+        async def _discover_tools(self):
+            self._shutdown_event.set()
+
+        async def _run():
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+                 patch("httpx.AsyncClient", DummyAsyncClient), \
+                 patch("tools.mcp_tool.streamable_http_client", return_value=DummyTransportCtx()), \
+                 patch("tools.mcp_tool.ClientSession", DummySession), \
+                 patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+                await server._run_http({
+                    "url": "https://example.com/mcp",
+                    "auth": "oauth_client_credentials",
+                    "oauth": {
+                        "client_id": "client",
+                        "client_secret": "secret",
+                        "scope": "read",
+                        "token_url": "https://example.com/token",
+                    },
+                })
+
+        asyncio.run(_run())
+        assert isinstance(captured["auth"], _OAuthClientCredentialsAuth)
+        assert captured["auth"].oauth_config["scope"] == "read"
+
+    def test_client_credentials_auth_flow_uses_bearer_and_refreshes_on_401(self):
+        from tools.mcp_tool import _OAuthClientCredentialsAuth
+
+        auth = _OAuthClientCredentialsAuth(
+            "remote",
+            {
+                "client_id": "client",
+                "client_secret": "secret",
+                "scope": "read",
+                "token_url": "https://example.com/token",
+            },
+        )
+        tokens = iter(["first-token", "second-token"])
+
+        async def fake_ensure_token(*, force=False):
+            return next(tokens)
+
+        auth._ensure_token = fake_ensure_token  # type: ignore[method-assign]
+        request = SimpleNamespace(headers={})
+        unauthorized = SimpleNamespace(status_code=401)
+
+        async def _run():
+            flow = auth.async_auth_flow(request)
+            first_request = await flow.__anext__()
+            assert first_request.headers["Authorization"] == "Bearer first-token"
+            second_request = await flow.asend(unauthorized)
+            assert second_request.headers["Authorization"] == "Bearer second-token"
+            with pytest.raises(StopAsyncIteration):
+                await flow.asend(SimpleNamespace(status_code=200))
+
+        asyncio.run(_run())
+
+    def test_client_credentials_requires_https_token_url(self):
+        from tools.mcp_tool import _OAuthClientCredentialsAuth
+
+        auth = _OAuthClientCredentialsAuth(
+            "remote",
+            {
+                "client_id": "client",
+                "client_secret": "secret",
+                "token_url": "http://example.com/token",
+            },
+        )
+        with pytest.raises(ValueError, match="requires an https token_url"):
+            auth._validate_token_url("http://example.com/token")
+
+    def test_client_credentials_allows_explicit_localhost_http_opt_in(self):
+        from tools.mcp_tool import _OAuthClientCredentialsAuth
+
+        auth = _OAuthClientCredentialsAuth(
+            "remote",
+            {
+                "client_id": "client",
+                "client_secret": "secret",
+                "token_url": "http://127.0.0.1:8765/token",
+                "allow_insecure_token_url": True,
+            },
+        )
+        auth._validate_token_url("http://127.0.0.1:8765/token")
+
+    def test_client_credentials_rejects_localhost_http_without_exact_opt_in(self):
+        from tools.mcp_tool import _OAuthClientCredentialsAuth
+
+        for opt_in in (None, False, "true"):
+            cfg: dict = {
+                "client_id": "client",
+                "client_secret": "secret",
+                "token_url": "http://localhost:8765/token",
+            }
+            if opt_in is not None:
+                cfg["allow_insecure_token_url"] = opt_in
+            auth = _OAuthClientCredentialsAuth("remote", cfg)
+            with pytest.raises(ValueError, match="requires an https token_url"):
+                auth._validate_token_url("http://localhost:8765/token")
+
 
 # ---------------------------------------------------------------------------
 # Reconnection logic
