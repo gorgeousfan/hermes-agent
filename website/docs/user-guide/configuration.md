@@ -1387,6 +1387,33 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
 
+## Per-Message Timestamps
+
+Prepend an ISO-8601 timestamp to each inbound user message before it enters the agent loop:
+
+```yaml
+timestamp_messages: false                # default (off)
+message_timestamp_threshold_seconds: 600 # default — only prefix after 10min+ gap
+```
+
+When `timestamp_messages: true`, incoming user messages may be rewritten from `hello` to `[2026-05-15T19:25:00+01:00] hello` before the agent sees it. This is useful for long-running sessions (e.g. an always-on Telegram chat that spans many hours or days) where the only built-in clock signal is the "session start" line in the system prompt — without timestamps the model has no way to tell whether your last message arrived 30 seconds ago or three hours ago.
+
+The `message_timestamp_threshold_seconds` knob controls when the prefix is actually added:
+
+- **`600` (default)**: prefix only when the gap since the previous inbound message in the same session exceeds 10 minutes. Avoids token waste during active back-and-forth where the model already has temporal context, while still re-anchoring after a meaningful pause.
+- **`0`**: prefix every message (legacy always-on behaviour).
+- **Higher values** (e.g. `3600`): only re-anchor after big gaps. Useful for chatty setups.
+
+Behavioural notes:
+
+- The first message in a session (or after a gateway restart) always gets a prefix — there's no prior timestamp in memory, which is treated as a "fresh re-anchor" situation.
+- The gap is tracked per session (DM, group, thread), so two users chatting in parallel sessions don't interfere with each other's anchors.
+- The gap is rolling: the anchor advances on every message, prefixed or not. Three messages 5 minutes apart will only prefix the first one when the threshold is 10 minutes.
+- Timestamps come from the platform's own message timestamp (e.g. Telegram's `date` field), not the gateway's wall clock when the message is processed.
+- Rendered in the gateway host's local timezone. Override with the standard `TZ` environment variable when running the gateway.
+- Off by default to avoid surprising downstream consumers that grep the transcript text.
+- Currently wired up for Telegram. Other platforms still pass `event.timestamp` through, so this flag will work everywhere `MessageEvent.timestamp` is populated.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

@@ -1622,6 +1622,12 @@ class GatewayRunner:
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        # Tracks the timestamp of the most recent inbound message per session,
+        # used by the per-message timestamp prefix feature to suppress prefixes
+        # during active back-and-forth. Lives only in-memory: a gateway restart
+        # naturally re-anchors via a fresh prefix on the first message, which
+        # is the desired behaviour for a long-gap recovery.
+        self._last_inbound_message_ts: Dict[str, datetime] = {}
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
@@ -7669,6 +7675,55 @@ class GatewayRunner:
         )
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
+
+        # Optional per-message timestamp prefix. Off by default. Renders the
+        # platform-supplied event timestamp as ISO-8601 with a numeric offset
+        # in the gateway host's local timezone. Applied before any context
+        # backfill or media enrichment so the timestamp brackets the trigger
+        # message only.
+        #
+        # When ``message_timestamp_threshold_seconds`` is positive (default
+        # 600s / 10 min), the prefix is suppressed for messages arriving
+        # within that window of the previous inbound message in the same
+        # session — avoids token waste during active back-and-forth.  The
+        # first message after gateway restart always gets a prefix (no prior
+        # timestamp in memory), which is the desired re-anchor behaviour.
+        # Set the threshold to 0 to prefix every message (legacy behaviour).
+        if getattr(self.config, "timestamp_messages", False):
+            _ts = getattr(event, "timestamp", None)
+            if _ts is not None:
+                try:
+                    # `astimezone()` with no argument converts to local time;
+                    # for naive datetimes it assumes the value is local already,
+                    # which matches our datetime.now() fallback in MessageEvent.
+                    _ts_local = _ts.astimezone()
+                    _threshold = max(
+                        int(getattr(self.config, "message_timestamp_threshold_seconds", 600) or 0),
+                        0,
+                    )
+                    _prev = self._last_inbound_message_ts.get(session_key)
+                    _should_prefix = True
+                    if _threshold > 0 and _prev is not None:
+                        try:
+                            _gap = (_ts_local - _prev).total_seconds()
+                        except Exception:
+                            _gap = None
+                        # Negative gaps (out-of-order delivery) are treated as
+                        # "fresh enough" — don't re-anchor on a late-arriving
+                        # message that pre-dates the last one we saw.
+                        if _gap is not None and _gap <= _threshold:
+                            _should_prefix = False
+                    if _should_prefix:
+                        # ISO 8601, second precision, with numeric offset.
+                        _stamp = _ts_local.replace(microsecond=0).isoformat()
+                        message_text = f"[{_stamp}] {message_text}"
+                    # Always update the last-seen timestamp, even when we skip
+                    # the prefix — the threshold is a rolling gap, not anchored
+                    # to the last *prefixed* message.
+                    self._last_inbound_message_ts[session_key] = _ts_local
+                except Exception:
+                    # Bad timestamps must never block message delivery.
+                    logger.debug("timestamp_messages: failed to format event.timestamp", exc_info=True)
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the

@@ -483,6 +483,26 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # Per-message timestamps: when True, prepend each inbound user message
+    # with an ISO-8601 timestamp (rendered in the gateway host's local tz)
+    # before it enters the agent loop. Helps the model reason about message
+    # gaps in long-running sessions where the system prompt's "session
+    # start" timestamp is the only clock signal. Off by default — opt-in
+    # to avoid surprising downstream consumers that grep transcript text.
+    timestamp_messages: bool = False
+
+    # Gap-since-last-message threshold (seconds) that gates the per-message
+    # timestamp prefix above. Only applies when timestamp_messages is True.
+    # 0 = always prepend (legacy behaviour). Positive values skip the prefix
+    # for messages arriving within ``threshold`` seconds of the previous
+    # inbound message in the same session — avoids token waste in active
+    # back-and-forth where the model already has temporal context. The
+    # default (600s / 10min) re-anchors on the first message after any
+    # meaningful pause without spamming prefixes mid-conversation. The first
+    # message after gateway restart always gets a prefix (no prior timestamp
+    # in memory), which is the desired behaviour: re-anchor after a gap.
+    message_timestamp_threshold_seconds: int = 600
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -583,6 +603,8 @@ class GatewayConfig:
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "timestamp_messages": self.timestamp_messages,
+            "message_timestamp_threshold_seconds": self.message_timestamp_threshold_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -628,6 +650,12 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        timestamp_messages = data.get("timestamp_messages")
+        message_timestamp_threshold_seconds = _coerce_int(
+            data.get("message_timestamp_threshold_seconds"), 600,
+        )
+        if message_timestamp_threshold_seconds < 0:
+            message_timestamp_threshold_seconds = 0
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -651,6 +679,8 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            timestamp_messages=_coerce_bool(timestamp_messages, False),
+            message_timestamp_threshold_seconds=message_timestamp_threshold_seconds,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -740,6 +770,12 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            if "timestamp_messages" in yaml_cfg:
+                gw_data["timestamp_messages"] = yaml_cfg["timestamp_messages"]
+
+            if "message_timestamp_threshold_seconds" in yaml_cfg:
+                gw_data["message_timestamp_threshold_seconds"] = yaml_cfg["message_timestamp_threshold_seconds"]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
