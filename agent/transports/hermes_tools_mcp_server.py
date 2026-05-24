@@ -105,6 +105,97 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+def _strict_mcp_input_schema(schema: Any) -> dict[str, Any]:
+    """Return an MCP input schema compatible with strict JSON Schema clients.
+
+    Hermes tool definitions are authored for chat-completion function calling.
+    When we expose them through MCP, clients such as Codex/OpenAI strict-mode
+    validators expect object schemas to declare ``additionalProperties: false``.
+    Add that recursively without mutating the source tool definition.
+    """
+    if not isinstance(schema, dict):
+        schema = {}
+    normalized = json.loads(json.dumps(schema))
+    if not isinstance(normalized, dict):
+        normalized = {}
+    if normalized.get("type") != "object" and "properties" not in normalized:
+        normalized = {"type": "object", "properties": {}}
+    normalized.setdefault("type", "object")
+    normalized.setdefault("properties", {})
+    _add_strict_additional_properties(normalized)
+    return normalized
+
+
+def _add_strict_additional_properties(node: Any) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _add_strict_additional_properties(item)
+        return
+    if not isinstance(node, dict):
+        return
+
+    node_type = node.get("type")
+    node_types = set(node_type) if isinstance(node_type, list) else {node_type}
+    if "object" in node_types or "properties" in node:
+        node.setdefault("additionalProperties", False)
+
+    for key in (
+        "properties",
+        "$defs",
+        "definitions",
+        "patternProperties",
+        "dependentSchemas",
+    ):
+        child_map = node.get(key)
+        if isinstance(child_map, dict):
+            for child in child_map.values():
+                _add_strict_additional_properties(child)
+
+    for key in ("items", "additionalProperties", "not", "if", "then", "else"):
+        _add_strict_additional_properties(node.get(key))
+
+    for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+        _add_strict_additional_properties(node.get(key))
+
+
+def _register_tool_with_schema(
+    mcp: Any,
+    handler: Any,
+    *,
+    name: str,
+    description: str,
+    input_schema: dict[str, Any],
+) -> None:
+    """Register a FastMCP tool while preserving Hermes' JSON schema.
+
+    Current FastMCP releases derive schema from Python signatures and do not
+    accept an ``input_schema`` argument on ``FastMCP.add_tool``. Hermes tools are
+    discovered dynamically, so their authoritative schema lives in
+    ``model_tools``. Use the tool manager when available so the advertised MCP
+    schema matches the Hermes tool schema.
+    """
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    manager_add_tool = getattr(tool_manager, "add_tool", None)
+    if callable(manager_add_tool):
+        tool = manager_add_tool(
+            handler,
+            name=name,
+            description=description,
+        )
+        if hasattr(tool, "parameters"):
+            tool.parameters = input_schema
+        return
+
+    try:
+        mcp.add_tool(handler, name=name, description=description)
+    except TypeError:
+        handler = mcp.tool(name=name, description=description)(handler)
+    tool_map = getattr(tool_manager, "_tools", None)
+    tool = tool_map.get(name) if isinstance(tool_map, dict) else None
+    if tool is not None and hasattr(tool, "parameters"):
+        tool.parameters = input_schema
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -152,13 +243,12 @@ def _build_server() -> Any:
             continue
 
         description = spec.get("description") or f"Hermes {name} tool"
-        params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
+        params_schema = _strict_mcp_input_schema(spec.get("parameters"))
 
         # FastMCP wants a Python callable. Build a closure that takes the
         # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
+        # the result string. The schema is attached after registration because
+        # FastMCP derives schemas from Python signatures by default.
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
@@ -170,19 +260,13 @@ def _build_server() -> Any:
             _dispatch.__doc__ = description
             return _dispatch
 
-        try:
-            mcp.add_tool(
-                _make_handler(name),
-                name=name,
-                description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
-            )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
-            handler = mcp.tool(name=name, description=description)(handler)
+        _register_tool_with_schema(
+            mcp,
+            _make_handler(name),
+            name=name,
+            description=description,
+            input_schema=params_schema,
+        )
 
         exposed_count += 1
 

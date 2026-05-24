@@ -8,6 +8,9 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import sys
+import types
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -97,6 +100,102 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+
+class TestStrictSchemas:
+    def test_strict_mcp_input_schema_adds_additional_properties_recursively(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        source = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer"},
+                    },
+                },
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}},
+                    },
+                },
+                "mode": {
+                    "anyOf": [
+                        {"type": "object", "properties": {"fast": {"type": "boolean"}}},
+                        {"type": "string"},
+                    ],
+                },
+            },
+        }
+
+        strict = m._strict_mcp_input_schema(source)
+
+        assert strict["additionalProperties"] is False
+        assert strict["properties"]["options"]["additionalProperties"] is False
+        assert strict["properties"]["filters"]["items"]["additionalProperties"] is False
+        assert strict["properties"]["mode"]["anyOf"][0]["additionalProperties"] is False
+        assert "additionalProperties" not in source
+
+    def test_build_server_attaches_hermes_schema_to_fastmcp_tool(self, monkeypatch):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        class FakeToolManager:
+            def __init__(self):
+                self.tools = {}
+
+            def add_tool(self, fn, name=None, description=None, **kwargs):
+                tool = SimpleNamespace(
+                    fn=fn,
+                    name=name,
+                    description=description,
+                    parameters={"type": "object", "properties": {"kwargs": {}}},
+                )
+                self.tools[name] = tool
+                return tool
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self._tool_manager = FakeToolManager()
+
+        fake_fastmcp = types.ModuleType("mcp.server.fastmcp")
+        fake_fastmcp.FastMCP = FakeFastMCP
+        monkeypatch.setitem(sys.modules, "mcp", types.ModuleType("mcp"))
+        monkeypatch.setitem(sys.modules, "mcp.server", types.ModuleType("mcp.server"))
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fake_fastmcp)
+
+        fake_model_tools = types.ModuleType("model_tools")
+        fake_model_tools.get_tool_definitions = lambda quiet_mode=True: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "options": {
+                                "type": "object",
+                                "properties": {"limit": {"type": "integer"}},
+                            },
+                        },
+                    },
+                },
+            }
+        ]
+        fake_model_tools.handle_function_call = lambda name, args: "ok"
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        server = m._build_server()
+
+        tool = server._tool_manager.tools["web_search"]
+        assert tool.parameters["properties"]["query"]["type"] == "string"
+        assert tool.parameters["additionalProperties"] is False
+        assert tool.parameters["properties"]["options"]["additionalProperties"] is False
 
 
 class TestMain:
