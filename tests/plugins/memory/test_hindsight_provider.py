@@ -1440,6 +1440,33 @@ class TestAvailability:
         p = HindsightMemoryProvider()
         assert not p.is_available()
 
+    def test_check_local_runtime_does_not_import_nonexistent_hindsight_pkg(self, monkeypatch):
+        """Regression for #27386: _check_local_runtime must not require the
+        legacy top-level ``hindsight`` package - only ``hindsight_embed`` is
+        installed in supported deployments, and probing for the missing
+        ``hindsight`` module caused ``hermes memory status`` to falsely
+        report the provider as "not available" in local_embedded mode."""
+        from plugins.memory import hindsight as hs_mod
+
+        imported = []
+
+        def _record(name):
+            imported.append(name)
+            if name == "hindsight":
+                raise ModuleNotFoundError("No module named 'hindsight'")
+            return object()
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.importlib.import_module", _record
+        )
+        ok, err = hs_mod._check_local_runtime()
+        assert ok is True, f"_check_local_runtime should succeed when hindsight_embed is importable; got err={err!r}"
+        assert err is None
+        assert "hindsight" not in imported, (
+            f"_check_local_runtime must not probe legacy 'hindsight' package; imported={imported!r}"
+        )
+        assert "hindsight_embed.daemon_embed_manager" in imported
+
     def test_initialize_disables_local_mode_when_runtime_import_fails(self, tmp_path, monkeypatch):
         config = {"mode": "local_embedded"}
         config_path = tmp_path / "hindsight" / "config.json"
