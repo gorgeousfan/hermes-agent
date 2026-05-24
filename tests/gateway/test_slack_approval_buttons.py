@@ -43,8 +43,19 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from gateway.platforms.slack import SlackAdapter
+from gateway.platforms.slack import SlackAdapter, _slack_interaction_user_authorized
 from gateway.config import Platform, PlatformConfig
+
+
+@pytest.fixture(autouse=True)
+def _clear_slack_interaction_auth_env(monkeypatch):
+    for name in (
+        "SLACK_ALLOWED_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "SLACK_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _make_adapter():
@@ -57,6 +68,65 @@ def _make_adapter():
     adapter._team_bot_user_ids = {"T1": "U_BOT"}
     adapter._channel_team = {"C1": "T1"}
     return adapter
+
+
+# ===========================================================================
+# Slack interaction authorization
+# ===========================================================================
+
+
+class TestSlackInteractionAuthorization:
+    """Button clicks must follow the gateway's external-surface auth model."""
+
+    def test_no_allowlist_rejects_by_default(self, monkeypatch):
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        assert _slack_interaction_user_authorized("U123") is False
+
+    def test_platform_allowlist_permits_user(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U123,U456")
+
+        assert _slack_interaction_user_authorized("U123") is True
+        assert _slack_interaction_user_authorized("U999") is False
+
+    def test_global_allowlist_permits_user(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "U123")
+
+        assert _slack_interaction_user_authorized("U123") is True
+        assert _slack_interaction_user_authorized("U999") is False
+
+    def test_config_allow_from_permits_user(self, monkeypatch):
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+
+        assert _slack_interaction_user_authorized("U123", {"allow_from": ["U123"]}) is True
+        assert _slack_interaction_user_authorized("U999", {"allow_from": ["U123"]}) is False
+
+    def test_platform_env_allowlist_takes_precedence_over_config(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U999")
+
+        assert _slack_interaction_user_authorized("U999", {"allow_from": ["U123"]}) is True
+        assert _slack_interaction_user_authorized("U123", {"allow_from": ["U123"]}) is False
+
+    @pytest.mark.parametrize(
+        ("env_name", "env_value"),
+        [
+            ("SLACK_ALLOW_ALL_USERS", "true"),
+            ("GATEWAY_ALLOW_ALL_USERS", "yes"),
+        ],
+    )
+    def test_explicit_allow_all_permits_user(self, monkeypatch, env_name, env_value):
+        monkeypatch.setenv(env_name, env_value)
+
+        assert _slack_interaction_user_authorized("U999") is True
+
+    def test_wildcard_allowlist_permits_user(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "*")
+
+        assert _slack_interaction_user_authorized("U999") is True
 
 
 # ===========================================================================
@@ -153,7 +223,8 @@ class TestSlackApprovalAction:
     """Test the approval button click handler."""
 
     @pytest.mark.asyncio
-    async def test_resolves_approval(self):
+    async def test_resolves_approval(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U123")
         adapter = _make_adapter()
         adapter._approval_resolved["1234.5678"] = False
 
@@ -167,7 +238,7 @@ class TestSlackApprovalAction:
                 ],
             },
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"name": "norbert", "id": "U123"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -189,7 +260,8 @@ class TestSlackApprovalAction:
         assert "Approved once by norbert" in update_kwargs["text"]
 
     @pytest.mark.asyncio
-    async def test_prevents_double_click(self):
+    async def test_prevents_double_click(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U123")
         adapter = _make_adapter()
         adapter._approval_resolved["1234.5678"] = True  # Already resolved
 
@@ -197,7 +269,7 @@ class TestSlackApprovalAction:
         body = {
             "message": {"ts": "1234.5678", "blocks": []},
             "channel": {"id": "C1"},
-            "user": {"name": "norbert"},
+            "user": {"name": "norbert", "id": "U123"},
         }
         action = {
             "action_id": "hermes_approve_once",
@@ -212,7 +284,8 @@ class TestSlackApprovalAction:
         mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_deny_action(self):
+    async def test_deny_action(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U123")
         adapter = _make_adapter()
         adapter._approval_resolved["1.2"] = False
 
@@ -222,7 +295,7 @@ class TestSlackApprovalAction:
                 {"type": "section", "text": {"type": "mrkdwn", "text": "cmd"}},
             ]},
             "channel": {"id": "C1"},
-            "user": {"name": "alice"},
+            "user": {"name": "alice", "id": "U123"},
         }
         action = {"action_id": "hermes_deny", "value": "session-key"}
 
@@ -235,6 +308,102 @@ class TestSlackApprovalAction:
         mock_resolve.assert_called_once_with("session-key", "deny")
         update_kwargs = mock_client.chat_update.call_args[1]
         assert "Denied by alice" in update_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_no_allowlist_rejects_approval_button(self, monkeypatch):
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        adapter = _make_adapter()
+        adapter._approval_resolved["1.2"] = False
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "1.2", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "eve", "id": "U999"},
+        }
+        action = {"action_id": "hermes_approve_once", "value": "session-key"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._handle_approval_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+        mock_client.chat_update.assert_not_called()
+        assert adapter._approval_resolved["1.2"] is False
+
+
+# ===========================================================================
+# _handle_slash_confirm_action — button click handler
+# ===========================================================================
+
+class TestSlackSlashConfirmAction:
+    """Test the slash-confirm button click handler authorization."""
+
+    @pytest.mark.asyncio
+    async def test_no_allowlist_rejects_slash_confirm_button(self):
+        adapter = _make_adapter()
+
+        ack = AsyncMock()
+        body = {
+            "message": {"ts": "3.4", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "eve", "id": "U999"},
+        }
+        action = {"action_id": "hermes_confirm_once", "value": "session-key|confirm-id"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+
+        with patch("tools.slash_confirm.resolve", new_callable=AsyncMock) as mock_resolve:
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_not_called()
+        mock_client.chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_user_resolves_slash_confirm_button(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U123")
+        adapter = _make_adapter()
+
+        ack = AsyncMock()
+        body = {
+            "message": {
+                "ts": "3.5",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Confirm this action"},
+                    },
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "alice", "id": "U123"},
+        }
+        action = {"action_id": "hermes_confirm_once", "value": "session-key|confirm-id"}
+
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_update = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "tools.slash_confirm.resolve",
+            new_callable=AsyncMock,
+            return_value="done",
+        ) as mock_resolve:
+            await adapter._handle_slash_confirm_action(ack, body, action)
+
+        ack.assert_called_once()
+        mock_resolve.assert_called_once_with("session-key", "confirm-id", "once")
+        mock_client.chat_update.assert_called_once()
+        mock_client.chat_postMessage.assert_called_once()
 
 
 # ===========================================================================
