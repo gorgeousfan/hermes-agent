@@ -2323,6 +2323,79 @@ class TestParallelTick:
         assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
         assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
 
+    def test_tick_releases_file_lock_before_running_jobs(self):
+        """Regression for #27485: the fcntl/msvcrt tick lock must be released
+        after advance_next_run() completes — *before* any job starts executing.
+
+        Holding the lock through job execution caused 60s tickers to skip
+        for the entire duration of long-running delegations (multi-minute
+        Opus runs), and combined with compute_next_run's grace window this
+        silently dropped missed runs.
+        """
+        from cron import scheduler
+
+        if scheduler.fcntl is None and scheduler.msvcrt is None:
+            pytest.skip("no file-locking primitive on this platform")
+
+        events: list = []
+
+        def mock_run_job(job):
+            events.append(("run_job", job["id"]))
+            return (True, "output", "response", None)
+
+        jobs = [
+            {"id": "long-1", "name": "long-1", "deliver": "local"},
+            {"id": "long-2", "name": "long-2", "deliver": "local"},
+        ]
+
+        patches = [
+            patch("cron.scheduler.get_due_jobs", return_value=jobs),
+            patch("cron.scheduler.advance_next_run"),
+            patch("cron.scheduler.run_job", side_effect=mock_run_job),
+            patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"),
+            patch("cron.scheduler._deliver_result", return_value=None),
+            patch("cron.scheduler.mark_job_run"),
+        ]
+
+        if scheduler.fcntl is not None:
+            real_flock = scheduler.fcntl.flock
+
+            def tracking_flock(fd, op):
+                if op == scheduler.fcntl.LOCK_UN:
+                    events.append(("lock_release",))
+                return real_flock(fd, op)
+
+            patches.append(patch.object(scheduler.fcntl, "flock", side_effect=tracking_flock))
+        else:
+            real_locking = scheduler.msvcrt.locking
+
+            def tracking_locking(fileno, mode, nbytes):
+                if mode == scheduler.msvcrt.LK_UNLCK:
+                    events.append(("lock_release",))
+                return real_locking(fileno, mode, nbytes)
+
+            patches.append(patch.object(scheduler.msvcrt, "locking", side_effect=tracking_locking))
+
+        for p in patches:
+            p.start()
+        try:
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+        assert result == 2
+        run_indices = [i for i, e in enumerate(events) if e[0] == "run_job"]
+        release_indices = [i for i, e in enumerate(events) if e[0] == "lock_release"]
+        assert release_indices, "lock was never released"
+        assert run_indices, "no jobs were executed"
+        assert release_indices[0] < run_indices[0], (
+            f"tick() ran a job (event {run_indices[0]}) before releasing the "
+            f"lock (event {release_indices[0]}) — see #27485. Event sequence: "
+            f"{events}"
+        )
+
     def test_max_parallel_env_var(self, monkeypatch):
         """HERMES_CRON_MAX_PARALLEL=1 should restore serial behaviour."""
         monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")
