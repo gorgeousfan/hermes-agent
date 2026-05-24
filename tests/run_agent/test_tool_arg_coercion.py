@@ -321,6 +321,21 @@ class TestCoerceToolArgs:
             result = coerce_tool_args("test_tool", args)
             assert result["urls"] == ["https://a.com"]
 
+    def test_bare_string_wrapped_for_union_declared_array(self):
+        """anyOf/oneOf array schemas still get scalar-to-list repair."""
+        schema = self._mock_schema({
+            "urls": {
+                "anyOf": [
+                    {"type": "array", "items": {"type": "string"}},
+                    {"type": "null"},
+                ],
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"urls": "https://a.com"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["urls"] == ["https://a.com"]
+
     def test_bare_int_wrapped_as_array(self):
         """Bare non-string scalars (int, bool, float) also get wrapped."""
         schema = self._mock_schema({"ids": {"type": "array", "items": {"type": "integer"}}})

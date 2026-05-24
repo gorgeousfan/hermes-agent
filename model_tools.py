@@ -575,7 +575,7 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         prop_schema = properties.get(key)
         if not prop_schema:
             continue
-        expected = prop_schema.get("type")
+        expected = _schema_expected_type(prop_schema)
 
         # Wrap bare non-list values when the schema declares ``array``.
         # Strings still go through _coerce_value first so JSON-encoded
@@ -584,7 +584,11 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         # ``None`` itself is preserved — we don't know whether the model
         # meant "omit" or "empty list", and tools with sensible defaults
         # (e.g. read_file's normalize_read_pagination) already handle it.
-        if expected == "array" and value is not None and not isinstance(value, (list, tuple)):
+        if (
+            _expected_includes_type(expected, "array")
+            and value is not None
+            and not isinstance(value, (list, tuple))
+        ):
             if isinstance(value, str):
                 coerced = _coerce_value(value, expected, schema=prop_schema)
                 if coerced is not value:
@@ -653,6 +657,38 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
     if expected_type == "null" and value.strip().lower() == "null":
         return None
     return value
+
+
+def _expected_includes_type(expected_type, schema_type: str) -> bool:
+    if isinstance(expected_type, list):
+        return schema_type in expected_type
+    return expected_type == schema_type
+
+
+def _schema_expected_type(schema: dict | None):
+    """Return the direct or union-declared JSON Schema type for coercion."""
+    if not isinstance(schema, dict):
+        return None
+
+    schema_type = schema.get("type")
+    if schema_type:
+        return schema_type
+
+    union_types = []
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            variant_type = variant.get("type")
+            if isinstance(variant_type, list):
+                union_types.extend(variant_type)
+            elif variant_type:
+                union_types.append(variant_type)
+
+    return union_types or None
 
 
 def _schema_allows_null(schema: dict | None) -> bool:

@@ -112,6 +112,42 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_json_string_argument_coerces_for_union_schema(self):
+        """Provider-emitted JSON strings should still coerce when a tool
+        declares array/object types through anyOf/oneOf instead of direct type.
+        """
+        schema = {
+            "name": "web_search",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "anyOf": [
+                            {"type": "array", "items": {"type": "string"}},
+                            {"type": "null"},
+                        ]
+                    }
+                },
+            },
+        }
+        seen_args = {}
+
+        def fake_dispatch(_name, args, **_kwargs):
+            seen_args.update(args)
+            return json.dumps({"ok": True})
+
+        with (
+            patch("model_tools.registry.get_schema", return_value=schema),
+            patch("model_tools.registry.dispatch", side_effect=fake_dispatch),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = json.loads(
+                handle_function_call("web_search", {"queries": '["alpha", "beta"]'})
+            )
+
+        assert result == {"ok": True}
+        assert seen_args["queries"] == ["alpha", "beta"]
+
 
 # =========================================================================
 # Agent loop tools
