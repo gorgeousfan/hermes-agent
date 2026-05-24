@@ -1103,6 +1103,43 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_copilot_gpt5_delegation_target_model_recomputes_api_mode(self, mock_creds, mock_cfg):
+        """Delegated Copilot GPT-5 child should use codex_responses even if parent does not."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "gpt-5.4-mini",
+            "provider": "copilot",
+        }
+        mock_creds.return_value = {
+            "model": "gpt-5.4-mini",
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "ghu_test_token",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "nous"
+        parent.base_url = "https://inference-api.nousresearch.com/v1"
+        parent.api_mode = "chat_completions"
+        parent.model = "qwen/qwen3.6-plus"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Copilot GPT-5 child", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "gpt-5.4-mini")
+            self.assertEqual(kwargs["provider"], "copilot")
+            self.assertEqual(kwargs["base_url"], "https://api.githubcopilot.com")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {

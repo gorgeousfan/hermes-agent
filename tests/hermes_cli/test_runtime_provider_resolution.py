@@ -226,6 +226,78 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     assert resolved["provider"] != "qwen-oauth"
 
 
+def test_resolve_runtime_provider_copilot_target_model_recomputes_api_mode(monkeypatch):
+    """target_model must override stale persisted api_mode for Copilot GPT-5 children."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "copilot",
+            "default": "claude-sonnet-4.6",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": "copilot",
+            "api_key": "ghu_test_token",
+            "base_url": "https://api.githubcopilot.com",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="copilot",
+        target_model="gpt-5.4-mini",
+    )
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.githubcopilot.com"
+
+
+def test_resolve_runtime_provider_copilot_without_target_model_keeps_explicit_mode(monkeypatch):
+    """Without target_model, explicit Copilot api_mode in config still wins."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "copilot",
+            "default": "gpt-5.4-mini",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": "copilot",
+            "api_key": "ghu_test_token",
+            "base_url": "https://api.githubcopilot.com",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="copilot")
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
