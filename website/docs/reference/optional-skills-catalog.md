@@ -40,6 +40,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**evm**](/docs/user-guide/skills/optional/blockchain/blockchain-evm) | Read-only EVM client: wallets, tokens, gas across 8 chains. |
 | [**hyperliquid**](/docs/user-guide/skills/optional/blockchain/blockchain-hyperliquid) | Hyperliquid market data, account history, trade review. |
+| [**privy**](/docs/user-guide/skills/optional/blockchain/blockchain-privy) | Read-only Privy wallet tooling: inspect apps, users, linked wallets, embedded wallets, and user wallet lists via the Privy Admin API without writing or mutating wallet state. |
 | [**solana**](/docs/user-guide/skills/optional/blockchain/blockchain-solana) | Query Solana blockchain data with USD pricing — wallet balances, token portfolios with values, transaction details, NFTs, whale detection, and live network stats. Uses Solana RPC + CoinGecko. No API key required. |
 
 ## communication
