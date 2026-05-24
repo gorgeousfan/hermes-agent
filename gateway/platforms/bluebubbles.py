@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -129,6 +130,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._seen_message_guids: Dict[str, float] = {}  # guid -> timestamp
+        self._DEDUP_TTL = 30.0  # seconds
 
     # ------------------------------------------------------------------
     # API helpers
@@ -818,6 +821,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_REMOVED,
         }:
             return web.Response(text="ok")
+
+        # Dedup: BB fires multiple webhooks per message (status updates, etc.)
+        msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        now = time.time()
+        self._seen_message_guids = {
+            k: v for k, v in self._seen_message_guids.items()
+            if now - v < self._DEDUP_TTL
+        }
+        if msg_guid and msg_guid in self._seen_message_guids:
+            return web.Response(text="ok")
+        if msg_guid:
+            self._seen_message_guids[msg_guid] = now
 
         text = (
             self._value(
