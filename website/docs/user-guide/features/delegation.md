@@ -188,6 +188,26 @@ Lower it for fast local models; raise it for slow reasoning models on hard probl
 If a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
 :::
 
+If the child has a configured credential pool and every entry is already exhausted (for example a Codex/ChatGPT usage-limit cooldown), delegation now checks that state before starting the worker. When a fallback chain is configured, the child switches to the fallback before spawn; otherwise the result fails immediately with `exit_reason="credential_preflight_failed"` instead of silently burning the full child timeout.
+
+A zero-API-call timeout also triggers an explicit fallback retry when the child has a configured fallback. The returned result is marked with `fallback_retried_after_timeout: true` and `original_exit_reason: "zero_api_call_timeout"` so callers can see that the primary child transport never reached the first model request.
+
+## ACP transport overrides and permission errors
+
+`delegate_task` supports `acp_command` / `acp_args` only for environments where the operator has explicitly authorized an ACP-compatible CLI (for example `copilot --acp --stdio`). Do not set these fields speculatively from the model.
+
+To reproduce the spawn-permission guard that some ACP/session backends return:
+
+```python
+delegate_task(
+    goal="Say OK",
+    acp_command="copilot",
+    acp_args=["--acp", "--stdio"],
+)
+```
+
+On an install where the parent session is not allowed to request provider/model or transport overrides, the backend can reject the spawn with an error such as `provider/model overrides not authorized`. That is expected: remove the `acp_command` override and either let the child inherit the parent's Hermes transport or configure `delegation.provider` / `delegation.model` in `config.yaml` through an operator-controlled setting.
+
 ## Monitoring Running Subagents (`/agents`)
 
 The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegate_task` fan-out into a first-class audit surface:

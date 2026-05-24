@@ -284,3 +284,121 @@ class TestRunSingleChildTimeoutDump:
         if logs_dir.is_dir():
             dumps = list(logs_dir.glob("subagent-timeout-*.log"))
             assert dumps == []
+
+
+class _ExhaustedPool:
+    def has_credentials(self):
+        return True
+
+    def has_available(self):
+        return False
+
+
+class _PreflightChild(_StubChild):
+    def __init__(self, *, fallback: bool):
+        super().__init__(api_call_count=0, hang_seconds=0.0)
+        self._credential_pool = _ExhaustedPool()
+        self.fallback = fallback
+        self.fallback_calls = 0
+        self.run_calls = 0
+
+    def _try_activate_fallback(self, reason=None):
+        self.fallback_calls += 1
+        if not self.fallback:
+            return False
+        self.provider = "fallback-provider"
+        self.model = "fallback-model"
+        self._credential_pool = None
+        return True
+
+    def run_conversation(self, user_message, task_id=None):
+        self.run_calls += 1
+        return {"final_response": "fallback ok", "completed": True, "api_calls": 1}
+
+
+class _FallbackAfterTimeoutChild(_StubChild):
+    def __init__(self):
+        super().__init__(api_call_count=0, hang_seconds=10.0)
+        self.run_calls = 0
+        self.fallback_calls = 0
+
+    def _try_activate_fallback(self, reason=None):
+        self.fallback_calls += 1
+        self.provider = "fallback-provider"
+        self.model = "fallback-model"
+        return True
+
+    def clear_interrupt(self):
+        self._hang = threading.Event()
+
+    def run_conversation(self, user_message, task_id=None):
+        self.run_calls += 1
+        if self.run_calls == 1:
+            self._hang.wait(self._hang_seconds)
+            return {"final_response": "", "completed": False, "api_calls": 0}
+        return {"final_response": "fallback ok", "completed": True, "api_calls": 1}
+
+
+class TestRunSingleChildPreflightAndFallback:
+    def _parent(self):
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        return parent
+
+    def test_credential_pool_exhaustion_without_fallback_fails_before_spawn(self, monkeypatch):
+        from tools import delegate_tool
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
+        child = _PreflightChild(fallback=False)
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test goal",
+            child=child,
+            parent_agent=self._parent(),
+        )
+
+        assert result["status"] == "error"
+        assert result["exit_reason"] == "credential_preflight_failed"
+        assert "no available credentials" in result["error"]
+        assert child.fallback_calls == 1
+        assert child.run_calls == 0
+
+    def test_credential_pool_exhaustion_activates_fallback_before_spawn(self, monkeypatch):
+        from tools import delegate_tool
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
+        child = _PreflightChild(fallback=True)
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test goal",
+            child=child,
+            parent_agent=self._parent(),
+        )
+
+        assert result["status"] == "completed"
+        assert result["summary"] == "fallback ok"
+        assert result["model"] == "fallback-model"
+        assert child.fallback_calls == 1
+        assert child.run_calls == 1
+
+    def test_zero_api_call_timeout_retries_explicit_fallback_once(self, monkeypatch):
+        from tools import delegate_tool
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.2)
+        child = _FallbackAfterTimeoutChild()
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="test goal",
+            child=child,
+            parent_agent=self._parent(),
+        )
+
+        assert result["status"] == "completed"
+        assert result["summary"] == "fallback ok"
+        assert result["exit_reason"] == "fallback_completed"
+        assert result["fallback_retried_after_timeout"] is True
+        assert result["original_exit_reason"] == "zero_api_call_timeout"
+        assert result["model"] == "fallback-model"
+        assert child.fallback_calls == 1
+        assert child.run_calls == 2

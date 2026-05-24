@@ -41,6 +41,101 @@ from tools.terminal_tool import set_approval_callback as _set_subagent_approval_
 from utils import base_url_hostname, is_truthy_value
 
 
+def _failover_reason_rate_limit():
+    """Return FailoverReason.rate_limit without making delegate_tool import-heavy.
+
+    delegate_tool is imported early by tool discovery; keep the error-classifier
+    dependency lazy so import-time failures in optional provider code don't break
+    schema loading.
+    """
+    try:
+        from agent.error_classifier import FailoverReason
+
+        return FailoverReason.rate_limit
+    except Exception:
+        return None
+
+
+def _try_preflight_child_fallback(child, *, task_index: int, reason: str) -> bool:
+    """Switch a child to its configured fallback before starting/rerunning it.
+
+    Returns True when the child now points at a different fallback backend.
+    This is deliberately best-effort: if there is no fallback chain (or the
+    fallback provider is also unavailable) the caller should surface the
+    original error instead of hiding it behind a secondary failure.
+    """
+    activator = getattr(child, "_try_activate_fallback", None)
+    if not callable(activator):
+        return False
+    old_provider = getattr(child, "provider", None)
+    old_model = getattr(child, "model", None)
+    try:
+        activated = bool(activator(_failover_reason_rate_limit()))
+    except TypeError:
+        # Older/mocked AIAgent fixtures expose _try_activate_fallback() without
+        # the reason kwarg. Preserve test compatibility.
+        try:
+            activated = bool(activator())
+        except Exception as exc:
+            logger.warning(
+                "Subagent %d fallback activation failed during %s preflight: %s",
+                task_index,
+                reason,
+                exc,
+            )
+            return False
+    except Exception as exc:
+        logger.warning(
+            "Subagent %d fallback activation failed during %s preflight: %s",
+            task_index,
+            reason,
+            exc,
+        )
+        return False
+    if activated:
+        logger.warning(
+            "Subagent %d %s preflight switched from %s/%s to fallback %s/%s",
+            task_index,
+            reason,
+            old_provider,
+            old_model,
+            getattr(child, "provider", None),
+            getattr(child, "model", None),
+        )
+    return activated
+
+
+def _child_pool_available(child, *, task_index: int) -> bool:
+    """Preflight credential-pool availability before spawning a subagent.
+
+    A child whose configured provider pool is already exhausted (e.g. Codex
+    ChatGPT account usage limit) used to start anyway and then fail/hang inside
+    the first request. Detect that state before the worker thread starts so we
+    can activate the configured provider fallback explicitly.
+    """
+    child_pool = getattr(child, "_credential_pool", None)
+    if child_pool is None:
+        return True
+    try:
+        has_credentials = bool(child_pool.has_credentials())
+        has_available = bool(child_pool.has_available())
+    except Exception as exc:
+        logger.debug("Subagent %d credential preflight failed: %s", task_index, exc)
+        return True
+    if has_credentials and not has_available:
+        logger.warning(
+            "Subagent %d credential preflight: provider %s has credentials but none are available; trying fallback before spawn",
+            task_index,
+            getattr(child, "provider", None),
+        )
+        return _try_preflight_child_fallback(
+            child,
+            task_index=task_index,
+            reason="credential-exhausted",
+        )
+    return True
+
+
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
@@ -1344,6 +1439,33 @@ def _run_single_child(
 
     child_pool = getattr(child, "_credential_pool", None)
     leased_cred_id = None
+    if not _child_pool_available(child, task_index=task_index):
+        child_pool = getattr(child, "_credential_pool", None)
+        child_timeout = _get_child_timeout()
+        duration = round(time.monotonic() - child_start, 2)
+        provider = getattr(child, "provider", None) or "unknown"
+        model = getattr(child, "model", None) or "unknown"
+        _err = (
+            f"Subagent credential preflight failed before spawn: provider {provider} "
+            f"has no available credentials (all pool entries appear exhausted) "
+            f"and no configured fallback could be activated. The child was not "
+            f"started; this avoids waiting {child_timeout}s for a known usage-limit state."
+        )
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": _err,
+            "exit_reason": "credential_preflight_failed",
+            "api_calls": 0,
+            "duration_seconds": duration,
+            "model": model,
+            "_child_role": getattr(child, "_delegate_role", None),
+        }
+    # A successful preflight may have activated fallback and replaced or cleared
+    # the child's credential pool. Refresh before leasing so we do not lease from
+    # an exhausted primary pool after switching providers.
+    child_pool = getattr(child, "_credential_pool", None)
     if child_pool is not None:
         leased_cred_id = child_pool.acquire_lease()
         if leased_cred_id is not None:
@@ -1574,7 +1696,104 @@ def _run_single_child(
                     pass
 
             if is_timeout:
-                if child_api_calls == 0:
+                fallback_retried = False
+                fallback_result = None
+                if child_api_calls == 0 and _try_preflight_child_fallback(
+                    child,
+                    task_index=task_index,
+                    reason="zero-api-call-timeout",
+                ):
+                    # Safe retry window: the child never reached its first LLM
+                    # request, so no model-driven tool calls can have executed.
+                    # Run once on the fallback and surface fallback failure
+                    # explicitly rather than silently returning the original
+                    # opaque timeout.
+                    fallback_retried = True
+                    try:
+                        clear_interrupt = getattr(child, "clear_interrupt", None)
+                        if callable(clear_interrupt):
+                            clear_interrupt()
+                        elif hasattr(child, "_interrupt_requested"):
+                            child._interrupt_requested = False
+                    except Exception:
+                        pass
+
+                    _fallback_executor = ThreadPoolExecutor(
+                        max_workers=1,
+                        initializer=_set_subagent_approval_cb,
+                        initargs=(_get_subagent_approval_callback(),),
+                    )
+                    try:
+                        _fallback_future = _fallback_executor.submit(
+                            child.run_conversation,
+                            user_message=goal,
+                            task_id=child_task_id,
+                        )
+                        fallback_result = _fallback_future.result(timeout=child_timeout)
+                    except Exception as _fallback_exc:
+                        try:
+                            if hasattr(child, "interrupt"):
+                                child.interrupt()
+                        except Exception:
+                            pass
+                        fallback_duration = round(time.monotonic() - child_start, 2)
+                        return {
+                            "task_index": task_index,
+                            "status": "timeout" if isinstance(_fallback_exc, (FuturesTimeoutError, TimeoutError)) else "error",
+                            "summary": None,
+                            "error": (
+                                f"Subagent timed out after {child_timeout}s without making an API call; "
+                                f"activated fallback {getattr(child, 'provider', None)}/{getattr(child, 'model', None)} "
+                                f"and retried explicitly, but fallback failed: {_fallback_exc}"
+                            ),
+                            "exit_reason": "fallback_retry_failed",
+                            "api_calls": 0,
+                            "duration_seconds": fallback_duration,
+                            "_child_role": getattr(child, "_delegate_role", None),
+                            "diagnostic_path": diagnostic_path,
+                        }
+                    finally:
+                        _fallback_executor.shutdown(wait=False)
+
+                    # The primary worker thread may still be unwinding after
+                    # the timeout, so do not try to jump back into the main
+                    # success path that assumes a single completed child run.
+                    # Instead, return a compact explicit fallback result.
+                    result = fallback_result if isinstance(fallback_result, dict) else {}
+                    fallback_summary = result.get("final_response") or ""
+                    fallback_completed = bool(result.get("completed", False))
+                    fallback_interrupted = bool(result.get("interrupted", False))
+                    if fallback_interrupted:
+                        fallback_status = "interrupted"
+                        fallback_exit = "interrupted"
+                    elif fallback_summary:
+                        fallback_status = "completed"
+                        fallback_exit = "fallback_completed" if fallback_completed else "fallback_max_iterations"
+                    else:
+                        fallback_status = "failed"
+                        fallback_exit = "fallback_no_response"
+                    fallback_duration = round(time.monotonic() - child_start, 2)
+                    entry = {
+                        "task_index": task_index,
+                        "status": fallback_status,
+                        "summary": fallback_summary,
+                        "api_calls": result.get("api_calls", 0),
+                        "duration_seconds": fallback_duration,
+                        "model": getattr(child, "model", None) if isinstance(getattr(child, "model", None), str) else None,
+                        "exit_reason": fallback_exit,
+                        "fallback_retried_after_timeout": True,
+                        "original_exit_reason": "zero_api_call_timeout",
+                        "diagnostic_path": diagnostic_path,
+                        "_child_role": getattr(child, "_delegate_role", None),
+                    }
+                    if fallback_status == "failed":
+                        entry["error"] = result.get(
+                            "error",
+                            "Fallback retry after zero-API-call timeout did not produce a response.",
+                        )
+                    return entry
+
+                if child_api_calls == 0 and not fallback_retried:
                     _err = (
                         f"Subagent timed out after {child_timeout}s without "
                         f"making any API call — the child never reached its "
