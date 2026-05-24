@@ -140,6 +140,56 @@ class WebhookAdapter(BasePlatformAdapter):
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
 
+        # Extra handlers registered by sibling adapters (e.g. Mattermost approval
+        # callbacks). Keyed by path string. Populated via register_extra_route() at
+        # any time; read by _extra_route_middleware on each request so the frozen
+        # aiohttp router is never modified after AppRunner.setup().
+        self._extra_handlers: Dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Extra-route facility (used by sibling adapters, e.g. Mattermost)
+    # ------------------------------------------------------------------
+
+    def register_extra_route(self, method: str, path: str, handler) -> bool:
+        """Register an extra top-level HTTP route on the running aiohttp app.
+
+        Uses a middleware-based dispatch table rather than the (frozen) aiohttp
+        UrlDispatcher, so the registration works at any time — before or after
+        the app has started.  Re-registration of the same path is a no-op.
+
+        Returns True when the handler is registered (always, unless method is
+        not supported).  Only POST is supported for now.
+        """
+        if method.upper() != "POST":
+            logger.warning(
+                "WebhookAdapter.register_extra_route: only POST is supported "
+                "(got %s %s) — skipping",
+                method, path,
+            )
+            return False
+        if path in self._extra_handlers:
+            logger.debug(
+                "WebhookAdapter: route %s already registered; skipping", path,
+            )
+            return True
+        self._extra_handlers[path] = handler
+        logger.info("WebhookAdapter: registered extra route POST %s", path)
+        return True
+
+    @web.middleware
+    async def _extra_route_middleware(self, request, handler):
+        """Dispatch POST requests to handlers registered via register_extra_route.
+
+        The dict is checked on every request so entries added after the app
+        started (i.e. after the router is frozen) are still reached.
+        Passed to web.Application(middlewares=[self._extra_route_middleware])
+        as a bound method — aiohttp calls it with (request, handler).
+        """
+        extra = self._extra_handlers.get(request.path)
+        if extra is not None and request.method == "POST":
+            return await extra(request)
+        return await handler(request)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -182,7 +232,7 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
 
-        app = web.Application()
+        app = web.Application(middlewares=[self._extra_route_middleware])
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
 

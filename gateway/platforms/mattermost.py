@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -98,6 +99,15 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Interactive approval buttons (populated when MATTERMOST_CALLBACK_URL is set).
+        # _approval_state maps approval_id (random token) → session_key.
+        # Populated when send_exec_approval renders a card; popped on click in
+        # _handle_approval_action.  Atomic pop also serves as double-click
+        # protection: subsequent clicks for the same approval_id find nothing
+        # and short-circuit without re-resolving.
+        self._approval_state: Dict[str, str] = {}
+        self._callback_route_registered: bool = False
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -224,6 +234,13 @@ class MattermostAdapter(BasePlatformAdapter):
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+
+        # Try once now (succeeds when WebhookAdapter connected first).
+        self._ensure_callback_route(log_on_fail=False)
+        # Retry after a short delay to cover adapter init-order race.
+        if not self._callback_route_registered and os.getenv("MATTERMOST_CALLBACK_URL"):
+            asyncio.create_task(self._delayed_callback_route_register())
+
         return True
 
     async def disconnect(self) -> None:
@@ -610,6 +627,303 @@ class MattermostAdapter(BasePlatformAdapter):
                     chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
                 await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+
+    # ------------------------------------------------------------------
+    # Interactive approval buttons
+    # ------------------------------------------------------------------
+
+    def _ensure_callback_route(self, *, log_on_fail: bool = True) -> None:
+        """Register POST /hermes-approval on the webhook server (idempotent).
+
+        Called from connect() once at startup, then again from a delayed task
+        a few seconds later to cover adapter init-order races (the WebhookAdapter
+        is added to runner.adapters only after its connect() returns, so if
+        Mattermost connects first, the first attempt misses it).
+
+        No-op when MATTERMOST_CALLBACK_URL is unset, when already registered,
+        or when the webhook adapter is genuinely not configured.
+        """
+        if self._callback_route_registered:
+            return
+
+        callback_url = os.getenv("MATTERMOST_CALLBACK_URL", "").strip()
+        if not callback_url:
+            return
+
+        # Resolve the running WebhookAdapter via the module-level gateway ref.
+        # gateway.run is always imported before any adapter connects, so
+        # sys.modules lookup is safe here.
+        import sys
+        run_mod = sys.modules.get("gateway.run")
+        runner = run_mod._gateway_runner_ref() if run_mod else None
+        webhook_adapter = (
+            runner.adapters.get(Platform.WEBHOOK) if runner else None
+        )
+
+        if webhook_adapter is None:
+            if log_on_fail:
+                logger.warning(
+                    "Mattermost: MATTERMOST_CALLBACK_URL is set but the webhook "
+                    "server is not running (WEBHOOK_ENABLED=true required). "
+                    "Falling back to plain-text approval prompts."
+                )
+            return
+
+        ok = webhook_adapter.register_extra_route(
+            "POST", "/hermes-approval", self._handle_approval_action
+        )
+        self._callback_route_registered = ok
+        if ok:
+            logger.info(
+                "Mattermost: registered approval callback route /hermes-approval"
+            )
+
+    async def _delayed_callback_route_register(self) -> None:
+        """Retry route registration once after a short delay.
+
+        Covers the adapter init-order race where MattermostAdapter.connect()
+        runs before WebhookAdapter is added to runner.adapters.
+        """
+        await asyncio.sleep(3.0)
+        self._ensure_callback_route(log_on_fail=True)
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Render a Mattermost interactive-message approval prompt.
+
+        Returns SendResult(success=False) when MATTERMOST_CALLBACK_URL is not
+        configured or the webhook server is not running.  The gateway's
+        _approval_notify_sync then falls back to the plain-text prompt.
+        """
+        callback_url = os.getenv("MATTERMOST_CALLBACK_URL", "").strip()
+        if not callback_url:
+            return SendResult(
+                success=False,
+                error="MATTERMOST_CALLBACK_URL not configured",
+            )
+
+        if not self._callback_route_registered:
+            return SendResult(
+                success=False,
+                error="Mattermost callback route not registered (webhook server not running?)",
+            )
+
+        approval_id = secrets.token_urlsafe(16)
+        cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+
+        attachment: Dict[str, Any] = {
+            "fallback": "Command approval required",
+            "callback_id": "hermes_approval",
+            "text": (
+                f"```\n{cmd_preview}\n```\n"
+                f"Reason: {description}"
+            ),
+            "actions": [
+                self._approval_button(
+                    "approveonce", "Allow Once",
+                    callback_url, approval_id, "once", style="primary",
+                ),
+                self._approval_button(
+                    "approvesession", "Allow Session",
+                    callback_url, approval_id, "session",
+                ),
+                self._approval_button(
+                    "approvealways", "Always Allow",
+                    callback_url, approval_id, "always",
+                ),
+                self._approval_button(
+                    "deny", "Deny",
+                    callback_url, approval_id, "deny", style="danger",
+                ),
+            ],
+        }
+
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "message": "\u26a0\ufe0f Command approval required",
+            "props": {"attachments": [attachment]},
+        }
+
+        try:
+            resp = await self._api_post("posts", payload)
+            post_id = resp.get("id", "")
+            if not post_id:
+                # _api_post returns {} on HTTP 4xx/5xx without raising.
+                # Treat a missing post_id as a failure so the gateway can fall
+                # back to the plain-text approval prompt.
+                logger.error(
+                    "[Mattermost] send_exec_approval: API returned no post_id "
+                    "(HTTP error?) for session=%s chat=%s",
+                    session_key, chat_id,
+                )
+                return SendResult(
+                    success=False,
+                    error="Mattermost API did not return a post_id",
+                    raw_response=resp,
+                )
+            # Register only once the card is confirmed live on Mattermost.
+            self._approval_state[approval_id] = session_key
+            logger.info(
+                "Mattermost: posted approval card post_id=%s approval_id=%s session=%s chat=%s",
+                post_id, approval_id, session_key, chat_id,
+            )
+            return SendResult(success=True, message_id=post_id, raw_response=resp)
+        except Exception as exc:
+            logger.error(
+                "[Mattermost] send_exec_approval failed: %s", exc, exc_info=True,
+            )
+            return SendResult(success=False, error=str(exc))
+
+    def _approval_button(
+        self,
+        button_id: str,
+        label: str,
+        callback_url: str,
+        approval_id: str,
+        choice: str,
+        style: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build one Mattermost-format interactive button.
+
+        Mattermost requires ``name`` (not ``text``) for the visible label and
+        an ``integration`` object with ``url`` + ``context`` (not Slack-style
+        ``action_id`` / ``value``).  Using Slack fields causes Mattermost to
+        silently strip all action metadata.
+
+        ``approval_id`` is a per-card random token that maps back to the
+        originating ``session_key`` via ``self._approval_state``.  Embedding
+        the token (rather than the session key) lets the click handler resolve
+        the *specific* approval that the button belongs to, which is correct
+        when a session has multiple approvals queued concurrently.
+        """
+        button: Dict[str, Any] = {
+            "id": button_id,
+            "type": "button",
+            "name": label,
+            "integration": {
+                "url": callback_url,
+                "context": {"approval_id": approval_id, "choice": choice},
+            },
+        }
+        if style:
+            button["style"] = style
+        return button
+
+    async def _handle_approval_action(self, request: Any) -> Any:
+        """Handle a Mattermost interactive-button click POST.
+
+        Mounted at POST /hermes-approval on the WebhookAdapter's aiohttp app
+        by _ensure_callback_route().  Mattermost POSTs a JSON body containing
+        user_id, post_id, and the context object embedded in the button.
+        """
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"ephemeral_text": "Malformed payload."}, status=400,
+            )
+
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"ephemeral_text": "Malformed payload."}, status=400,
+            )
+
+        user_id: str = body.get("user_id", "")
+        post_id: str = body.get("post_id", "")
+        context: Dict[str, Any] = body.get("context") or {}
+        approval_id: str = context.get("approval_id", "")
+        choice: str = context.get("choice", "")
+
+        # Authorization — reuse MATTERMOST_ALLOWED_USERS (same posture as Slack).
+        # Check BEFORE popping the approval so an unauthorized click does not
+        # consume the token and prevent the legitimate user from clicking.
+        allowed_csv = os.getenv("MATTERMOST_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {
+                uid.strip() for uid in allowed_csv.split(",") if uid.strip()
+            }
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Mattermost] Unauthorized approval click by user_id=%s "
+                    "post_id=%s — ignoring",
+                    user_id, post_id,
+                )
+                return web.json_response(
+                    {"ephemeral_text": "You are not allowed to approve this request."},
+                    status=403,
+                )
+
+        # Validate choice BEFORE popping for the same reason.
+        if choice not in {"once", "session", "always", "deny"}:
+            return web.json_response(
+                {"ephemeral_text": "Invalid approval action."}, status=400,
+            )
+
+        # Atomic pop — looks up the session_key bound to this specific approval
+        # card and simultaneously removes the entry.  Subsequent clicks for the
+        # same approval_id find nothing and short-circuit (double-click guard).
+        session_key = self._approval_state.pop(approval_id, None)
+        if session_key is None:
+            return web.json_response(
+                {"ephemeral_text": "This approval has already been resolved or expired."},
+            )
+
+        user_name = await self._lookup_username(user_id)
+
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Mattermost button resolved %d approval(s) for session %s "
+                "(choice=%s, user=%s)",
+                count, session_key, choice, user_name,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to resolve gateway approval from Mattermost button: %s",
+                exc, exc_info=True,
+            )
+            return web.json_response(
+                {
+                    "ephemeral_text": (
+                        "Hermes could not process this approval action. "
+                        "You can still reply /approve or /deny."
+                    )
+                },
+                status=500,
+            )
+
+        label_map = {
+            "once": f"\u2705 Approved once by {user_name}",
+            "session": f"\u2705 Approved for session by {user_name}",
+            "always": f"\u2705 Approved permanently by {user_name}",
+            "deny": f"\u274c Denied by {user_name}",
+        }
+
+        return web.json_response({
+            "update": {"message": label_map[choice], "props": {}},
+            "ephemeral_text": "Approval recorded.",
+        })
+
+    async def _lookup_username(self, user_id: str) -> str:
+        """Return the Mattermost username for a user_id, or user_id on failure.
+
+        Username display in final-state messages is cosmetic; network errors
+        fall back to the raw user_id without surfacing to the user.
+        """
+        try:
+            data = await self._api_get(f"users/{user_id}")
+            return data.get("username", user_id) or user_id
+        except Exception:
+            return user_id
 
     # ------------------------------------------------------------------
     # WebSocket

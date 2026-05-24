@@ -197,6 +197,48 @@ MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
 
 Replace the ID with the actual channel ID (click the channel name → View Info → copy the ID).
 
+## Approval Buttons
+
+When Hermes needs to run a dangerous command (e.g. recursive delete, system modification), it normally asks you to type `/approve`, `/approve session`, `/approve always`, or `/deny`. Mattermost clients treat unrecognized slash prefixes as slash commands and may warn or block the message.
+
+The approval-buttons feature replaces that text prompt with a Mattermost interactive message card containing four buttons — **Allow Once**, **Allow Session**, **Always Allow**, and **Deny** — that you click instead of type.
+
+### Enable approval buttons
+
+Set two values in `~/.hermes/.env`:
+
+```bash
+# URL Mattermost posts to when a button is clicked.
+# Must be reachable from your Mattermost server.
+MATTERMOST_CALLBACK_URL=http://192.168.30.47:8644/hermes-approval
+
+# Enable the webhook server (required to receive button clicks).
+WEBHOOK_ENABLED=true
+```
+
+The webhook server listens on port `8644` by default. `MATTERMOST_CALLBACK_URL` must be the address your Mattermost server can POST to — for a LAN deployment this is typically Hermes' LAN IP on the webhook port. For a publicly routed deployment use your HTTPS domain.
+
+### Platform order in config.yaml
+
+The webhook platform must be listed **before** mattermost so the HTTP server is already running when the Mattermost adapter registers its callback route at startup:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+  mattermost:
+    enabled: true
+    token: "your-bot-token"
+```
+
+### Fallback behavior
+
+If `MATTERMOST_CALLBACK_URL` is not set, or if the webhook server is not running, Hermes automatically falls back to the existing four-choice text prompt — `/approve`, `/approve session`, `/approve always`, `/deny` — without any configuration change. Text-mode approval continues to work on Mattermost desktop clients even when buttons are enabled.
+
+### Security
+
+Button clicks are authorized using `MATTERMOST_ALLOWED_USERS`, the same list that gates normal bot access. Users not in the list receive an ephemeral "not allowed" message and the approval is not granted. A double-click guard prevents the same card from resolving an approval twice.
+
 ## Reply Mode
 
 The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
