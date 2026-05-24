@@ -436,6 +436,176 @@ class TestSendMessageTool:
         assert "access_token=***" in result["error"]
 
 
+    def test_bluebubbles_alias_resolves_only_through_contact_book(self, tmp_path):
+        contact_book = tmp_path / "contact-book.json"
+        contact_book.write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "contacts": [
+                {
+                    "id": "contact_safe",
+                    "display_name": "Safe Contact",
+                    "aliases": ["safe-alias"],
+                    "relationship": "test",
+                    "status": "active",
+                    "routing_policy": {"allow_outbound": True},
+                    "handles": [
+                        {
+                            "platform": "bluebubbles",
+                            "type": "phone",
+                            "value": "+15551234567",
+                            "chat_type": "dm",
+                            "verified": True,
+                        }
+                    ],
+                }
+            ],
+        }))
+        blue_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: blue_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(os.environ, {"JORDAN_CONTACT_BOOK_PATH": str(contact_book)}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("no channel directory for BlueBubbles contacts")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "bluebubbles:safe-alias",
+                "message": "hello",
+            }))
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.BLUEBUBBLES,
+            blue_cfg,
+            "+15551234567",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_bluebubbles_unknown_alias_blocks_before_search_or_send(self, tmp_path):
+        contact_book = tmp_path / "contact-book.json"
+        contact_book.write_text(json.dumps({"schema_version": "1.0.0", "contacts": []}))
+        blue_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: blue_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(os.environ, {"JORDAN_CONTACT_BOOK_PATH": str(contact_book)}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("no channel directory for BlueBubbles contacts")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "bluebubbles:unknown-person",
+                "message": "hello",
+            }))
+
+        assert result["blocked_by"] == "contact_book_no_exact_contact_match"
+        assert result["action"] == "ask_cameron"
+        send_mock.assert_not_awaited()
+
+    def test_bluebubbles_direct_e164_requires_contact_book_match(self, tmp_path):
+        contact_book = tmp_path / "contact-book.json"
+        contact_book.write_text(json.dumps({"schema_version": "1.0.0", "contacts": []}))
+        blue_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: blue_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(os.environ, {"JORDAN_CONTACT_BOOK_PATH": str(contact_book)}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "bluebubbles:+15551234567",
+                "message": "hello",
+            }))
+
+        assert result["blocked_by"] == "contact_book_no_match"
+        assert result["action"] == "ask_cameron"
+        send_mock.assert_not_awaited()
+
+    def test_bluebubbles_digit_phone_like_target_does_not_bypass_contact_book(self, tmp_path):
+        contact_book = tmp_path / "contact-book.json"
+        contact_book.write_text(json.dumps({"schema_version": "1.0.0", "contacts": []}))
+        blue_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: blue_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(os.environ, {"JORDAN_CONTACT_BOOK_PATH": str(contact_book)}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "bluebubbles:15551234567",
+                "message": "hello",
+            }))
+
+        assert result["blocked_by"] == "contact_book_no_exact_contact_match"
+        assert result["action"] == "ask_cameron"
+        send_mock.assert_not_awaited()
+
+    def test_bluebubbles_unverified_or_not_allowed_contact_does_not_authorize_send(self, tmp_path):
+        contact_book = tmp_path / "contact-book.json"
+        contact_book.write_text(json.dumps({
+            "schema_version": "1.0.0",
+            "contacts": [
+                {
+                    "id": "unverified",
+                    "display_name": "Unverified",
+                    "aliases": ["unverified"],
+                    "status": "active",
+                    "routing_policy": {"allow_outbound": True},
+                    "handles": [{"platform": "bluebubbles", "type": "phone", "value": "+15551234567", "chat_type": "dm", "verified": False}],
+                },
+                {
+                    "id": "missing_policy",
+                    "display_name": "Missing Policy",
+                    "aliases": ["missing-policy"],
+                    "status": "active",
+                    "routing_policy": {},
+                    "handles": [{"platform": "bluebubbles", "type": "phone", "value": "+15559876543", "chat_type": "dm", "verified": True}],
+                },
+            ],
+        }))
+        blue_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.BLUEBUBBLES: blue_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch.dict(os.environ, {"JORDAN_CONTACT_BOOK_PATH": str(contact_book)}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result_unverified = json.loads(send_message_tool({"action": "send", "target": "bluebubbles:unverified", "message": "hello"}))
+            result_missing_policy = json.loads(send_message_tool({"action": "send", "target": "bluebubbles:missing-policy", "message": "hello"}))
+
+        assert result_unverified["blocked_by"] == "contact_book_no_exact_contact_match"
+        assert result_missing_policy["blocked_by"] == "contact_book_no_exact_contact_match"
+        send_mock.assert_not_awaited()
+
+
+
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
         image_path = tmp_path / "photo.png"

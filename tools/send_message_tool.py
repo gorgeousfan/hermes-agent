@@ -39,7 +39,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp", "bluebubbles"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
@@ -184,6 +184,18 @@ def _handle_send(args):
     else:
         is_explicit = False
 
+    # BlueBubbles is a transport, not an address book. Never resolve a
+    # human-friendly BlueBubbles target through the channel directory / chat
+    # search cache, because that can select an arbitrary prior chat. Require
+    # Jordan's contact book to resolve aliases/display names/contact ids.
+    if platform_name == "bluebubbles" and target_ref and not is_explicit:
+        resolved = _resolve_bluebubbles_contact_book_target(target_ref)
+        if "error" in resolved:
+            return json.dumps(resolved)
+        chat_id = resolved["chat_id"]
+        thread_id = None
+        is_explicit = True
+
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
         try:
@@ -272,6 +284,10 @@ def _handle_send(args):
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
 
+    contact_guard = _validate_bluebubbles_contact_book_target(platform_name, chat_id, used_home_channel)
+    if contact_guard:
+        return json.dumps(contact_guard)
+
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
@@ -340,6 +356,195 @@ def _handle_send(args):
         return json.dumps(_error(f"Send failed: {e}"))
 
 
+def _bluebubbles_contact_book_path() -> str:
+    return os.getenv(
+        "JORDAN_CONTACT_BOOK_PATH",
+        "/home/caragon/jordan/Contacts/contact-book.json",
+    )
+
+
+def _load_bluebubbles_contact_book():
+    book_path = _bluebubbles_contact_book_path()
+    if not os.path.exists(book_path):
+        return None, {
+            "error": (
+                "BlueBubbles direct send blocked: Jordan contact book is missing. "
+                f"Resolve the person in {book_path} first."
+            ),
+            "blocked_by": "contact_book_required",
+            "action": "ask_cameron",
+        }
+    try:
+        with open(book_path, "r", encoding="utf-8") as f:
+            return json.load(f), None
+    except Exception as exc:
+        return None, {
+            "error": f"BlueBubbles direct send blocked: failed to read contact book: {exc}",
+            "blocked_by": "contact_book_unreadable",
+            "action": "ask_cameron",
+        }
+
+
+def _iter_bluebubbles_dm_handles(book):
+    for contact in (book or {}).get("contacts", []):
+        if contact.get("status") != "active":
+            continue
+        policy = contact.get("routing_policy", {})
+        if policy.get("allow_outbound") is not True:
+            continue
+        for handle in contact.get("handles", []) or []:
+            if (
+                handle.get("platform") == "bluebubbles"
+                and handle.get("type") == "phone"
+                and handle.get("chat_type") == "dm"
+                and handle.get("verified") is True
+                and str(handle.get("value", "")).strip()
+            ):
+                yield contact, handle
+
+
+def _contact_exact_match_values(contact):
+    values = {str(contact.get("id", "")).strip().casefold()}
+    values.add(str(contact.get("display_name", "")).strip().casefold())
+    for alias in contact.get("aliases", []) or []:
+        values.add(str(alias).strip().casefold())
+    return {v for v in values if v}
+
+
+def _resolve_bluebubbles_contact_book_target(target_ref: str) -> dict:
+    """Resolve a BlueBubbles contact id/display name/alias via Jordan's book.
+
+    Returns either {"chat_id": "+E164", ...} or an error payload. This is
+    intentionally exact-only: no fuzzy matching and no channel-directory search.
+    """
+    target = str(target_ref or "").strip()
+    if not target:
+        return {
+            "error": "BlueBubbles send blocked: empty contact target.",
+            "blocked_by": "contact_book_empty_target",
+            "action": "ask_cameron",
+        }
+
+    book, err = _load_bluebubbles_contact_book()
+    if err:
+        err["target"] = "bluebubbles:<contact>"
+        return err
+
+    target_key = target.casefold()
+    matches = []
+    for contact, handle in _iter_bluebubbles_dm_handles(book):
+        if target_key in _contact_exact_match_values(contact):
+            matches.append((contact, handle))
+
+    if not matches:
+        return {
+            "error": (
+                "BlueBubbles send blocked: contact target is not an exact "
+                "contact-book id, display name, or alias. Ask Cameron for the "
+                "exact contact; do not use BlueBubbles search results."
+            ),
+            "blocked_by": "contact_book_no_exact_contact_match",
+            "target": "bluebubbles:<contact>",
+            "action": "ask_cameron",
+        }
+
+    contact_ids = {c.get("id") for c, _ in matches}
+    handle_values = {str(h.get("value", "")).strip() for _, h in matches}
+    if len(contact_ids) != 1 or len(handle_values) != 1:
+        return {
+            "error": (
+                "BlueBubbles send blocked: contact target maps ambiguously in "
+                "Jordan's contact book. Cameron must pick the exact contact first."
+            ),
+            "blocked_by": "contact_book_ambiguous",
+            "target": "bluebubbles:<contact>",
+            "matches": [{"id": c.get("id")} for c, _ in matches],
+            "action": "ask_cameron",
+        }
+
+    contact, handle = matches[0]
+    phone = str(handle.get("value", "")).strip()
+    if not _E164_TARGET_RE.fullmatch(phone):
+        return {
+            "error": "BlueBubbles send blocked: matched contact handle is not stable E.164.",
+            "blocked_by": "contact_book_non_e164_handle",
+            "contact_id": contact.get("id"),
+            "action": "ask_cameron",
+        }
+
+    return {
+        "chat_id": phone,
+        "contact_id": contact.get("id"),
+        "chat_type": handle.get("chat_type"),
+        "platform": "bluebubbles",
+    }
+
+
+def _validate_bluebubbles_contact_book_target(platform_name: str, chat_id: str, used_home_channel: bool):
+    """Require Jordan's contact book before sending BlueBubbles DMs by phone.
+
+    BlueBubbles is a transport, not an address book. For Jordan's profile, direct
+    E.164 BlueBubbles sends must resolve to exactly one active contact-book DM
+    handle. Home-channel replies are excluded because they target the current
+    Cameron chat rather than an arbitrary searched recipient.
+    """
+    if platform_name != "bluebubbles" or used_home_channel or not chat_id:
+        return None
+
+    phone = str(chat_id).strip()
+    if not _E164_TARGET_RE.fullmatch(phone):
+        return None
+
+    book, err = _load_bluebubbles_contact_book()
+    if err:
+        err["target"] = f"bluebubbles:{phone}"
+        return err
+
+    matches = [
+        (contact, handle)
+        for contact, handle in _iter_bluebubbles_dm_handles(book)
+        if str(handle.get("value", "")).strip() == phone
+    ]
+
+    if not matches:
+        return {
+            "error": (
+                "BlueBubbles direct send blocked: target is not in Jordan's "
+                "contact book as an active DM handle. Add/verify the contact first; "
+                "do not use BlueBubbles search results as the address book."
+            ),
+            "blocked_by": "contact_book_no_match",
+            "target": f"bluebubbles:{phone}",
+            "action": "ask_cameron",
+        }
+
+    contact_ids = {c.get("id") for c, _ in matches}
+    if len(matches) != 1 or len(contact_ids) != 1:
+        return {
+            "error": (
+                "BlueBubbles direct send blocked: target maps ambiguously in "
+                "Jordan's contact book. Cameron must pick the exact contact first."
+            ),
+            "blocked_by": "contact_book_ambiguous",
+            "target": f"bluebubbles:{phone}",
+            "matches": [{"id": c.get("id")} for c, _ in matches],
+            "action": "ask_cameron",
+        }
+
+    contact, handle = matches[0]
+    policy = contact.get("routing_policy", {})
+    if policy.get("forbid_group_chat", True) and handle.get("chat_type") != "dm":
+        return {
+            "error": "BlueBubbles send blocked: contact policy requires a direct DM target.",
+            "blocked_by": "contact_book_dm_required",
+            "target": f"bluebubbles:{phone}",
+            "contact_id": contact.get("id"),
+            "action": "ask_cameron",
+        }
+
+    return None
+
+
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
     if platform_name == "telegram":
@@ -390,7 +595,7 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
-    if target_ref.lstrip("-").isdigit():
+    if target_ref.lstrip("-").isdigit() and platform_name != "bluebubbles":
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
     if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
