@@ -1881,6 +1881,8 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        assert env["HERMES_RUNTIME_PREFLIGHT_SCOPE"] == "kanban"
+        assert env["HERMES_RUNTIME_PREFLIGHT_REQUIRED"] == "1"
 
 
 # ---------------------------------------------------------------------------
