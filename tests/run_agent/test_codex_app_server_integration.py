@@ -98,6 +98,20 @@ class TestRunConversationCodexPath:
                  and m.get("content") == "echo: hello"]
         assert final, f"expected final assistant message in {msgs}"
 
+    def test_codex_path_persists_messages_on_early_return(self, fake_session):
+        """The codex_app_server path bypasses the normal loop tail, so it
+        must persist before returning or CLI/gateway resumes lose history."""
+        agent = _make_codex_agent()
+        history = [{"role": "user", "content": "prior"}]
+        with patch.object(agent, "_spawn_background_review", return_value=None), \
+             patch.object(agent, "_persist_session") as persist:
+            result = agent.run_conversation("hello", conversation_history=history)
+
+        persist.assert_called()
+        persisted_messages, persisted_history = persist.call_args.args
+        assert persisted_messages == result["messages"]
+        assert persisted_history == history
+
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
         turns. The memory nudge counter is gated on memory being configured

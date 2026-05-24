@@ -32,6 +32,7 @@ def run_codex_app_server_turn(
     original_user_message: Any,
     messages: List[Dict[str, Any]],
     effective_task_id: str,
+    conversation_history: List[Dict[str, Any]] | None = None,
     should_review_memory: bool = False,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
@@ -76,6 +77,11 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        try:
+            agent._persist_session(messages, conversation_history)
+        except Exception:
+            logger.debug("codex app-server message persistence failed", exc_info=True)
+
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -109,6 +115,11 @@ def run_codex_app_server_turn(
     # is exactly what curator.py / sessions DB expect.
     if turn.projected_messages:
         messages.extend(turn.projected_messages)
+
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.debug("codex app-server message persistence failed", exc_info=True)
 
     # Counter ticks for the agent-improvement loop.
     # _turns_since_memory and _user_turn_count are ALREADY incremented

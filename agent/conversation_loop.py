@@ -529,6 +529,19 @@ def run_conversation(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
+                # Persist the compacted checkpoint immediately. The
+                # codex_app_server runtime returns early below, and if the
+                # Codex subprocess wedges or the user interrupts before the
+                # turn finishes, the caller never receives result["messages"].
+                # Saving here prevents the next turn from reloading the huge
+                # pre-compression transcript and compacting again forever.
+                try:
+                    agent._persist_session(messages, conversation_history)
+                except Exception:
+                    logger.debug(
+                        "preflight compression persistence failed",
+                        exc_info=True,
+                    )
                 if _preflight_tokens < agent.context_compressor.threshold_tokens:
                     break  # Under threshold
 
@@ -638,6 +651,7 @@ def run_conversation(
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
+            conversation_history=conversation_history,
             should_review_memory=_should_review_memory,
         )
 
