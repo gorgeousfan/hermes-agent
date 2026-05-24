@@ -156,6 +156,59 @@ class TestDDGSProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"] == []
 
+    def test_concurrent_calls_serialize_through_lock(self, monkeypatch):
+        # Issue #29966 — without serialization, concurrent ddgs calls race on
+        # the shared libcurl state inside primp and deadlock the process.
+        # Two DDGS() instances must never be live at the same moment.
+        import threading
+        import time
+
+        in_flight = {"count": 0, "max": 0}
+        in_flight_lock = threading.Lock()
+
+        class _ConcurrencyTrackingDDGS:
+            def __enter__(self):
+                with in_flight_lock:
+                    in_flight["count"] += 1
+                    in_flight["max"] = max(in_flight["max"], in_flight["count"])
+                time.sleep(0.02)
+                return self
+
+            def __exit__(self, *_a):
+                with in_flight_lock:
+                    in_flight["count"] -= 1
+                return False
+
+            def text(self, query, max_results=5):
+                yield {"title": query, "href": f"https://{query}.example.com", "body": ""}
+
+        fake = types.ModuleType("ddgs")
+        fake.DDGS = _ConcurrencyTrackingDDGS
+        monkeypatch.setitem(sys.modules, "ddgs", fake)
+        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        provider = DDGSWebSearchProvider()
+        results = []
+        results_lock = threading.Lock()
+
+        def _run(q: str) -> None:
+            r = provider.search(q, limit=1)
+            with results_lock:
+                results.append(r)
+
+        threads = [threading.Thread(target=_run, args=(f"q{i}",)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert all(not t.is_alive() for t in threads), "ddgs threads deadlocked"
+        assert len(results) == 4
+        assert all(r["success"] for r in results)
+        # The lock must keep at most one DDGS() context live at a time.
+        assert in_flight["max"] == 1, f"expected 1 concurrent DDGS, saw {in_flight['max']}"
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available / _get_backend / check_web_api_key

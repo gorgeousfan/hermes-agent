@@ -13,11 +13,29 @@ whether the package is importable; the plugin still registers either way so
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
+
+# Serialize all ddgs invocations process-wide.
+#
+# The ``ddgs`` package wraps ``primp`` (compiled libcurl extension) and
+# spawns its own internal ThreadPoolExecutor inside ``DDGS().text()``.
+# Two ``DDGS()`` calls dispatched concurrently — e.g. when the agent
+# emits two ``web_search`` tool calls in one LLM response and
+# ``execute_tool_calls_concurrent()`` runs them in parallel because
+# ``web_search`` is in ``_PARALLEL_SAFE_TOOLS`` — race on the shared
+# libcurl state and deadlock the entire process (futex_do_wait,
+# SIGINT-immune; only SIGKILL recovers).  See issue #29966.
+#
+# Serializing at the provider layer keeps ``web_search`` parallel-safe
+# for backends that *are* thread-safe (Brave / Exa / Tavily / Firecrawl
+# / SearXNG — stateless HTTP) while collapsing concurrent ddgs calls
+# into sequential ones.
+_DDGS_CALL_LOCK = threading.Lock()
 
 
 class DDGSWebSearchProvider(WebSearchProvider):
@@ -72,7 +90,7 @@ class DDGSWebSearchProvider(WebSearchProvider):
 
         try:
             web_results = []
-            with DDGS() as client:
+            with _DDGS_CALL_LOCK, DDGS() as client:
                 for i, hit in enumerate(client.text(query, max_results=safe_limit)):
                     if i >= safe_limit:
                         break
