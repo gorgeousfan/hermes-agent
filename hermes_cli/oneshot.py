@@ -337,7 +337,23 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    response = agent.chat(prompt) or ""
+
+    # Fix for Issue #22975: oneshot returns empty stdout despite successful API response.
+    # When streaming is active, agent.chat() may return an empty string because the
+    # streaming path consumes the response content before it can be captured as a
+    # return value.  We recover the response from the agent's internal state.
+    if not response and hasattr(agent, "_last_full_response"):
+        response = agent._last_full_response or ""
+
+    # Fallback: try to reconstruct from conversation history if still empty
+    if not response and hasattr(agent, "conversation_history") and agent.conversation_history:
+        for msg in reversed(agent.conversation_history):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                response = msg["content"]
+                break
+
+    return response
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:
