@@ -111,3 +111,28 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_create_and_list_tags(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Track useful leads",
+                name="Lead tracker",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                tags=[" leads ", "Health", "leads"],
+                profile=None,
+            )
+        )
+        create_out = capsys.readouterr().out
+        assert "Tags: leads, Health" in create_out
+
+        jobs = list_jobs()
+        assert jobs[0]["tags"] == ["leads", "Health"]
+
+        cron_command(Namespace(cron_command="list", all=True))
+        list_out = capsys.readouterr().out
+        assert "Tags:      leads, Health" in list_out

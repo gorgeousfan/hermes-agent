@@ -11738,6 +11738,12 @@ def main():
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
     )
+    cron_create.add_argument(
+        "--tag",
+        dest="tags",
+        action="append",
+        help="Attach a grouping tag such as health, leads, side-projects, or reminders. Repeat to add multiple tags.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -11805,6 +11811,12 @@ def main():
     cron_edit.add_argument(
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--tag",
+        dest="tags",
+        action="append",
+        help="Replace the job's tags with this set. Repeat to attach multiple tags; pass no --tag to leave unchanged.",
     )
 
     # lifecycle actions

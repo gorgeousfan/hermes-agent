@@ -177,6 +177,33 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_and_update_tags_visible_through_tool(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Collect proactive ideas",
+                schedule="every 1h",
+                name="Idea collector",
+                tags=[" side-projects ", "Leads", "leads"],
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["tags"] == ["side-projects", "Leads"]
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["tags"] == ["side-projects", "Leads"]
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                tags=[" health ", "Health", "reminders"],
+            )
+        )
+
+        assert updated["success"] is True
+        assert updated["job"]["tags"] == ["health", "reminders"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

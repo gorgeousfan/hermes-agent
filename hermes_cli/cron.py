@@ -32,6 +32,20 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
     return normalized
 
 
+def _normalize_tags(tags: Optional[Iterable[str]] = None) -> Optional[List[str]]:
+    if tags is None:
+        return None
+    normalized: List[str] = []
+    seen = set()
+    for item in tags:
+        text = str(item or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            normalized.append(text)
+            seen.add(key)
+    return normalized
+
+
 def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
@@ -90,6 +104,9 @@ def cron_list(show_all: bool = False):
         print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
+        tags = job.get("tags") or []
+        if tags:
+            print(f"    Tags:      {', '.join(tags)}")
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
@@ -175,6 +192,7 @@ def cron_create(args):
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
+        tags=_normalize_tags(getattr(args, "tags", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
@@ -188,6 +206,8 @@ def cron_create(args):
     print(f"  Schedule: {result['schedule']}")
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
+    if result.get("job", {}).get("tags"):
+        print(f"  Tags: {', '.join(result['job']['tags'])}")
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
@@ -221,6 +241,7 @@ def cron_edit(args):
     remove_skills = set(_normalize_skills(None, getattr(args, "remove_skills", None)) or [])
 
     final_skills = None
+    replacement_tags = _normalize_tags(getattr(args, "tags", None))
     if getattr(args, "clear_skills", False):
         final_skills = []
     elif replacement_skills is not None:
@@ -240,6 +261,7 @@ def cron_edit(args):
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
+        tags=replacement_tags,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
@@ -257,6 +279,10 @@ def cron_edit(args):
         print(f"  Skills: {', '.join(updated['skills'])}")
     else:
         print("  Skills: none")
+    if updated.get("tags"):
+        print(f"  Tags: {', '.join(updated['tags'])}")
+    else:
+        print("  Tags: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
     if updated.get("no_agent"):
