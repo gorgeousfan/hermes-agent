@@ -434,6 +434,56 @@ def _err(rid, code: int, msg: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
 
 
+def _exec_guarded_command(
+    cmd: str,
+    *,
+    timeout: int = 30,
+    cwd: str | None = None,
+) -> dict:
+    """Run *cmd* through the dangerous-command guard and execute it.
+
+    Returns a dict with keys ``ok``, ``code``, ``message`` (on error) or
+    ``ok``, ``stdout``, ``stderr``, ``code`` (on success).
+
+    Fail-closed: if the dangerous-command guard cannot be loaded, the
+    command is refused rather than silently bypassed.
+    """
+    if not cmd:
+        return {"ok": False, "code": 4004, "message": "empty command"}
+
+    try:
+        from tools.approval import detect_dangerous_command
+
+        is_dangerous, _, desc = detect_dangerous_command(cmd)
+        if is_dangerous:
+            return {
+                "ok": False,
+                "code": 4005,
+                "message": f"blocked: {desc}. Use the agent for dangerous commands.",
+            }
+    except ImportError:
+        return {
+            "ok": False,
+            "code": 4006,
+            "message": "dangerous-command guard unavailable; refusing to execute",
+        }
+
+    try:
+        r = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd or os.getcwd(),
+        )
+        return {"ok": True, "stdout": r.stdout, "stderr": r.stderr, "code": r.returncode}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "code": 5002, "message": f"command timed out ({timeout}s)"}
+    except Exception as e:
+        return {"ok": False, "code": 5003, "message": str(e)}
+
+
 def method(name: str):
     def dec(fn):
         _methods[name] = fn
@@ -4735,23 +4785,21 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
-            r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
+            result = _exec_guarded_command(
+                qc.get("command", ""), timeout=30
             )
+            if not result["ok"]:
+                return _err(rid, result["code"], result["message"])
+            _stdout = result.get("stdout") or ""
+            _stderr = result.get("stderr") or ""
             output = (
-                (r.stdout or "")
-                + ("\n" if r.stdout and r.stderr else "")
-                + (r.stderr or "")
+                _stdout
+                + ("\n" if _stdout and _stderr else "")
+                + _stderr
             ).strip()[:4000]
-            if r.returncode != 0:
+            if result["code"] != 0:
                 return _err(
-                    rid,
-                    4018,
-                    output or f"quick command failed with exit code {r.returncode}",
+                    rid, 4018, output or f"quick command failed with exit code {result['code']}"
                 )
             return _ok(rid, {"type": "exec", "output": output})
         if qc.get("type") == "alias":
@@ -6747,32 +6795,13 @@ def _(rid, params: dict) -> dict:
 
 @method("shell.exec")
 def _(rid, params: dict) -> dict:
-    cmd = params.get("command", "")
-    if not cmd:
-        return _err(rid, 4004, "empty command")
-    try:
-        from tools.approval import detect_dangerous_command
-
-        is_dangerous, _, desc = detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(
-                rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
-            )
-    except ImportError:
-        pass
-    try:
-        r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
-        )
-        return _ok(
-            rid,
-            {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
-                "code": r.returncode,
-            },
-        )
-    except subprocess.TimeoutExpired:
-        return _err(rid, 5002, "command timed out (30s)")
-    except Exception as e:
-        return _err(rid, 5003, str(e))
+    result = _exec_guarded_command(
+        params.get("command", ""), timeout=30
+    )
+    if not result["ok"]:
+        return _err(rid, result["code"], result["message"])
+    return _ok(rid, {
+        "stdout": (result["stdout"] or "")[-4000:],
+        "stderr": (result["stderr"] or "")[-2000:],
+        "code": result["code"],
+    })
