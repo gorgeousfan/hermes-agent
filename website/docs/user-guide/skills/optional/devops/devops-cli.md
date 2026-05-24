@@ -12,6 +12,7 @@ Run 150+ AI apps via inference.sh CLI (infsh) — image generation, video creati
 
 ## Skill metadata
 
+<!-- ascii-guard-ignore -->
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/cli` |
@@ -21,6 +22,7 @@ Run 150+ AI apps via inference.sh CLI (infsh) — image generation, video creati
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `AI`, `image-generation`, `video`, `LLM`, `search`, `inference`, `FLUX`, `Veo`, `Claude` |
+<!-- ascii-guard-ignore-end -->
 
 ## Reference: full SKILL.md
 
