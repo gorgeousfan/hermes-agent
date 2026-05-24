@@ -2366,3 +2366,37 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+# ---------------------------------------------------------------------------
+# Built-in dashboard theme inventory tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuiltinDashboardThemes:
+    """Sanity tests for the built-in theme list shipped from the backend.
+
+    Regression coverage for #30756 — Japanese font themes must be present in
+    `_BUILTIN_DASHBOARD_THEMES` so they show up in `/api/dashboard/themes`
+    and stay in sync with the frontend's `BUILTIN_THEMES` map in
+    `web/src/themes/presets.ts`.
+    """
+
+    def test_japanese_themes_listed(self):
+        from hermes_cli.web_server import _BUILTIN_DASHBOARD_THEMES
+        names = {t["name"] for t in _BUILTIN_DASHBOARD_THEMES}
+        assert "japanese-sans" in names
+        assert "japanese-serif" in names
+
+    def test_japanese_themes_have_label_and_description(self):
+        from hermes_cli.web_server import _BUILTIN_DASHBOARD_THEMES
+        by_name = {t["name"]: t for t in _BUILTIN_DASHBOARD_THEMES}
+        for n in ("japanese-sans", "japanese-serif"):
+            entry = by_name[n]
+            assert entry["label"].strip()
+            assert entry["description"].strip()
+
+    def test_theme_names_are_unique(self):
+        from hermes_cli.web_server import _BUILTIN_DASHBOARD_THEMES
+        names = [t["name"] for t in _BUILTIN_DASHBOARD_THEMES]
+        assert len(names) == len(set(names))

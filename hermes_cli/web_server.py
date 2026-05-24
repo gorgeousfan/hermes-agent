@@ -3758,6 +3758,8 @@ _BUILTIN_DASHBOARD_THEMES = [
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
     {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
     {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "japanese-sans",  "label": "Japanese Sans",  "description": "Hermes Teal palette with Noto Sans JP typography"},
+    {"name": "japanese-serif", "label": "Japanese Serif", "description": "Hermes Teal palette with Noto Serif JP typography"},
 ]
 
 

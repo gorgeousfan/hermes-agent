@@ -204,6 +204,54 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+/**
+ * Japanese-friendly typography variants.
+ *
+ * These share the same palette as ``defaultTheme`` so the only thing that
+ * changes when a user picks them is the typography — fontSans / fontMono /
+ * fontDisplay stacks resolve to Japanese-capable fonts (Noto Sans JP / Noto
+ * Serif JP / Noto Sans Mono CJK JP via Google Fonts), with safe system-font
+ * fallbacks so the dashboard still renders correctly if the stylesheet fails
+ * to load. Closes #30756.
+ */
+const JAPANESE_SYSTEM_SANS_FALLBACK =
+  '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", ' +
+  SYSTEM_SANS;
+const JAPANESE_SYSTEM_SERIF_FALLBACK =
+  '"Hiragino Mincho ProN", "Yu Mincho", "MS Mincho", "Hiragino Mincho Pro", ' +
+  'Georgia, "Times New Roman", serif';
+
+export const japaneseSansTheme: DashboardTheme = {
+  name: "japanese-sans",
+  label: "Japanese Sans",
+  description: "Hermes Teal palette with Noto Sans JP typography",
+  palette: defaultTheme.palette,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Noto Sans JP", ${JAPANESE_SYSTEM_SANS_FALLBACK}`,
+    fontMono: `"Noto Sans Mono CJK JP", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap",
+  },
+  layout: DEFAULT_LAYOUT,
+};
+
+export const japaneseSerifTheme: DashboardTheme = {
+  name: "japanese-serif",
+  label: "Japanese Serif",
+  description: "Hermes Teal palette with Noto Serif JP typography",
+  palette: defaultTheme.palette,
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Noto Serif JP", ${JAPANESE_SYSTEM_SERIF_FALLBACK}`,
+    fontMono: `"Noto Sans Mono CJK JP", ${SYSTEM_MONO}`,
+    fontDisplay: `"Noto Serif JP", ${JAPANESE_SYSTEM_SERIF_FALLBACK}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;500;600;700&display=swap",
+  },
+  layout: DEFAULT_LAYOUT,
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
@@ -212,4 +260,6 @@ export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   rose: roseTheme,
+  "japanese-sans": japaneseSansTheme,
+  "japanese-serif": japaneseSerifTheme,
 };
