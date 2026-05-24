@@ -4,10 +4,100 @@ Used by `hermes tools` and `hermes skills` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
+import os
 import sys
 from typing import Callable, List, Optional, Set
 
 from hermes_cli.colors import Colors, color
+
+
+# Tracks whether we've already nudged the user about installing
+# ``windows-curses`` so we only mention it once per process — the
+# nudge is helpful the first time a Windows user hits a wizard that
+# would have used arrow-key navigation, noise otherwise (#24345).
+_WINDOWS_CURSES_HINT_SHOWN = False
+
+
+def _is_windows() -> bool:
+    """Local platform check.  Mirrors :func:`hermes_cli.stdio.is_windows`.
+
+    Kept private and dependency-free so this module stays importable
+    even when ``hermes_cli.stdio`` hasn't been initialised yet (e.g.
+    during early test bootstrapping).
+    """
+    return sys.platform == "win32"
+
+
+def _use_ascii_safe_glyphs() -> bool:
+    """Return True when the wizard UI should avoid exotic Unicode.
+
+    The numbered-fallback path uses ``✓``, ``→``, ``●``, ``○``, ``↑↓``
+    glyphs by default.  Those render fine on Linux/macOS terminals and
+    on modern Windows Terminal with a Unicode-capable font (Cascadia
+    Code, Consolas under MS Sans Serif, etc.).  They mojibake under
+    cmd.exe / PowerShell 5 with the default raster font, which is the
+    exact "looks not like Linux" failure mode reported in #24345.
+
+    The detection is conservative: ASCII-only kicks in when **both**
+
+      * the platform is native Windows, and
+      * ``hermes_cli.stdio.is_legacy_windows_console()`` reports the
+        console couldn't get VT processing enabled.
+
+    Modern Windows Terminal users see no change.  Power users can also
+    force the ASCII path by setting ``HERMES_ASCII_GLYPHS=1`` (handy
+    for screen readers and the rare terminal font without box-drawing).
+    """
+    if os.environ.get("HERMES_ASCII_GLYPHS") in {"1", "true", "True", "yes"}:
+        return True
+    if not _is_windows():
+        return False
+    try:
+        from hermes_cli.stdio import is_legacy_windows_console
+        return is_legacy_windows_console()
+    except Exception:
+        return False
+
+
+def _glyph(unicode_glyph: str, ascii_fallback: str) -> str:
+    """Pick the Unicode or ASCII variant depending on the console.
+
+    Centralised so the dozen-or-so call sites below don't each
+    re-implement the platform check.  Returns ``ascii_fallback`` only
+    when :func:`_use_ascii_safe_glyphs` says we must — everywhere else
+    the user keeps the prettier Unicode rendering.
+    """
+    return ascii_fallback if _use_ascii_safe_glyphs() else unicode_glyph
+
+
+def _maybe_show_windows_curses_hint() -> None:
+    """Print a one-time hint when curses can't load on Windows (#24345).
+
+    On native Windows the ``curses`` stdlib module isn't shipped — it
+    requires the ``windows-curses`` PyPI package.  Without it every
+    ``curses_*`` selector silently downgrades to the numbered-fallback
+    path, which works but loses arrow-key navigation.  Users who hit
+    the issue tracker describe this as "can't use the keys to
+    change/toggle" because the fallback expects them to type a digit.
+
+    This helper prints a single, gentle suggestion on the first
+    fallback we trigger per process.  Subsequent fallbacks are silent
+    so we don't carpet-bomb the wizard output.
+    """
+    global _WINDOWS_CURSES_HINT_SHOWN
+    if _WINDOWS_CURSES_HINT_SHOWN or not _is_windows():
+        return
+    _WINDOWS_CURSES_HINT_SHOWN = True
+    try:
+        print(
+            color(
+                "  Tip: install 'windows-curses' for arrow-key navigation in setup wizards:",
+                Colors.DIM,
+            )
+        )
+        print(color("        pip install windows-curses", Colors.DIM))
+    except Exception:
+        pass
 
 
 def flush_stdin() -> None:
@@ -293,11 +383,18 @@ def _radio_numbered_fallback(
     cancel_returns: int,
 ) -> int:
     """Text-based numbered fallback for radio selection."""
+    _maybe_show_windows_curses_hint()
     print(color(f"\n  {title}", Colors.YELLOW))
-    print(color("  Select by number, Enter to confirm.\n", Colors.DIM))
+    print(color("  Select by number, then press Enter to confirm.\n", Colors.DIM))
 
+    selected_glyph = _glyph("\u25cf", "*")  # ● vs *
+    empty_glyph = _glyph("\u25cb", " ")      # ○ vs (space)
     for i, label in enumerate(items):
-        marker = color("(\u25cf)", Colors.GREEN) if i == selected else "(\u25cb)"
+        marker = (
+            color(f"({selected_glyph})", Colors.GREEN)
+            if i == selected
+            else f"({empty_glyph})"
+        )
         print(f"  {marker} {i + 1:>2}. {label}")
     print()
     try:
@@ -419,6 +516,7 @@ def _numbered_single_fallback(
     cancel_idx: int,
 ) -> int | None:
     """Text-based numbered fallback for single-select."""
+    _maybe_show_windows_curses_hint()
     print(f"\n  {title}\n")
     for i, label in enumerate(items, 1):
         print(f"  {i}. {label}")
@@ -445,13 +543,22 @@ def _numbered_fallback(
     status_fn: Optional[Callable[[Set[int]], str]] = None,
 ) -> Set[int]:
     """Text-based toggle fallback for terminals without curses."""
+    _maybe_show_windows_curses_hint()
     chosen = set(selected)
     print(color(f"\n  {title}", Colors.YELLOW))
-    print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
+    print(color(
+        "  Type the item number to toggle it, then press Enter to confirm.\n",
+        Colors.DIM,
+    ))
 
+    checked_glyph = _glyph("\u2713", "x")  # ✓ vs x
     while True:
         for i, label in enumerate(items):
-            marker = color("[✓]", Colors.GREEN) if i in chosen else "[ ]"
+            marker = (
+                color(f"[{checked_glyph}]", Colors.GREEN)
+                if i in chosen
+                else "[ ]"
+            )
             print(f"  {marker} {i + 1:>2}. {label}")
         if status_fn:
             status_text = status_fn(chosen)

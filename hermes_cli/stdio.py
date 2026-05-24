@@ -32,10 +32,26 @@ from __future__ import annotations
 import os
 import sys
 
-__all__ = ["configure_windows_stdio", "is_windows"]
+__all__ = [
+    "configure_windows_stdio",
+    "is_windows",
+    "is_legacy_windows_console",
+]
 
 
 _CONFIGURED = False
+# Tracks the outcome of the VT processing enable attempt during the most
+# recent configure_windows_stdio() call.  Other modules (colors.py,
+# curses_ui.py) consult this through :func:`is_legacy_windows_console`
+# to decide whether to emit ANSI escape sequences or fall back to
+# plain-text UI.  Tri-state on purpose:
+#   None  — not yet configured / non-Windows (no opinion).
+#   False — VT processing is on (the modern path, ANSI is safe).
+#   True  — VT processing could not be enabled (legacy console host:
+#           cmd.exe on Windows < 10 1809, Windows Console Host without
+#           VT, a pre-Win10 terminal, etc.).  ANSI escapes would print
+#           as literal ←[33m... garbage so callers should degrade.
+_VT_PROCESSING_ENABLED: "bool | None" = None
 
 
 def is_windows() -> bool:
@@ -64,6 +80,101 @@ def _flip_console_code_page_to_utf8() -> None:
         # ctypes import, missing kernel32, or non-Windows — any failure here
         # is non-fatal.  We've still reconfigured Python's own streams below.
         pass
+
+
+# Win32 constants for the SetConsoleMode VT flag.  Kept local to avoid
+# importing pywin32 (which is heavy and not in the dep tree).
+_STD_OUTPUT_HANDLE = -11
+_STD_ERROR_HANDLE = -12
+_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+
+def _enable_virtual_terminal_processing() -> bool:
+    """Turn on ANSI/VT processing for the attached console (#24345).
+
+    The setup wizard prints its banner with raw ANSI escape sequences
+    (``\\x1b[35m┌────...``).  On a fresh Windows 10 / 11 Windows Console
+    Host (the one ``cmd.exe`` and PowerShell 5.1 attach to by default)
+    ``ENABLE_VIRTUAL_TERMINAL_PROCESSING`` is **off**, so those escapes
+    print as literal text — the user sees ``←[35m`` glyphs in front of
+    every banner line and every menu item, which is exactly what the
+    issue's screenshots show.
+
+    Windows Terminal sets the flag automatically, but the legacy console
+    host does not — and `irm install.ps1 | iex` lands new users in the
+    legacy host more often than not (PowerShell 5.1 is still the
+    default ``powershell.exe``).  We fix it ourselves with one call to
+    ``SetConsoleMode``, matching what Node, Rust, Go, and Cargo do at
+    process startup.
+
+    Returns ``True`` when at least one of stdout / stderr now has VT
+    processing on (success).  Returns ``False`` only when *both*
+    handles failed — that's the "legacy console" signal callers use to
+    suppress ANSI emission entirely.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        kernel32.GetConsoleMode.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.SetConsoleMode.restype = wintypes.BOOL
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+
+        # INVALID_HANDLE_VALUE is -1 on Win32.  ctypes returns it as a
+        # Python int that compares equal to ``-1 & 0xFFFFFFFFFFFFFFFF``
+        # in HANDLE space (it's an opaque pointer), so we compare against
+        # the ``0`` returned for "no console" and the explicit invalid
+        # sentinel below.
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        any_success = False
+        for std_id in (_STD_OUTPUT_HANDLE, _STD_ERROR_HANDLE):
+            handle = kernel32.GetStdHandle(std_id)
+            if not handle or handle == INVALID_HANDLE_VALUE:
+                continue
+            mode = wintypes.DWORD()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                # Not a console (redirected to a pipe/file).  ANSI passes
+                # through redirected streams just fine without VT flag,
+                # so a "no console" handle doesn't taint the result.
+                any_success = True
+                continue
+            new_mode = mode.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            if kernel32.SetConsoleMode(handle, new_mode):
+                any_success = True
+        return any_success
+    except Exception:
+        # ctypes failure, missing kernel32, weird CI runner — bail out
+        # and let callers assume a legacy console.  Better to drop colors
+        # than to spam ``←[33m...`` at the user.
+        return False
+
+
+def is_legacy_windows_console() -> bool:
+    """Return True when we're on Windows and VT processing is off.
+
+    Modules that produce ANSI-colored output (``hermes_cli.colors``,
+    ``hermes_cli.curses_ui``) consult this **after**
+    :func:`configure_windows_stdio` has run to decide whether to emit
+    ANSI escapes at all.  See :func:`_enable_virtual_terminal_processing`
+    for the underlying detection.
+
+    Returns ``False`` on non-Windows (POSIX terminals universally
+    process ANSI; the question doesn't apply).  Returns ``False`` on
+    Windows when VT processing was successfully enabled or when the
+    streams are redirected (pipes don't need the flag).  Returns
+    ``True`` only when we KNOW the console host won't render escapes.
+    """
+    if not is_windows():
+        return False
+    return _VT_PROCESSING_ENABLED is False
 
 
 def _reconfigure_stream(stream, *, encoding: str = "utf-8", errors: str = "replace") -> None:
@@ -141,6 +252,14 @@ def configure_windows_stdio() -> bool:
     # Flip the console code page first so that any subprocess that
     # inherits the console (e.g. a launched shell) also sees CP_UTF8.
     _flip_console_code_page_to_utf8()
+
+    # Enable ANSI/VT processing for stdout+stderr.  Without this, the
+    # setup wizard's banner and every coloured prompt prints as literal
+    # ``←[35m`` garbage on legacy Windows Console Host (cmd.exe,
+    # PowerShell 5.1 default).  See _enable_virtual_terminal_processing
+    # for the full story.  #24345.
+    global _VT_PROCESSING_ENABLED
+    _VT_PROCESSING_ENABLED = _enable_virtual_terminal_processing()
 
     # Reconfigure Python's own stdio wrappers so ``print()`` calls from
     # this process round-trip emoji / box-drawing / non-Latin text.
