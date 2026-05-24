@@ -46,7 +46,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`ideation`](/docs/user-guide/skills/bundled/creative/creative-creative-ideation) | Generate project ideas via creative constraints. | `creative/creative-ideation` |
 | [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md) | Author/validate/export Google's DESIGN.md token spec files. | `creative/design-md` |
 | [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). | `creative/excalidraw` |
-| [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) | Humanize text: strip AI-isms and add real voice. | `creative/humanizer` |
+| [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) | Humanize text with deterministic AI-tell detection plus judgment: strip AI-isms, security-obfuscation tricks, stock phrases, hedging, performed authenticity, em-dash/rule-of-three patterns, and add real voice while preserving facts. | `creative/humanizer` |
 | [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video) | Manim CE animations: 3Blue1Brown math/algo videos. | `creative/manim-video` |
 | [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js) | p5.js sketches: gen art, shaders, interactive, 3D. | `creative/p5js` |
 | [`pixel-art`](/docs/user-guide/skills/bundled/creative/creative-pixel-art) | Pixel art w/ era palettes (NES, Game Boy, PICO-8). | `creative/pixel-art` |
