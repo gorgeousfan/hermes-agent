@@ -2334,6 +2334,29 @@ class AIAgent:
         return truncated
 
     @staticmethod
+    def _compose_delegate_truncation_notice(dropped_count: int, max_children: int) -> str:
+        """Compose the guardrail note shown to the model after delegate_task truncation.
+
+        Without this, ``_cap_delegate_task_calls`` silently strips excess calls
+        from the assistant message and the model has no way to know any were
+        dropped — it just sees fewer tool results than it asked for and
+        attributes the discrepancy to the provider, not to a Hermes-side cap.
+        Appending this note to the assistant message's content makes the cap
+        visible on the next API call so the model can adjust its strategy
+        (queue follow-up calls, switch to the 'tasks' batch parameter, etc.).
+        """
+        call_word = "call" if dropped_count == 1 else "calls"
+        return (
+            f"[Hermes guardrail: {dropped_count} excess delegate_task "
+            f"{call_word} past max_concurrent_children={max_children} were "
+            f"truncated before execution and did not run. To raise the cap, "
+            f"set delegation.max_concurrent_children higher in config.yaml; "
+            f"to run more than {max_children} subagents in parallel without "
+            f"raising the cap, prefer the 'tasks' batch parameter over "
+            f"multiple single-task delegate_task calls.]"
+        )
+
+    @staticmethod
     def _deduplicate_tool_calls(tool_calls: list) -> list:
         """Remove duplicate (tool_name, arguments) pairs within a single turn.
 

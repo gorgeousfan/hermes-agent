@@ -108,6 +108,30 @@ class TestDelegateRequirements(unittest.TestCase):
             self.assertNotIn("default 3", surface)
             self.assertNotIn("default 2", surface)
 
+    def test_schema_description_advertises_per_turn_truncation(self):
+        """The description must warn the model that emitting more than
+        max_concurrent_children separate delegate_task tool_calls in a single
+        assistant turn will trigger Hermes-side truncation. Without this
+        warning, the model can't tell its 4th-and-later single-task
+        delegate_task calls won't actually run (see #30405).
+        """
+        from tools.delegate_tool import (
+            _build_dynamic_schema_overrides,
+            _get_max_concurrent_children,
+        )
+
+        overrides = _build_dynamic_schema_overrides()
+        desc = overrides["description"]
+        max_children = _get_max_concurrent_children()
+
+        # The description must surface the per-turn cap, not just the batch cap.
+        self.assertIn("PER-TURN LIMIT", desc)
+        # The actual numeric cap shared with batch mode must be referenced.
+        self.assertIn(f"max_concurrent_children={max_children}", desc)
+        # And the description must steer the model toward the 'tasks' batch
+        # parameter as the better way to run more than the cap in parallel.
+        self.assertIn("'tasks' batch parameter", desc)
+
     def test_schema_overrides_applied_via_get_definitions(self):
         """Registry.get_definitions() must apply dynamic_schema_overrides so
         the model API call sees current values, not the static import-time text.
