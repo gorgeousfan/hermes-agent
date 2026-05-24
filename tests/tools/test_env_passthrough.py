@@ -109,6 +109,37 @@ class TestConfigPassthrough:
 class TestExecuteCodeIntegration:
     """Verify that the passthrough is checked in execute_code's env filtering."""
 
+    def test_common_secret_names_blocked_by_default(self):
+        from tools.code_execution_tool import _scrub_child_env
+
+        env = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/user",
+            "DATABASE_URL": "postgres://user:pass@example/db",
+            "SLACK_WEBHOOK": "https://hooks.slack.com/services/secret",
+            "AWS_ACCESS_ID": "AKIA...",
+            "SENTRY_DSN": "https://secret@sentry.example/1",
+            "HERMES_INTERNAL_STATE": "do-not-leak",
+        }
+
+        child_env = _scrub_child_env(env, is_passthrough=lambda _name: False, is_windows=False)
+
+        assert child_env == {"PATH": "/usr/bin", "HOME": "/home/user"}
+
+    def test_passthrough_still_allows_explicit_skill_secret(self):
+        from tools.code_execution_tool import _scrub_child_env
+
+        env = {"PATH": "/usr/bin", "TENOR_API_KEY": "test123"}
+
+        child_env = _scrub_child_env(
+            env,
+            is_passthrough=lambda name: name == "TENOR_API_KEY",
+            is_windows=False,
+        )
+
+        assert child_env["PATH"] == "/usr/bin"
+        assert child_env["TENOR_API_KEY"] == "test123"
+
     def test_secret_substring_blocked_by_default(self):
         """TENOR_API_KEY should be blocked without passthrough."""
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",

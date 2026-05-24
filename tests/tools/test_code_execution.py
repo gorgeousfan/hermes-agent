@@ -218,6 +218,24 @@ print(result.get("output", ""))
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
+    def test_terminal_tool_call_runs_approval_guard(self):
+        """Dangerous terminal commands inside execute_code are blocked before dispatch."""
+        code = """
+from hermes_tools import terminal
+result = terminal("rm -rf /tmp/hermes-execute-code-test")
+print(result)
+"""
+        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call) as mock_dispatch:
+            result = json.loads(execute_code(
+                code=code,
+                task_id="test-task",
+                enabled_tools=["terminal"],
+            ))
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn("Asking the user for approval", result["output"])
+        mock_dispatch.assert_not_called()
+
     def test_multi_tool_chain(self):
         """Script calls multiple tools sequentially."""
         code = """

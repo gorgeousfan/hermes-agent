@@ -74,14 +74,26 @@ MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
 # Environment variable scrubbing rules (shared between the local + remote
-# backends).  Secret-substring block is applied first; anything left must
-# match either a safe prefix or, on Windows, an OS-essential name.
-_SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                      "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
-                      "HERMES_")
+# backends).  Keep the child process on an explicit allowlist so uncommon
+# secret names (DATABASE_URL, WEBHOOK_*, SENTRY_DSN, etc.) do not leak just
+# because they miss a blocklist substring.  Passthrough declarations remain
+# available for skills/user config that intentionally expose a variable.
+_SAFE_ENV_NAMES = frozenset({
+    "HOME",
+    "LANG",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "TEMP",
+    "USER",
+})
+_SAFE_ENV_PREFIXES = ("LC_", "XDG_", "CONDA", "VIRTUAL_ENV", "PYTHONPATH")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                      "PASSWD", "AUTH")
+                      "PASSWD", "AUTH", "DATABASE_URL", "DSN", "WEBHOOK",
+                      "ACCESS_ID", "ACCESS_KEY", "PUBLISHABLE")
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
 # Without them, even stdlib calls like ``socket.socket()`` fail with
@@ -120,8 +132,8 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
 
     Rules (order matters):
       1. Passthrough vars (skill- or config-declared) always pass.
-      2. Secret-substring names (KEY/TOKEN/etc.) are blocked.
-      3. Names matching a safe prefix pass.
+    2. Secret-substring names (KEY/TOKEN/WEBHOOK/etc.) are blocked.
+    3. Names matching the explicit safe allowlist pass.
       4. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
@@ -145,7 +157,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
             continue
         if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
             continue
-        if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
+        if k in _SAFE_ENV_NAMES or any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
             scrubbed[k] = v
             continue
         if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
@@ -511,6 +523,37 @@ def _rpc_server_loop(
                 if tool_name == "terminal" and isinstance(tool_args, dict):
                     for param in _TERMINAL_BLOCKED_PARAMS:
                         tool_args.pop(param, None)
+                    command = str(tool_args.get("command") or "")
+                    try:
+                        from tools.approval import check_all_command_guards
+                        _old_exec_ask = os.environ.get("HERMES_EXEC_ASK")
+                        if (
+                            "HERMES_EXEC_ASK" not in os.environ
+                            and "HERMES_INTERACTIVE" not in os.environ
+                            and "HERMES_GATEWAY_SESSION" not in os.environ
+                        ):
+                            os.environ["HERMES_EXEC_ASK"] = "1"
+                        try:
+                            guard = check_all_command_guards(command, "local")
+                        finally:
+                            if _old_exec_ask is None:
+                                os.environ.pop("HERMES_EXEC_ASK", None)
+                            else:
+                                os.environ["HERMES_EXEC_ASK"] = _old_exec_ask
+                    except Exception as exc:
+                        logger.warning(
+                            "execute_code terminal guard failed closed: %s", exc,
+                            exc_info=True,
+                        )
+                        guard = {
+                            "approved": False,
+                            "message": "BLOCKED: Failed to run command approval checks.",
+                        }
+                    if not guard.get("approved"):
+                        conn.sendall((json.dumps({
+                            "error": guard.get("message") or "Command blocked by approval guard."
+                        }) + "\n").encode())
+                        continue
 
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
