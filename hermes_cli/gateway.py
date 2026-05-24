@@ -3621,6 +3621,22 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "sendblue",
+        "label": "Sendblue (iMessage, no Mac)",
+        "emoji": "📨",
+        "token_var": "SENDBLUE_API_KEY_ID",
+        "setup_instructions": [
+            "1. Sign up for a Sendblue account: https://sendblue.com",
+            "2. Purchase a phone number from the Sendblue dashboard",
+            "3. Generate API keys at https://app.sendblue.com/api-keys",
+            "4. You'll also need a publicly reachable HTTPS URL that points at",
+            "   this machine — setup will show tunnel options if you don't have one",
+            "5. Sendblue is a cloud relay, so no Mac is required (unlike BlueBubbles)",
+        ],
+        # No `vars` — _setup_sendblue is bespoke and handles every prompt itself
+        # (public-URL guidance, reverse-proxy snippets, credential validation).
+    },
+    {
         "key": "qqbot",
         "label": "QQ Bot",
         "emoji": "🐧",
@@ -4734,6 +4750,7 @@ def _builtin_setup_fn(key: str):
         "matrix": _s._setup_matrix,
         "mattermost": _s._setup_mattermost,
         "bluebubbles": _s._setup_bluebubbles,
+        "sendblue": _s._setup_sendblue,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
         "whatsapp": _setup_whatsapp,
