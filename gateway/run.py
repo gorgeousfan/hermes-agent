@@ -7313,6 +7313,9 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "goals":
+            return await self._handle_repo_goals_command(event)
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         
@@ -9428,6 +9431,23 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_repo_goals_command(self, event: MessageEvent) -> str:
+        """Handle /goals — delegate to repo-local goal engines."""
+        import asyncio
+
+        from hermes_cli.repo_goals import handle_goals_command
+
+        text = (getattr(event, "text", None) or getattr(event, "content", "") or "").strip()
+        if not text:
+            text = "/goals"
+        try:
+            output = await asyncio.to_thread(handle_goals_command, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"/goals failed: {exc}"
+        if len(output) > 3800:
+            output = output[:3800] + "\n… truncated"
+        return output or "/goals completed with no output."
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

@@ -8389,6 +8389,8 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "goals":
+            self._handle_repo_goals_command(cmd_original)
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
@@ -9042,6 +9044,18 @@ class HermesCLI:
             self._pending_input.put(state.goal)
         except Exception:
             pass
+
+    def _handle_repo_goals_command(self, cmd: str) -> None:
+        """Dispatch /goals commands into repo-local goal engines."""
+        try:
+            from hermes_cli.repo_goals import handle_goals_command
+
+            output = handle_goals_command(cmd)
+        except Exception as exc:
+            _cprint(f"  /goals failed: {exc}")
+            return
+        if output:
+            _cprint(output)
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.
