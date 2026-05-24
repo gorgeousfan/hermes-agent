@@ -1470,6 +1470,51 @@ def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
     assert str(ws) == target
 
 
+def test_worktree_task_defaults_to_profile_repo_wt_dir(kanban_home, tmp_path, monkeypatch):
+    repo = tmp_path / "control-center"
+    repo.mkdir()
+    (repo / "wt").mkdir()
+    monkeypatch.setattr(kb, "_default_worktree_repo_root", lambda: repo)
+    monkeypatch.chdir(tmp_path)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship", workspace_kind="worktree")
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+
+    assert task.workspace_path == str(repo / "wt" / t)
+    assert task.branch_name == f"wt/{t}"
+    assert ws == repo / "wt" / t
+
+
+def test_legacy_worktree_task_without_path_resolves_from_profile_repo(
+    kanban_home, tmp_path, monkeypatch
+):
+    repo = tmp_path / "control-center"
+    repo.mkdir()
+    (repo / "wt").mkdir()
+    monkeypatch.setattr(kb, "_default_worktree_repo_root", lambda: repo)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="ship",
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / ".worktrees" / "wrong"),
+        )
+        conn.execute(
+            "UPDATE tasks SET workspace_path = NULL, branch_name = NULL WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+
+    assert ws == repo / "wt" / t
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
@@ -1881,6 +1926,44 @@ class TestSharedBoardPaths:
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+
+    def test_default_spawn_supplies_default_worktree_branch(self, tmp_path, monkeypatch):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4343
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_dispatch_env_default_branch",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env_default_branch"
 
 
 # ---------------------------------------------------------------------------

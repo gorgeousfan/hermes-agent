@@ -102,6 +102,105 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
+
+def _git_repo_root_from_path(path: Path | str | None) -> Optional[Path]:
+    """Return the git toplevel containing ``path``, or ``None``.
+
+    ``worktree`` tasks need a stable repo root even when the dispatcher runs from
+    a different checkout. We intentionally resolve this at task creation /
+    workspace resolution time instead of trusting the gateway's process cwd.
+    """
+    if path is None:
+        return None
+    try:
+        candidate = Path(path).expanduser()
+        if not candidate.exists():
+            candidate = candidate.resolve(strict=False)
+        cwd = str(candidate if candidate.is_dir() else candidate.parent)
+    except Exception:
+        return None
+
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    repo = proc.stdout.strip()
+    if not repo:
+        return None
+    try:
+        return Path(repo).resolve()
+    except Exception:
+        return Path(repo)
+
+
+def _configured_terminal_cwd() -> Optional[Path]:
+    """Return the active profile's configured terminal.cwd, if any."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        raw = terminal_cfg.get("cwd")
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    try:
+        return Path(str(raw)).expanduser()
+    except Exception:
+        return None
+
+
+def _default_worktree_repo_root() -> Optional[Path]:
+    """Pick the repo root generic worktree tasks should inherit.
+
+    Precedence:
+    1. Active profile's configured ``terminal.cwd`` repo root.
+    2. Live process cwd repo root.
+
+    This keeps gateway-dispatched kanban tasks anchored to the repo the profile
+    is configured to work in, instead of the hermes-agent service checkout.
+    """
+    seen: set[str] = set()
+    for candidate in (_configured_terminal_cwd(), Path.cwd()):
+        repo_root = _git_repo_root_from_path(candidate)
+        if repo_root is None:
+            continue
+        key = str(repo_root)
+        if key in seen:
+            continue
+        seen.add(key)
+        return repo_root
+    return None
+
+
+def _default_worktree_parent(repo_root: Path) -> Path:
+    """Return the conventional directory to hold repo-local worktrees."""
+    wt_dir = repo_root / "wt"
+    if wt_dir.is_dir():
+        return wt_dir
+    return repo_root / ".worktrees"
+
+
+def _derive_generic_worktree_path(task_id: str) -> Path:
+    """Resolve a truthful default path for ``workspace_kind=worktree`` tasks."""
+    repo_root = _default_worktree_repo_root()
+    if repo_root is None:
+        raise ValueError(
+            "worktree task has no workspace_path and no repo could be inferred; "
+            "set an explicit worktree:<path> or configure terminal.cwd inside the target repo"
+        )
+    return _default_worktree_parent(repo_root) / task_id
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -1663,6 +1762,13 @@ def create_task(
     for attempt in range(2):
         task_id = _new_task_id()
         try:
+            resolved_workspace_path = workspace_path
+            resolved_branch_name = branch_name
+            if workspace_kind == "worktree":
+                if not resolved_workspace_path:
+                    resolved_workspace_path = str(_derive_generic_worktree_path(task_id))
+                if not resolved_branch_name:
+                    resolved_branch_name = f"wt/{task_id}"
             with write_txn(conn):
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
@@ -1715,8 +1821,8 @@ def create_task(
                         created_by,
                         now,
                         workspace_kind,
-                        workspace_path,
-                        branch_name,
+                        resolved_workspace_path,
+                        resolved_branch_name,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
@@ -1739,7 +1845,7 @@ def create_task(
                         "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
-                        "branch_name": branch_name,
+                        "branch_name": resolved_branch_name,
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
@@ -3782,8 +3888,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
+            return _derive_generic_worktree_path(task.id)
         p = Path(task.workspace_path).expanduser()
         if not p.is_absolute():
             raise ValueError(
@@ -5537,8 +5642,8 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
-    if task.branch_name:
-        env["HERMES_KANBAN_BRANCH"] = task.branch_name
+    if task.workspace_kind == "worktree":
+        env["HERMES_KANBAN_BRANCH"] = task.branch_name or f"wt/{task.id}"
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
