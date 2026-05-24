@@ -4755,7 +4755,7 @@ def _model_flow_copilot(config, current_model=""):
         api_key = creds.get("api_key", "")
         source = creds.get("source", "")
     else:
-        if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
+        if source in {"COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"}:
             from hermes_cli.env_loader import format_secret_source_suffix
             bw_suffix = format_secret_source_suffix(source)
             print(f"  GitHub token: {api_key[:8]}... ✓ ({source}{bw_suffix})")
