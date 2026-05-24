@@ -2411,7 +2411,8 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion).
+                # Eager fallback for rate-limit errors (429 or quota exhaustion),
+                # or unrecoverable transport failures (connection errors).
                 # When a fallback model is configured, switch immediately instead
                 # of burning through retries with exponential backoff -- the
                 # primary provider won't recover within the retry window.
@@ -2419,18 +2420,26 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-                    # Don't eagerly fallback if credential pool rotation may
-                    # still recover.  See _pool_may_recover_from_rate_limit
-                    # for the single-credential-pool and CloudCode-quota
-                    # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
-                    )
-                    if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                is_transport_failure = classified.reason == FailoverReason.timeout
+                if (
+                    (is_rate_limited or is_transport_failure)
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
+                    can_eagerly_fallback = True
+                    if is_rate_limited:
+                        # Let credential rotation handle recoverable 429s.
+                        pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                            provider=agent.provider,
+                            base_url=getattr(agent, "base_url", None),
+                        )
+                        can_eagerly_fallback = not pool_may_recover
+
+                    if can_eagerly_fallback:
+                        if is_transport_failure:
+                            agent._emit_status("⚠️ Provider connection failed/timed out — switching to fallback provider...")
+                        else:
+                            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
