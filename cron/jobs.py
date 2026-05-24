@@ -44,6 +44,34 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+IMMUTABLE_UPDATE_FIELDS = {"id"}
+
+
+def _validate_job_output_id(job_id: str) -> str:
+    """Return a single safe path component for cron output directories."""
+    text = str(job_id or "").strip()
+    path = Path(text)
+    if (
+        not text
+        or path.is_absolute()
+        or path.drive
+        or len(path.parts) != 1
+        or path.parts[0] in {".", ".."}
+    ):
+        raise ValueError("Invalid cron job id for output path")
+    return text
+
+
+def _job_output_dir(job_id: str) -> Path:
+    """Resolve a job output directory and require it to stay under OUTPUT_DIR."""
+    safe_id = _validate_job_output_id(job_id)
+    base = OUTPUT_DIR.resolve(strict=False)
+    target = (base / safe_id).resolve(strict=False)
+    try:
+        target.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("Invalid cron job id for output path") from exc
+    return target
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -728,6 +756,12 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
+    updates = dict(updates or {})
+    immutable_updates = IMMUTABLE_UPDATE_FIELDS.intersection(updates)
+    if immutable_updates:
+        fields = ", ".join(sorted(immutable_updates))
+        raise ValueError(f"Cron job field(s) cannot be updated: {fields}")
+
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] != job_id:
@@ -845,9 +879,9 @@ def remove_job(job_id: str) -> bool:
     original_len = len(jobs)
     jobs = [j for j in jobs if j["id"] != canonical_id]
     if len(jobs) < original_len:
+        job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs)
         # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / canonical_id
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True
@@ -1061,7 +1095,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
-    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     

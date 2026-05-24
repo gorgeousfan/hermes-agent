@@ -232,6 +232,20 @@ class TestJobCRUD:
         assert remove_job(job["id"]) is True
         assert get_job(job["id"]) is None
 
+    def test_remove_job_rejects_unsafe_legacy_id_before_output_cleanup(self, tmp_cron_dir):
+        job = create_job(prompt="Legacy unsafe", schedule="every 1h")
+        job["id"] = "../escape"
+        save_jobs([job])
+        outside = tmp_cron_dir / "escape"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="output path"):
+            remove_job("../escape")
+
+        assert load_jobs()[0]["id"] == "../escape"
+        assert (outside / "keep.txt").exists()
+
     def test_remove_nonexistent_returns_false(self, tmp_cron_dir):
         assert remove_job("nonexistent") is False
 
@@ -299,6 +313,15 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_rejects_id_change(self, tmp_cron_dir):
+        job = create_job(prompt="Original", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="id"):
+            update_job(job["id"], {"id": "../escape"})
+
+        assert get_job(job["id"]) is not None
+        assert get_job("../escape") is None
 
 
 class TestPauseResumeJob:
@@ -953,3 +976,16 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+    @pytest.mark.parametrize("bad_job_id", ["../escape", "nested/escape", "."])
+    def test_rejects_unsafe_job_id(self, tmp_cron_dir, bad_job_id):
+        with pytest.raises(ValueError, match="output path"):
+            save_job_output(bad_job_id, "# Results")
+
+        assert not (tmp_cron_dir / "escape").exists()
+
+    def test_rejects_absolute_job_id(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="output path"):
+            save_job_output(str(tmp_cron_dir / "outside"), "# Results")
+
+        assert not (tmp_cron_dir / "outside").exists()
