@@ -15,6 +15,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
 
+_DEFAULT_CRON_PROMPT = "Run the scheduled task"
+
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
     if skills is None:
@@ -36,6 +38,21 @@ def _cron_api(**kwargs):
     from tools.cronjob_tools import cronjob as cronjob_tool
 
     return json.loads(cronjob_tool(**kwargs))
+
+
+def _resolve_create_prompt(args) -> Optional[str]:
+    prompt = getattr(args, "prompt", None)
+    if prompt:
+        return prompt
+
+    if getattr(args, "no_agent", False):
+        return prompt
+
+    skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
+    if skills:
+        return prompt
+
+    return _DEFAULT_CRON_PROMPT
 
 
 def cron_list(show_all: bool = False):
@@ -169,7 +186,7 @@ def cron_create(args):
     result = _cron_api(
         action="create",
         schedule=args.schedule,
-        prompt=args.prompt,
+        prompt=_resolve_create_prompt(args),
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),

@@ -11695,7 +11695,9 @@ def main():
         "schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'"
     )
     cron_create.add_argument(
-        "prompt", nargs="?", help="Optional self-contained prompt or task instruction"
+        "prompt",
+        nargs="?",
+        help="Optional self-contained prompt or task instruction. Defaults to 'Run the scheduled task' unless --skill or --no-agent is used.",
     )
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument(

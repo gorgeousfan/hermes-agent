@@ -111,3 +111,28 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
         assert jobs[0]["profile"] == "default"
+
+    def test_create_without_prompt_uses_default_prompt(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                profile=None,
+                no_agent=False,
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert "Created job" in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["prompt"] == "Run the scheduled task"
