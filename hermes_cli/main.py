@@ -8610,15 +8610,44 @@ def cmd_update(args):
 
 
 def _cmd_update_pip(args):
-    """Update Hermes via pip (for PyPI installs)."""
+    """Update Hermes via pip (for PyPI installs).
+
+    Detects pipx-managed installs (sys.prefix contains "pipx") and uses
+    ``pipx upgrade hermes-agent`` so the venv-managed install path works.
+    Without this check, ``uv pip install --upgrade hermes-agent`` fails on
+    pipx installs with "No virtual environment found; run ``uv venv`` to
+    create an environment, or pass ``--system`` to install into a non-virtual
+    environment" because uv refuses to mutate the system Python.
+    """
     from hermes_cli import __version__
 
     print(f"→ Current version: {__version__}")
     print("→ Checking PyPI for updates...")
 
+    # pipx-managed installs put the package under .../pipx/venvs/<name>/...
+    pipx_managed = "pipx" in sys.prefix.split(os.sep)
+    if pipx_managed:
+        pipx = shutil.which("pipx")
+        if pipx:
+            cmd = [pipx, "upgrade", "hermes-agent"]
+            print(f"→ Detected pipx-managed install; running: {' '.join(cmd)}")
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                print("✗ Update failed")
+                sys.exit(1)
+            print("✓ Update complete! Restart hermes to use the new version.")
+            return
+        print(
+            "⚠ pipx-managed install detected but `pipx` binary not on PATH; "
+            "falling back to uv/pip"
+        )
+
     uv = shutil.which("uv")
     if uv:
-        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
+        # ``--system`` lets uv target the active interpreter when no venv is
+        # active, matching pip's default behaviour for ``hermes update``
+        # invoked outside an explicit venv.
+        cmd = [uv, "pip", "install", "--system", "--upgrade", "hermes-agent"]
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
