@@ -1,0 +1,57 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nousresearch/hermes-agent",
+  "description": "Bridge MCP clients into Hermes Agent conversations, channels, messages, events, and approvals.",
+  "title": "Hermes Agent",
+  "websiteUrl": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
+  "repository": {
+    "url": "https://github.com/NousResearch/hermes-agent",
+    "source": "github",
+    "id": "1024554267"
+  },
+  "version": "0.14.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "hermes-agent",
+      "version": "0.14.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "tool": "manual-server-json",
+      "version": "1.0.0",
+      "io.github.nousresearch.hermes-agent": {
+        "fallbackInstall": "pip install 'hermes-agent[mcp]'",
+        "fallbackCommand": "hermes mcp serve",
+        "knownTools": [
+          "conversations_list",
+          "conversation_get",
+          "channels_list",
+          "messages_read",
+          "attachments_fetch",
+          "events_poll",
+          "events_wait",
+          "messages_send",
+          "permissions_list_open",
+          "permissions_respond"
+        ]
+      }
+    }
+  }
+}
