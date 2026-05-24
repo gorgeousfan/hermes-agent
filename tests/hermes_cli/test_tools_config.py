@@ -79,6 +79,14 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
+
+def test_configurable_toolsets_include_save_to_spotify():
+    assert any(ts_key == "save_to_spotify" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_save_to_spotify_is_default_off():
+    assert "save_to_spotify" in _DEFAULT_OFF_TOOLSETS
+
 def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 
@@ -1108,6 +1116,9 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     assert len(spotify_rows) == 1, spotify_rows
     # Built-in label wins over the plugin label.
     assert spotify_rows[0][1] == "🎵 Spotify"
+    save_rows = [t for t in all_ts if t[0] == "save_to_spotify"]
+    assert len(save_rows) == 1, save_rows
+    assert save_rows[0][1] == "🎙️ Save to Spotify"
 
 
 @pytest.mark.parametrize("provider,config_key,expected", [

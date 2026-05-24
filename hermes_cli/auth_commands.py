@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from getpass import getpass
 import math
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ from agent.credential_pool import (
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
+from plugins.save_to_spotify import auth_helper as save_to_spotify_auth
 
 
 # Providers that support OAuth login in addition to API keys.
@@ -539,6 +541,70 @@ def auth_spotify_command(args) -> None:
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
+def _run_save_to_spotify_auth_command(
+    command: list[str],
+    *,
+    stream_output: bool = False,
+) -> str:
+    binary = save_to_spotify_auth.binary_path()
+    if not binary:
+        raise SystemExit(save_to_spotify_auth.command_not_available_message(command[0]))
+
+    full_cmd = [binary, "auth", *command]
+    if not stream_output:
+        completed = subprocess.run(full_cmd, capture_output=True, text=True, check=False)
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if stdout:
+            print(stdout)
+        if stderr:
+            print(stderr, file=sys.stderr)
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+        return "\n".join(part for part in (stdout, stderr) if part)
+
+    proc = subprocess.Popen(
+        full_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    seen_lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="")
+        seen_lines.append(line)
+    proc.wait()
+    output = "".join(seen_lines).strip()
+    if proc.returncode != 0:
+        raise SystemExit(proc.returncode or 1)
+    return output
+
+
+def auth_save_to_spotify_command(args) -> None:
+    action = str(getattr(args, "save_to_spotify_action", "") or "login").strip().lower()
+    if action == "status":
+        state = save_to_spotify_auth.get_save_to_spotify_state()
+        for line in save_to_spotify_auth.format_status_lines(state):
+            print(line)
+        return
+    if action == "logout":
+        _run_save_to_spotify_auth_command(["logout"])
+        return
+    if action not in {"", "login"}:
+        raise SystemExit(f"Unknown Save to Spotify auth action: {action}")
+
+    no_browser = bool(getattr(args, "no_browser", False))
+    for line in save_to_spotify_auth.login_guidance(no_browser=no_browser):
+        print(line)
+    command = ["login"]
+    if no_browser:
+        command.append("--no-browser")
+    output = _run_save_to_spotify_auth_command(command, stream_output=True)
+    for line in save_to_spotify_auth.post_login_guidance(output, no_browser=no_browser):
+        print(line)
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -792,6 +858,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "save-to-spotify":
+        auth_save_to_spotify_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

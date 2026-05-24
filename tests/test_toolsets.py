@@ -47,6 +47,16 @@ class TestGetToolset:
         assert ts is not None
         assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
 
+    def test_save_to_spotify_toolset_exists(self):
+        ts = get_toolset("save_to_spotify")
+        assert ts is not None
+        assert set(ts["tools"]) == {
+            "save_to_spotify_upload",
+            "save_to_spotify_shows",
+            "save_to_spotify_episodes",
+            "save_to_spotify_timeline",
+        }
+
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
 
@@ -104,6 +114,18 @@ class TestResolveToolset:
     def test_star_alias(self):
         tools = resolve_toolset("*")
         assert len(tools) > 10
+
+    def test_save_to_spotify_does_not_collide_with_spotify(self):
+        spotify_tools = set(resolve_toolset("spotify"))
+        save_tools = set(resolve_toolset("save_to_spotify"))
+
+        assert save_tools == {
+            "save_to_spotify_upload",
+            "save_to_spotify_shows",
+            "save_to_spotify_episodes",
+            "save_to_spotify_timeline",
+        }
+        assert spotify_tools.isdisjoint(save_tools)
 
 
 class TestResolveMultipleToolsets:
