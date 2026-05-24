@@ -146,7 +146,11 @@ DEFAULT_SPOTIFY_SCOPE = " ".join((
 ))
 SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
+    "jira": "Jira",
 }
+
+JIRA_API_TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens"
+JIRA_DOCS_URL = "https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/"
 
 # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
 DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
@@ -5702,6 +5706,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return {"logged_in": False}
     if target == "spotify":
         return get_spotify_auth_status()
+    if target == "jira":
+        return get_jira_auth_status()
     if target == "nous":
         return get_nous_auth_status()
     if target == "openai-codex":
@@ -7602,3 +7608,163 @@ def logout_command(args) -> None:
             print("Model provider configuration was unchanged.")
     else:
         print(f"No auth state found for {provider_name}.")
+
+
+# =============================================================================
+# Jira authentication (API token — no OAuth redirect needed)
+# =============================================================================
+
+def resolve_jira_runtime_credentials() -> Dict[str, Any]:
+    """Return stored Jira credentials from auth.json.
+
+    Raises AuthError when the user has not run ``hermes auth jira``.
+    """
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "jira")
+
+    if not state:
+        raise AuthError(
+            "Jira is not authenticated. Run `hermes auth jira` first.",
+            provider="jira",
+            code="jira_auth_missing",
+            relogin_required=True,
+        )
+
+    domain = str(state.get("domain") or "").strip()
+    email = str(state.get("email") or "").strip()
+    basic_token = str(state.get("basic_token") or "").strip()
+
+    if not domain or not email or not basic_token:
+        raise AuthError(
+            "Jira credentials are incomplete. Run `hermes auth jira` again.",
+            provider="jira",
+            code="jira_credentials_incomplete",
+            relogin_required=True,
+        )
+
+    base_url = f"https://{domain}/rest/api/3"
+    return {
+        "provider": "jira",
+        "domain": domain,
+        "email": email,
+        "basic_token": basic_token,
+        "base_url": base_url,
+    }
+
+
+def get_jira_auth_status() -> Dict[str, Any]:
+    """Return Jira authentication status for ``hermes auth status``."""
+    state = get_provider_auth_state("jira")
+    if not state:
+        return {"logged_in": False, "provider": "jira"}
+    domain = str(state.get("domain") or "").strip()
+    email = str(state.get("email") or "").strip()
+    return {
+        "logged_in": bool(domain and email and state.get("basic_token")),
+        "provider": "jira",
+        "domain": domain,
+        "email": email,
+        "auth_type": "api_token",
+    }
+
+
+def login_jira_command(args) -> None:
+    """Interactive Jira authentication via API token.
+
+    Prompts for domain, email, and API token, validates the token against
+    /rest/api/3/myself, then persists credentials to auth.json.
+    """
+    import getpass
+
+    print()
+    print("=" * 60)
+    print("Jira Authentication")
+    print("=" * 60)
+    print()
+    print("API tokens are generated at:")
+    print(f"  {JIRA_API_TOKEN_URL}")
+    print()
+
+    existing_state = get_provider_auth_state("jira") or {}
+
+    # Domain
+    existing_domain = existing_state.get("domain") or ""
+    raw_domain = getattr(args, "domain", None) or ""
+    if not raw_domain.strip():
+        prompt_domain = f"Jira domain [{existing_domain}]: " if existing_domain else "Jira domain (e.g. mycompany.atlassian.net): "
+        raw_domain = input(prompt_domain).strip() or existing_domain
+    domain = raw_domain.strip().lower().removeprefix("https://").removeprefix("http://").rstrip("/")
+    if not domain:
+        raise SystemExit("Jira domain is required.")
+
+    # Email
+    existing_email = existing_state.get("email") or ""
+    raw_email = getattr(args, "email", None) or ""
+    if not raw_email.strip():
+        prompt_email = f"Atlassian email [{existing_email}]: " if existing_email else "Atlassian email: "
+        raw_email = input(prompt_email).strip() or existing_email
+    email = raw_email.strip()
+    if not email:
+        raise SystemExit("Email is required.")
+
+    # API token (always re-prompt for security)
+    raw_token = getattr(args, "token", None) or ""
+    if not raw_token.strip():
+        print(f"API token (hidden, generate at {JIRA_API_TOKEN_URL}):")
+        raw_token = getpass.getpass("  API token: ").strip()
+    api_token = raw_token.strip()
+    if not api_token:
+        raise SystemExit("API token is required.")
+
+    # Build Basic Auth token (email:api_token base64-encoded) and validate
+    import base64
+    basic_token = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("ascii")
+
+    print()
+    print(f"Connecting to https://{domain}...")
+    try:
+        import httpx
+        resp = httpx.get(
+            f"https://{domain}/rest/api/3/myself",
+            headers={
+                "Authorization": f"Basic {basic_token}",
+                "Accept": "application/json",
+            },
+            timeout=15.0,
+        )
+        if resp.status_code == 401:
+            raise SystemExit(
+                "Authentication failed: invalid email or API token. "
+                f"Generate a new token at {JIRA_API_TOKEN_URL}"
+            )
+        if resp.status_code >= 400:
+            raise SystemExit(f"Jira API error {resp.status_code}: {resp.text.strip()[:200]}")
+        user_data = resp.json()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        raise SystemExit(f"Could not connect to Jira: {exc}") from exc
+
+    display_name = user_data.get("displayName") or user_data.get("name") or email
+
+    jira_state: Dict[str, Any] = {
+        "domain": domain,
+        "email": email,
+        "basic_token": basic_token,
+        "auth_type": "api_token",
+        "display_name": display_name,
+        "account_id": user_data.get("accountId") or "",
+    }
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _store_provider_state(auth_store, "jira", jira_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print(f"✓ Authenticated as {display_name} ({email})")
+    print(f"  Domain:     https://{domain}")
+    print(f"  Auth state: {saved_to}")
+    print(f"  Docs:       {JIRA_DOCS_URL}")
+    print()
+    print("You can now use jira_issue, jira_search, jira_project, and jira_comment tools.")

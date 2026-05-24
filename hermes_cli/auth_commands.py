@@ -539,6 +539,20 @@ def auth_spotify_command(args) -> None:
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
+def auth_jira_command(args) -> None:
+    action = str(getattr(args, "jira_action", "") or "login").strip().lower()
+    if action in {"", "login"}:
+        auth_mod.login_jira_command(args)
+        return
+    if action == "status":
+        auth_status_command(SimpleNamespace(provider="jira"))
+        return
+    if action == "logout":
+        auth_logout_command(SimpleNamespace(provider="jira"))
+        return
+    raise SystemExit(f"Unknown Jira auth action: {action}")
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -792,6 +806,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "jira":
+        auth_jira_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

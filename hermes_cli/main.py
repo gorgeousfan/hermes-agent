@@ -11657,6 +11657,27 @@ def main():
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
     )
+    auth_jira = auth_subparsers.add_parser(
+        "jira", help="Authenticate Hermes with Jira Cloud via API token"
+    )
+    auth_jira.add_argument(
+        "jira_action",
+        nargs="?",
+        choices=["login", "status", "logout"],
+        default="login",
+    )
+    auth_jira.add_argument(
+        "--domain",
+        help="Jira Cloud domain (e.g. mycompany.atlassian.net)",
+    )
+    auth_jira.add_argument(
+        "--email",
+        help="Atlassian account email address",
+    )
+    auth_jira.add_argument(
+        "--token",
+        help="Jira API token (generate at https://id.atlassian.com/manage-profile/security/api-tokens)",
+    )
     auth_parser.set_defaults(func=cmd_auth)
 
     # =========================================================================
