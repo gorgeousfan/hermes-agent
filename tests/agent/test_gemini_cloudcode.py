@@ -1205,6 +1205,14 @@ class TestGquotaCommand:
 
         assert "/gquota" in COMMANDS
 
+    def test_quota_registered_with_codex_aliases(self):
+        from hermes_cli.commands import COMMANDS, resolve_command
+
+        assert "/quota" in COMMANDS
+        assert resolve_command("quota").name == "quota"
+        assert resolve_command("cquota").name == "quota"
+        assert resolve_command("limits").name == "quota"
+
 
 class TestRunGeminiOauthLoginPure:
     def test_returns_pool_compatible_dict(self, monkeypatch):

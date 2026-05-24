@@ -43,6 +43,10 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+export interface AccountUsageResponse {
+  output?: string
+}
+
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }

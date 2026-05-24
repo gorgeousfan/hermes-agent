@@ -3168,6 +3168,13 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # Account-limit badge in the status bar. Fetched asynchronously and
+        # cached so the prompt_toolkit render path never blocks on network.
+        self._account_limits_lock = threading.Lock()
+        self._account_limits_label: str | None = None
+        self._account_limits_provider: str | None = None
+        self._account_limits_checked_at: float = 0.0
+        self._account_limits_refreshing = False
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -3335,6 +3342,82 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    @staticmethod
+    def _format_account_limits_badge(snapshot: Any) -> str:
+        """Compact account-limit badge for the status bar, e.g. "Acct S71% W61%"."""
+        windows = getattr(snapshot, "windows", None) or ()
+        parts: list[str] = []
+        for window in windows:
+            used = getattr(window, "used_percent", None)
+            if used is None:
+                continue
+            remaining = max(0, min(100, round(100 - float(used))))
+            label = str(getattr(window, "label", "") or "").strip().lower()
+            if "week" in label:
+                prefix = "W"
+            elif "session" in label or "current" in label:
+                prefix = "S"
+            else:
+                prefix = (label[:1] or "Q").upper()
+            parts.append(f"{prefix}{remaining}%")
+        if not parts:
+            return ""
+        return f"Acct {' '.join(parts[:2])}"
+
+    def _maybe_refresh_account_limits_badge(self, agent: Any) -> str:
+        """Return cached account limits and refresh them in the background if stale."""
+        provider = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip()
+        if not provider:
+            return ""
+        # Keep this intentionally broad: fetch_account_usage() returns None for
+        # unsupported providers, while supported account-backed providers get
+        # the same badge automatically.
+        now = time.monotonic()
+        with self._account_limits_lock:
+            cached = self._account_limits_label or ""
+            same_provider = self._account_limits_provider == provider
+            stale = (not same_provider) or (now - self._account_limits_checked_at > 300)
+            if not stale or self._account_limits_refreshing:
+                return cached if same_provider else ""
+            self._account_limits_refreshing = True
+
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+
+        def _worker() -> None:
+            label = ""
+            success = False
+            try:
+                from agent.account_usage import fetch_account_usage
+                snapshot = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+                if snapshot:
+                    label = self._format_account_limits_badge(snapshot)
+                    success = bool(label)
+            except Exception:
+                label = ""
+                success = False
+            finally:
+                with self._account_limits_lock:
+                    # Do not replace a previously-good badge with an empty label
+                    # after a transient network/auth/quota endpoint failure.
+                    if success:
+                        self._account_limits_label = label
+                        self._account_limits_provider = provider
+                        self._account_limits_checked_at = time.monotonic()
+                    else:
+                        if self._account_limits_provider != provider:
+                            self._account_limits_label = None
+                            self._account_limits_provider = provider
+                        # Empty/failing fetches should retry quickly. The normal
+                        # successful cache remains 5 minutes via the stale check.
+                        self._account_limits_checked_at = time.monotonic() - 270
+                    self._account_limits_refreshing = False
+                self._invalidate(min_interval=0.0)
+
+        thread = threading.Thread(target=_worker, name="hermes-account-limits", daemon=True)
+        thread.start()
+        return cached if same_provider else ""
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -3414,6 +3497,7 @@ class HermesCLI:
             "session_api_calls": 0,
             "compressions": 0,
             "active_background_tasks": 0,
+            "account_limits": "",
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -3437,6 +3521,7 @@ class HermesCLI:
         snapshot["session_completion_tokens"] = getattr(agent, "session_completion_tokens", 0) or 0
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
+        snapshot["account_limits"] = self._maybe_refresh_account_limits_badge(agent)
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -3658,6 +3743,8 @@ class HermesCLI:
                 return self._trim_status_bar_text(text, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                if snapshot.get("account_limits"):
+                    parts.append(snapshot["account_limits"])
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3678,6 +3765,8 @@ class HermesCLI:
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            if snapshot.get("account_limits"):
+                parts.append(snapshot["account_limits"])
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3722,6 +3811,7 @@ class HermesCLI:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
+                    account_limits = snapshot.get("account_limits")
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
@@ -3730,6 +3820,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if account_limits:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-good", account_limits))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3753,6 +3846,7 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
+                    account_limits = snapshot.get("account_limits")
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     frags = [
@@ -3765,6 +3859,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if account_limits:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-good", account_limits))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -8244,6 +8341,8 @@ class HermesCLI:
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "quota":
+            self._show_account_quota(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
@@ -9697,6 +9796,46 @@ class HermesCLI:
         # sys.exit inside a non-main thread does not exit the process).
         self._pending_relaunch = ["update"]
         return True
+
+    def _show_account_quota(self, cmd_original: str = "/quota"):
+        """Show provider account quota/limits without the full token-usage report."""
+        parts = cmd_original.split(maxsplit=1)
+        requested_provider = parts[1].strip() if len(parts) > 1 else ""
+        agent = self.agent
+        provider = requested_provider or getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) if agent else getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) if agent else getattr(self, "api_key", None)
+
+        if not provider:
+            print("  Account quota unavailable: no provider configured yet.")
+            return
+
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage,
+                    provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                ).result(timeout=15.0)
+            except concurrent.futures.TimeoutError:
+                print(f"  Account quota unavailable for {provider}: timed out.")
+                return
+            except Exception as e:
+                print(f"  Account quota unavailable for {provider}: {e}")
+                return
+
+        account_lines = render_account_usage_lines(account_snapshot)
+        if not account_lines:
+            print(f"  Account quota unavailable for {provider}.")
+            print("  Supported today: openai-codex, anthropic OAuth, openrouter.")
+            return
+
+        print()
+        for line in account_lines:
+            print(f"  {line}")
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""

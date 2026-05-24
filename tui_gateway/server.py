@@ -2547,6 +2547,55 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("account.usage")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    requested_provider = str(params.get("provider") or "").strip()
+    if agent:
+        provider = requested_provider or getattr(agent, "provider", None)
+        base_url = getattr(agent, "base_url", None)
+        api_key = getattr(agent, "api_key", None)
+    else:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=requested_provider or None)
+        provider = str(runtime.get("provider", "") or requested_provider or "")
+        base_url = runtime.get("base_url")
+        api_key = runtime.get("api_key")
+
+    if not provider:
+        return _ok(
+            rid,
+            {"output": "Account quota unavailable: no provider configured yet."},
+        )
+
+    try:
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            snapshot = pool.submit(
+                fetch_account_usage,
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            ).result(timeout=15.0)
+    except concurrent.futures.TimeoutError:
+        return _ok(rid, {"output": f"Account quota unavailable for {provider}: timed out."})
+    except Exception as e:
+        return _ok(rid, {"output": f"Account quota unavailable for {provider}: {e}"})
+
+    lines = render_account_usage_lines(snapshot)
+    if not lines:
+        lines = [
+            f"Account quota unavailable for {provider}.",
+            "Supported today: openai-codex, anthropic OAuth, openrouter.",
+        ]
+    return _ok(rid, {"output": "\n".join(lines)})
+
+
 @method("session.status")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
