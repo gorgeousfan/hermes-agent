@@ -10865,31 +10865,45 @@ class HermesCLI:
     def _sudo_password_callback(self) -> str:
         """
         Prompt for sudo password through the prompt_toolkit UI.
-        
+
         Called from the agent thread when a sudo command is encountered.
         Uses the same clarify-style mechanism: sets UI state, waits on a
         queue for the user's response via the Enter key binding.
+
+        Setup and teardown (snapshot capture/restore, ``_sudo_state``
+        assignment, invalidate) are marshalled onto the prompt_toolkit
+        event-loop thread via ``call_soon_threadsafe`` when invoked from
+        a worker thread (the common case — sudo runs on the agent
+        thread, not main).  ``Buffer.reset()`` triggers the buffer's
+        ``on_text_changed`` event synchronously, which can race with the
+        renderer on certain terminals (WSL2 + VSCode Windows Terminal,
+        issue #25707): the reset is silently dropped, the modal widget
+        never renders, and keystrokes leak into the agent input buffer
+        instead of the password prompt.
         """
         import time as _time
 
         timeout = 45
         response_queue = queue.Queue()
 
-        self._capture_modal_input_snapshot()
-        self._sudo_state = {
-            "response_queue": response_queue,
-        }
-        self._sudo_deadline = _time.monotonic() + timeout
+        def _setup() -> None:
+            self._capture_modal_input_snapshot()
+            self._sudo_state = {"response_queue": response_queue}
+            self._sudo_deadline = _time.monotonic() + timeout
+            self._invalidate()
 
-        self._invalidate()
+        def _teardown() -> None:
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._invalidate()
+
+        self._run_on_loop_thread(_setup)
 
         while True:
             try:
                 result = response_queue.get(timeout=1)
-                self._sudo_state = None
-                self._sudo_deadline = 0
-                self._restore_modal_input_snapshot()
-                self._invalidate()
+                self._run_on_loop_thread(_teardown)
                 if result:
                     _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
                 else:
@@ -10901,10 +10915,7 @@ class HermesCLI:
                     break
                 self._invalidate()
 
-        self._sudo_state = None
-        self._sudo_deadline = 0
-        self._restore_modal_input_snapshot()
-        self._invalidate()
+        self._run_on_loop_thread(_teardown)
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
 
@@ -11183,6 +11194,73 @@ class HermesCLI:
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
+
+    def _run_on_loop_thread(self, func, *, wait_timeout: float = 2.0) -> None:
+        """Run ``func`` on the prompt_toolkit event-loop thread.
+
+        Mirrors the cross-thread scheduling pattern used by ``_cprint``
+        (see cli.py module-level helper).  Buffer mutations
+        (``buf.reset()``, ``buf.text = ...``) trigger the buffer's
+        ``on_text_changed`` event synchronously and need consistent
+        thread context to avoid racing the renderer.  When invoked from
+        a worker thread, schedule on the loop and wait briefly for
+        completion so callers see the side effects before they continue.
+
+        When the app or its loop is not available (tests, app shutdown),
+        run ``func`` inline so existing call sites without a live
+        prompt_toolkit loop still work.
+        """
+        app = getattr(self, "_app", None)
+        if app is None:
+            try:
+                func()
+            except Exception:
+                pass
+            return
+
+        try:
+            loop = app.loop  # type: ignore[attr-defined]
+        except Exception:
+            loop = None
+        if loop is None or not getattr(loop, "is_running", lambda: False)():
+            try:
+                func()
+            except Exception:
+                pass
+            return
+
+        import asyncio as _asyncio
+        try:
+            current_loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        except Exception:
+            current_loop = None
+        if current_loop is loop:
+            try:
+                func()
+            except Exception:
+                pass
+            return
+
+        done = threading.Event()
+
+        def _run_and_signal() -> None:
+            try:
+                func()
+            finally:
+                done.set()
+
+        try:
+            loop.call_soon_threadsafe(_run_and_signal)
+        except Exception:
+            try:
+                func()
+            except Exception:
+                pass
+            return
+
+        done.wait(timeout=wait_timeout)
 
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""
