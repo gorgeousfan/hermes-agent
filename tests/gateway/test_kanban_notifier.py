@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,6 +88,35 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     assert len(adapter.sent) == 1
     assert "Kanban" in adapter.sent[0]["text"]
     assert tid in adapter.sent[0]["text"]
+
+
+def test_kanban_notifier_message_uses_friendly_board_and_full_summary():
+    summary = (
+        "Answered Bob’s Daily Ops question with a PR-backed read-only-first "
+        "management model.\n"
+        "Corrected the live capability status and linked the follow-up PR: "
+        "https://github.com/houenyang-momo/JARVIS/pull/254"
+    )
+
+    msg = GatewayRunner._format_kanban_notifier_message(
+        kind="completed",
+        task=SimpleNamespace(
+            title="Ok think you got access to my Gmail and routines",
+            assignee="athena-master",
+            result=None,
+        ),
+        sub={"task_id": "t_d69983c6"},
+        event_payload={"summary": summary},
+        board_slug="daily-ops",
+        board_name="Daily Ops",
+    )
+
+    assert msg is not None
+    assert msg.startswith("✔ @athena-master Daily Ops done\n")
+    assert "t_d69983c6 done" not in msg.splitlines()[0]
+    assert "Corrected the live capability status" in msg
+    assert "https://github.com/houenyang-momo/JARVIS/pull/254" in msg
+    assert "Ref: daily-ops / t_d69983c6" in msg
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
