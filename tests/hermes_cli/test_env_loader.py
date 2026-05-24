@@ -227,15 +227,15 @@ def test_nexus_bootstrap_kill_switch_skips_fetch(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
 
-    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_ENABLED", "0")
     monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
     monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
     monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
 
-    with patch("hermes_cli.env_loader.urlopen") as mock_urlopen:
-        load_hermes_dotenv(hermes_home=home)
-
-    mock_urlopen.assert_not_called()
+    for disabled_value in ("0", "false", "no", "off"):
+        monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_ENABLED", disabled_value)
+        with patch("hermes_cli.env_loader.urlopen") as mock_urlopen:
+            load_hermes_dotenv(hermes_home=home)
+        mock_urlopen.assert_not_called()
 
 
 def test_nexus_bootstrap_url_encodes_integration_id_and_uses_timeout(tmp_path, monkeypatch):
@@ -282,6 +282,31 @@ def test_nexus_bootstrap_non_dict_json_body_falls_back(tmp_path, monkeypatch):
 
         def read(self):
             return b"[]"
+
+    with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
+        load_hermes_dotenv(hermes_home=home)
+
+    assert os.getenv("TELEGRAM_BOT_TOKEN") == "local-token"
+
+
+def test_nexus_bootstrap_empty_secrets_response_falls_back(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("TELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_URL", "https://nexus.example")
+    monkeypatch.setenv("HERMES_NEXUS_BOOTSTRAP_INTEGRATION_ID", "athena")
+    monkeypatch.setenv("NEXUS_SERVICE_TOKEN", "x" * 64)
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"secrets": {}}).encode("utf-8")
 
     with patch("hermes_cli.env_loader.urlopen", return_value=_Resp()):
         load_hermes_dotenv(hermes_home=home)
