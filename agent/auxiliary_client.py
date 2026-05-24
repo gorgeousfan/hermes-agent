@@ -394,6 +394,14 @@ _AI_GATEWAY_HEADERS = {
     "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
 }
 
+# LLM Gateway (llmgateway.io) app attribution headers. The gateway reads
+# ``X-Source`` for dashboard attribution, analogous to OpenRouter's
+# ``HTTP-Referer`` / ``X-Title`` pair.
+_LLMGATEWAY_HEADERS = {
+    "X-Source": "https://hermes-agent.nousresearch.com",
+    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+}
+
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
