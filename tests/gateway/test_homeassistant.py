@@ -587,3 +587,73 @@ class TestWsUrlConstruction:
         adapter = HomeAssistantAdapter(config)
         ws_url = adapter._hass_url.replace("http://", "ws://").replace("https://", "wss://")
         assert ws_url == "wss://ha.example.com"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket handshake lifecycle — failure paths must cleanup ClientSession
+# ---------------------------------------------------------------------------
+
+
+class TestWsConnectLifecycle:
+    """A failure between ``ws_connect`` and the final ``subscribe_events``
+    ack must leave neither a half-open WebSocket nor a leaked
+    ``ClientSession``. Without the wrapper, the next reconnect assigns
+    over ``self._session`` while the old one is still open, eventually
+    surfacing as cryptic ``"Session is closed"`` / ``"Connector is closed"``
+    errors from aiohttp on a later request."""
+
+    @pytest.mark.asyncio
+    async def test_ws_connect_failure_cleans_up_session(self):
+        config = PlatformConfig(enabled=True, token="t", extra={"url": "http://ha:8123"})
+        adapter = HomeAssistantAdapter(config)
+
+        leaked_session = AsyncMock()
+        leaked_session.closed = False
+        leaked_session.ws_connect = AsyncMock(
+            side_effect=ConnectionResetError("simulated reset during handshake")
+        )
+        leaked_session.close = AsyncMock()
+
+        with patch(
+            "gateway.platforms.homeassistant.aiohttp.ClientSession",
+            return_value=leaked_session,
+        ):
+            with pytest.raises(ConnectionResetError):
+                await adapter._ws_connect()
+
+        # Session was closed by the wrapper; adapter no longer holds a
+        # reference to it (the next reconnect won't double-assign).
+        leaked_session.close.assert_awaited()
+        assert adapter._session is None
+        assert adapter._ws is None
+
+    @pytest.mark.asyncio
+    async def test_auth_handshake_failure_cleans_up_ws_and_session(self):
+        """If ws_connect succeeds but a later step (receive_json, send_json)
+        raises, both the WebSocket and the ClientSession get closed."""
+        config = PlatformConfig(enabled=True, token="t", extra={"url": "http://ha:8123"})
+        adapter = HomeAssistantAdapter(config)
+
+        fake_ws = AsyncMock()
+        fake_ws.closed = False
+        fake_ws.close = AsyncMock()
+        fake_ws.receive_json = AsyncMock(
+            side_effect=ConnectionResetError("peer closed mid-handshake")
+        )
+
+        fake_session = AsyncMock()
+        fake_session.closed = False
+        fake_session.ws_connect = AsyncMock(return_value=fake_ws)
+        fake_session.close = AsyncMock()
+
+        with patch(
+            "gateway.platforms.homeassistant.aiohttp.ClientSession",
+            return_value=fake_session,
+        ):
+            with pytest.raises(ConnectionResetError):
+                await adapter._ws_connect()
+
+        fake_ws.close.assert_awaited()
+        fake_session.close.assert_awaited()
+        assert adapter._ws is None
+        assert adapter._session is None

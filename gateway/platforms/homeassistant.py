@@ -145,44 +145,58 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        # Wrap the whole handshake so that a network error between
+        # ``ws_connect`` and the final ``auth_ok`` / ``subscribe_events``
+        # ack tears down the ``ClientSession`` (and the WebSocket if it
+        # opened) before the exception propagates. Without the wrapper an
+        # error here leaves ``self._session`` open; the next reconnect
+        # attempt then assigns over the live handle and the original
+        # session is garbage-collected with its TCP connection still in
+        # CLOSE_WAIT, surfacing later as cryptic "Session is closed" or
+        # "Connector is closed" errors from aiohttp.
+        try:
+            self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
 
-        # Step 1: Receive auth_required
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_required":
-            logger.error("Expected auth_required, got: %s", msg.get("type"))
+            # Step 1: Receive auth_required
+            msg = await self._ws.receive_json()
+            if msg.get("type") != "auth_required":
+                logger.error("Expected auth_required, got: %s", msg.get("type"))
+                await self._cleanup_ws()
+                return False
+
+            # Step 2: Send auth
+            await self._ws.send_json({
+                "type": "auth",
+                "access_token": self._hass_token,
+            })
+
+            # Step 3: Wait for auth_ok
+            msg = await self._ws.receive_json()
+            if msg.get("type") != "auth_ok":
+                logger.error("Auth failed: %s", msg)
+                await self._cleanup_ws()
+                return False
+
+            # Step 4: Subscribe to state_changed events
+            sub_id = self._next_id()
+            await self._ws.send_json({
+                "id": sub_id,
+                "type": "subscribe_events",
+                "event_type": "state_changed",
+            })
+
+            # Verify subscription acknowledgement
+            msg = await self._ws.receive_json()
+            if not msg.get("success"):
+                logger.error("Failed to subscribe to events: %s", msg)
+                await self._cleanup_ws()
+                return False
+
+            return True
+
+        except Exception:
             await self._cleanup_ws()
-            return False
-
-        # Step 2: Send auth
-        await self._ws.send_json({
-            "type": "auth",
-            "access_token": self._hass_token,
-        })
-
-        # Step 3: Wait for auth_ok
-        msg = await self._ws.receive_json()
-        if msg.get("type") != "auth_ok":
-            logger.error("Auth failed: %s", msg)
-            await self._cleanup_ws()
-            return False
-
-        # Step 4: Subscribe to state_changed events
-        sub_id = self._next_id()
-        await self._ws.send_json({
-            "id": sub_id,
-            "type": "subscribe_events",
-            "event_type": "state_changed",
-        })
-
-        # Verify subscription acknowledgement
-        msg = await self._ws.receive_json()
-        if not msg.get("success"):
-            logger.error("Failed to subscribe to events: %s", msg)
-            await self._cleanup_ws()
-            return False
-
-        return True
+            raise
 
     async def _cleanup_ws(self) -> None:
         """Close WebSocket and session."""
