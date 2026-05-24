@@ -239,6 +239,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_LAST_USER_MESSAGE_CACHE_SIZE = 2048
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1449,6 +1450,16 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
+        # Per-chat cache of chat_mode ("p2p" / "group" / "topic") used for
+        # auto-thread routing. Populated lazily via chats.get; separate from
+        # _chat_info_cache because that one stores the wrong field as "type".
+        self._chat_mode_cache: Dict[str, str] = {}
+        # Per-chat record of the most recent inbound user message id. Used as
+        # an implicit reply anchor by the group-chat auto-thread logic so
+        # interim sends (status callbacks, tool-progress, approval cards) that
+        # don't carry an explicit reply_to still get pulled into the topic
+        # rooted at the user's triggering message.
+        self._last_user_message_id: "OrderedDict[str, str]" = OrderedDict()
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -3005,6 +3016,18 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
+        # Remember the most recent inbound user message id per chat. Used as
+        # an implicit reply anchor for group-chat auto-thread routing so
+        # interim sends without an explicit reply_to (status callbacks,
+        # tool-progress, approval cards) still land in the same topic as the
+        # user's triggering message. Skip bot-originated messages so the bot
+        # never anchors topics to its own posts.
+        if chat_id and message_id and not is_bot:
+            cache = self._last_user_message_id
+            cache[chat_id] = message_id
+            cache.move_to_end(chat_id)
+            while len(cache) > _FEISHU_LAST_USER_MESSAGE_CACHE_SIZE:
+                cache.popitem(last=False)
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
@@ -4297,6 +4320,30 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+    async def _get_chat_mode(self, chat_id: str) -> str:
+        """Return Feishu chat_mode ("p2p" / "group" / "topic" / "").
+
+        Cached per-chat. Used by auto-thread routing in group sends.
+        Returns "" on lookup failure so callers can fall back safely.
+        """
+        cached = self._chat_mode_cache.get(chat_id)
+        if cached is not None:
+            return cached
+        if not self._client:
+            return ""
+        try:
+            request = self._build_get_chat_request(chat_id)
+            response = await asyncio.to_thread(self._client.im.v1.chat.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                return ""
+            data = getattr(response, "data", None)
+            mode = str(getattr(data, "chat_mode", "") or "").strip().lower()
+            self._chat_mode_cache[chat_id] = mode
+            return mode
+        except Exception:
+            logger.warning("[Feishu] Failed to get chat_mode for %s", chat_id, exc_info=True)
+            return ""
+
     async def _send_raw_message(
         self,
         *,
@@ -4307,9 +4354,49 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
+        if not effective_reply_to and metadata and metadata.get("reply_to_message_id"):
+            # Carry the anchoring message id from metadata when no explicit
+            # reply_to was passed. Originally only fired when thread_id was
+            # also set (preserving thread membership for status callbacks);
+            # broadened so the group-chat auto-thread branch below can also
+            # anchor interim/status sends that don't go through the main
+            # reply path.
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
+        # Group-chat anchor fallback. Two distinct cases handled together:
+        #   (a) reply_in_thread is False (no metadata.thread_id) AND no
+        #       reply_to: classic auto-thread — pick a cached user message id
+        #       so the bot's reply starts/joins a topic instead of flooding
+        #       the main feed.
+        #   (b) reply_in_thread is True (metadata carries a thread_id) but no
+        #       reply_to / metadata.reply_to_message_id: the caller wants the
+        #       send inside an existing topic but didn't supply an anchor.
+        #       Without one we'd fall through to a top-level send (Feishu's
+        #       reply API is the *only* way to land in a topic), so the
+        #       thread_id silently no-ops. _deliver_media_from_response is
+        #       the canonical example: it builds metadata={thread_id} only.
+        # In both cases we need an anchor message that lives in (or will
+        # anchor) the right topic. The most recent inbound user message in
+        # this chat is exactly that — the user's own message is in their
+        # topic, and replying to it with reply_in_thread=true joins (case b)
+        # or starts (case a) the topic.
+        if (
+            not effective_reply_to
+            and bool(self.config.extra.get("reply_in_thread", True))
+        ):
+            chat_mode = await self._get_chat_mode(chat_id)
+            # Per Feishu docs, chat_mode is the canonical chat-classification
+            # field: "p2p" (DM), "group" (regular group), "topic" (topic
+            # group). The fallback is only safe for "group" — DMs don't need
+            # threading, and topic groups have their own enforcement.
+            if chat_mode == "group":
+                anchor = self._last_user_message_id.get(chat_id)
+                if anchor:
+                    effective_reply_to = anchor
+                    # Always ensure reply_in_thread=true when we supply an
+                    # implicit anchor — covers case (a) and is a no-op for
+                    # case (b) (already True).
+                    reply_in_thread = True
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,

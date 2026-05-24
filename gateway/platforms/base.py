@@ -83,8 +83,14 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
+    # NOTE: do NOT special-case Feishu to return event.reply_to_message_id when
+    # the user quoted another message. Anchoring on the quoted message makes
+    # bot replies appear visually attached to the *quoted* message (e.g. an
+    # unrelated meego link) instead of the user's own @-mention message, which
+    # is wrong when the user is asking the bot to act on their own request.
+    # event.message_id (the user's own message) is always in the same topic if
+    # the user is in one, so reply_in_thread=true still keeps the bot inside
+    # the topic.
     return getattr(event, "message_id", None)
 
 
