@@ -8398,6 +8398,21 @@ def _cmd_update_check():
     )
     behind = int(rev_result.stdout.strip())
 
+    # Update the banner cache so the next ``hermes`` launch also shows the
+    # commit count without re-fetching.  See #23681.
+    try:
+        import time as _time, json as _json
+        from hermes_cli.banner import get_hermes_home
+        _cache_file = get_hermes_home() / ".update_check"
+        _embedded_rev = os.environ.get("HERMES_REVISION") or None
+        _cache_file.write_text(_json.dumps({
+            "ts": _time.time(),
+            "behind": behind,
+            "rev": _embedded_rev,
+        }))
+    except Exception:
+        pass
+
     if behind == 0:
         print("✓ Already up to date.")
     else:

@@ -259,10 +259,14 @@ def check_for_updates() -> Optional[int]:
         else:
             behind = _check_via_local_git(repo_dir)
 
-    try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
-    except Exception:
-        pass
+    # Only cache successful results — a None (check failed) should not be
+    # persisted for 6 hours, otherwise the banner stays silent even after
+    # the network recovers.  See #23681.
+    if behind is not None:
+        try:
+            cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        except Exception:
+            pass
 
     return behind
 
