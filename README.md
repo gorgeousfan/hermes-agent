@@ -18,6 +18,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
+<tr><td><b>A local web dashboard</b></td><td>Manage configuration, API keys, sessions, logs, analytics, cron jobs, skills, and optional in-browser chat from <code>hermes dashboard</code>.</td></tr>
 <tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
 <tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
 <tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
@@ -79,6 +80,24 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### Prefer a browser UI?
+
+Start the local dashboard:
+
+```bash
+hermes dashboard
+```
+
+It opens `http://127.0.0.1:9119` and lets you manage config, API keys, sessions, logs, analytics, cron jobs, and skills without editing files by hand.
+
+To enable the in-browser chat pane, start the dashboard with:
+
+```bash
+hermes dashboard --tui
+```
+
+The chat pane embeds the same Hermes TUI in the browser. On native Windows, the rest of the dashboard works, but the embedded chat pane currently needs WSL2 because it uses a POSIX PTY.
+
 ---
 
 ## Skip the API-key collection — Nous Portal
@@ -128,6 +147,7 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 |---------|---------------|
 | [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |
 | [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli) | Commands, keybindings, personalities, sessions |
+| [Web Dashboard](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard) | Browser UI for config, API keys, sessions, logs, analytics, cron jobs, skills, and chat |
 | [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) | Config file, providers, models, all options |
 | [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
 | [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security) | Command approval, DM pairing, container isolation |
