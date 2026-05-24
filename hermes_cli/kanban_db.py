@@ -932,6 +932,8 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     notifier_profile TEXT,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
+    delivery_mode TEXT NOT NULL DEFAULT 'notification',
+    session_key   TEXT,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -1394,6 +1396,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+        if "delivery_mode" not in notify_cols:
+            _add_column_if_missing(
+                conn,
+                "kanban_notify_subs",
+                "delivery_mode",
+                "delivery_mode TEXT NOT NULL DEFAULT 'notification'",
+            )
+        if "session_key" not in notify_cols:
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "session_key", "session_key TEXT"
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -1544,6 +1557,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    watch_subscription: Optional[dict[str, Any]] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1732,6 +1746,55 @@ def create_task(
                         session_id,
                     ),
                 )
+                if watch_subscription:
+                    watch_sub = watch_subscription
+                    platform = str(watch_sub.get("platform") or "").strip().lower()
+                    chat_id = str(watch_sub.get("chat_id") or "").strip()
+                    thread_id = str(watch_sub.get("thread_id") or "").strip()
+                    user_id = (str(watch_sub.get("user_id") or "").strip() or None)
+                    delivery_mode = (
+                        str(watch_sub.get("delivery_mode") or "notification").strip().lower()
+                        or "notification"
+                    )
+                    session_key = str(watch_sub.get("session_key") or "").strip() or None
+                    notifier_profile = (
+                        str(watch_sub.get("notifier_profile") or "").strip() or None
+                    )
+                    if not platform or not chat_id:
+                        raise ValueError("watch subscription platform and chat_id are required")
+                    if delivery_mode not in {"notification", "session_event"}:
+                        raise ValueError(
+                            "watch subscription delivery_mode must be 'notification' or 'session_event'"
+                        )
+                    if delivery_mode == "session_event" and not session_key:
+                        raise ValueError(
+                            "watch subscription session_key is required for delivery_mode='session_event'"
+                        )
+                    if delivery_mode == "notification":
+                        session_key = None
+                    conn.execute(
+                        """
+                        INSERT INTO kanban_notify_subs
+                            (task_id, platform, chat_id, thread_id, user_id, delivery_mode, session_key, notifier_profile, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(task_id, platform, chat_id, thread_id) DO UPDATE SET
+                            user_id = excluded.user_id,
+                            delivery_mode = excluded.delivery_mode,
+                            session_key = excluded.session_key,
+                            notifier_profile = COALESCE(excluded.notifier_profile, kanban_notify_subs.notifier_profile)
+                        """,
+                        (
+                            task_id,
+                            platform,
+                            chat_id,
+                            thread_id,
+                            user_id,
+                            delivery_mode,
+                            session_key,
+                            notifier_profile,
+                            now,
+                        ),
+                    )
                 for pid in parents:
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
@@ -1934,6 +1997,7 @@ def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
 
 
 def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Remove one parent→child dependency edge and refresh child readiness."""
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
@@ -6183,18 +6247,53 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    delivery_mode: str = "notification",
+    session_key: Optional[str] = None,
 ) -> None:
-    """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    """Register a notification subscription for ``task_id``.
+
+    ``delivery_mode='notification'`` targets a chat/thread via platform/chat_id/thread_id.
+    ``delivery_mode='session_event'`` additionally binds the durable gateway lane
+    via ``session_key`` so the gateway can enqueue a synthetic turn instead of
+    sending a plain outbound notification.
+    """
+    platform = str(platform or "").strip().lower()
+    chat_id = str(chat_id or "").strip()
+    thread_id = str(thread_id or "").strip()
+    delivery_mode = str(delivery_mode or "notification").strip().lower() or "notification"
+    session_key = str(session_key or "").strip() or None
+    if not task_id or not platform or not chat_id:
+        raise ValueError("task_id, platform, and chat_id are required")
+    if delivery_mode not in {"notification", "session_event"}:
+        raise ValueError("delivery_mode must be 'notification' or 'session_event'")
+    if delivery_mode == "session_event" and not session_key:
+        raise ValueError("session_key is required for delivery_mode='session_event'")
+    if delivery_mode == "notification":
+        session_key = None
     now = int(time.time())
     with write_txn(conn):
         conn.execute(
             """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO kanban_notify_subs
+                (task_id, platform, chat_id, thread_id, user_id, delivery_mode, session_key, notifier_profile, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, platform, chat_id, thread_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                delivery_mode = excluded.delivery_mode,
+                session_key = excluded.session_key,
+                notifier_profile = COALESCE(excluded.notifier_profile, kanban_notify_subs.notifier_profile)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                task_id,
+                platform,
+                chat_id,
+                thread_id,
+                user_id,
+                delivery_mode,
+                session_key,
+                notifier_profile,
+                now,
+            ),
         )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
@@ -6206,7 +6305,13 @@ def add_notify_sub(
                  WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
                    AND (notifier_profile IS NULL OR notifier_profile = '')
                 """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
+                (
+                    notifier_profile,
+                    task_id,
+                    platform,
+                    chat_id,
+                    thread_id,
+                ),
             )
 
 
@@ -6229,12 +6334,19 @@ def remove_notify_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    delivery_mode: str = "notification",
+    session_key: Optional[str] = None,
 ) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id = ? "
             "AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
+            (
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
+            ),
         )
     return cur.rowcount > 0
 
@@ -6246,6 +6358,8 @@ def unseen_events_for_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    delivery_mode: str = "notification",
+    session_key: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
 ) -> tuple[int, list[Event]]:
     """Return ``(new_cursor, events)`` for a given subscription.
@@ -6257,7 +6371,12 @@ def unseen_events_for_sub(
     row = conn.execute(
         "SELECT last_event_id FROM kanban_notify_subs "
         "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-        (task_id, platform, chat_id, thread_id or ""),
+        (
+            task_id,
+            platform,
+            chat_id,
+            thread_id or "",
+        ),
     ).fetchone()
     if row is None:
         return 0, []
@@ -6295,6 +6414,8 @@ def claim_unseen_events_for_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    delivery_mode: str = "notification",
+    session_key: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
 ) -> tuple[int, int, list[Event]]:
     """Atomically claim unseen notification events for one subscription.
@@ -6315,7 +6436,12 @@ def claim_unseen_events_for_sub(
         row = conn.execute(
             "SELECT last_event_id FROM kanban_notify_subs "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (task_id, platform, chat_id, thread_id or ""),
+            (
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
+            ),
         ).fetchone()
         if row is None:
             return 0, 0, []
@@ -6326,6 +6452,8 @@ def claim_unseen_events_for_sub(
             platform=platform,
             chat_id=chat_id,
             thread_id=thread_id,
+            delivery_mode=delivery_mode,
+            session_key=session_key,
             kinds=kinds,
         )
         if not events:
@@ -6334,7 +6462,14 @@ def claim_unseen_events_for_sub(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
             "AND last_event_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or "", int(old_cursor)),
+            (
+                int(new_cursor),
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
+                int(old_cursor),
+            ),
         )
         return old_cursor, new_cursor, events
 
@@ -6346,13 +6481,21 @@ def advance_notify_cursor(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    delivery_mode: str = "notification",
+    session_key: Optional[str] = None,
     new_cursor: int,
 ) -> None:
     with write_txn(conn):
         conn.execute(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
-            (int(new_cursor), task_id, platform, chat_id, thread_id or ""),
+            (
+                int(new_cursor),
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
+            ),
         )
 
 
@@ -6363,22 +6506,25 @@ def rewind_notify_cursor(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
+    delivery_mode: str = "notification",
+    session_key: Optional[str] = None,
     claimed_cursor: int,
     old_cursor: int,
 ) -> bool:
-    """Undo a notification claim when delivery fails.
-
-    The CAS guard only rewinds if no later notifier advanced the row after our
-    claim. This keeps retry behavior for transient send failures without
-    clobbering newer progress.
-    """
     with write_txn(conn):
+        # CAS rewind: only restore ``old_cursor`` if the row still points at
+        # the claimed range. If another watcher tick already advanced or
+        # unsubscribed the row, leave that newer state untouched.
         cur = conn.execute(
             "UPDATE kanban_notify_subs SET last_event_id = ? "
             "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
             "AND last_event_id = ?",
             (
-                int(old_cursor), task_id, platform, chat_id, thread_id or "",
+                int(old_cursor),
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
                 int(claimed_cursor),
             ),
         )
