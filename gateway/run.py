@@ -1580,6 +1580,7 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._suppress_busy_ack = self._load_suppress_busy_ack()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -2827,6 +2828,27 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
+    def _load_suppress_busy_ack() -> bool:
+        """Load busy ack suppression from config/env.
+
+        Returns True when the 'Steered/Queued/Interrupting current task'
+        banner should be suppressed. Checks env var first, then config.
+        """
+        env_val = os.getenv("HERMES_GATEWAY_BUSY_ACK_ENABLED")
+        if env_val is not None:
+            return not is_truthy_value(env_val)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(cfg_get(cfg, "display", "suppress_busy_ack", default=False))
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -3019,8 +3041,7 @@ class GatewayRunner:
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
         # never actually delivered.
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
-        if not busy_ack_enabled:
+        if getattr(self, "_suppress_busy_ack", False):
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
@@ -7014,13 +7035,15 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "busy"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
+                if _cmd_def_inner.name == "busy":
+                    return await self._handle_busy_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -7300,6 +7323,9 @@ class GatewayRunner:
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
+
+        if canonical == "busy":
+            return await self._handle_busy_command(event)
 
         if canonical == "model":
             return await self._handle_model_command(event)
@@ -11857,6 +11883,122 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)
+
+    async def _handle_busy_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /busy — control what happens when messaging while Hermes is working.
+
+        Usage:
+            /busy               Show current busy mode + ack state
+            /busy status        Show current busy mode + ack state
+            /busy queue         Queue messages for the next turn
+            /busy steer         Inject messages mid-run without interrupting
+            /busy interrupt     Interrupt the current run (default)
+            /busy ack           Show ack banner state
+            /busy ack on        Enable busy ack banners
+            /busy ack off       Suppress busy ack banners
+        """
+        config_path = _hermes_home / "config.yaml"
+        arg = (event.get_command_args() or "").strip().lower()
+
+        # Read the current mode from the active runner instance.
+        current_mode = getattr(self, "_busy_input_mode", "interrupt")
+        if current_mode not in {"queue", "steer", "interrupt"}:
+            current_mode = "interrupt"
+
+        # Show status (bare /busy, /busy status, /busy ?)
+        if not arg or arg in {"status", "?"}:
+            ack_state = "off" if self._suppress_busy_ack else "on"
+            if current_mode == "queue":
+                behavior = "queues your next message for the following turn"
+            elif current_mode == "steer":
+                behavior = "steers your next message into the current run after the next tool call"
+            else:
+                behavior = "interrupts the current run immediately"
+            return EphemeralReply(
+                f"**Busy input mode: `{current_mode}`**\n"
+                f"While Hermes is busy, Enter _{behavior}_.\n"
+                f"Ack banners: `{ack_state}`\n"
+                f"Usage: `/busy [queue|steer|interrupt|status|ack]`"
+            )
+
+        # --- /busy ack [on|off] ------------------------------------------------
+        if arg.startswith("ack"):
+            parts = arg.split(None, 1)
+            ack_arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+            # Show current ack state
+            if not ack_arg or ack_arg in {"status", "?"}:
+                state = "off" if self._suppress_busy_ack else "on"
+                return EphemeralReply(
+                    f"Busy ack banners are **{state}**.\n"
+                    f"Use `/busy ack on` or `/busy ack off` to change."
+                )
+
+            if ack_arg in {"on", "enable", "true", "1"}:
+                new_state = False
+                verb = "enabled"
+            elif ack_arg in {"off", "disable", "false", "0"}:
+                new_state = True
+                verb = "suppressed"
+            else:
+                return EphemeralReply(
+                    f"Unknown ack arg `{ack_arg}`. Use `/busy ack on` or `/busy ack off`."
+                )
+
+            # Persist to config FIRST
+            try:
+                user_config = _load_gateway_config()
+                if not isinstance(user_config.get("display"), dict):
+                    user_config["display"] = {}
+                user_config["display"]["suppress_busy_ack"] = new_state
+                atomic_yaml_write(config_path, user_config)
+            except Exception as e:
+                logger.warning("Failed to save suppress_busy_ack: %s", e)
+                self._suppress_busy_ack = new_state
+                return EphemeralReply(
+                    f"Busy ack banners **{verb}** for this session only.\n"
+                    f"(Could not save to config: {e})"
+                )
+
+            self._suppress_busy_ack = new_state
+            return EphemeralReply(
+                f"Busy ack banners **{verb}** (saved).\n"
+                f"{'Banners will not appear when you message while Hermes is working.' if new_state else 'Banners will appear when you message while Hermes is working.'}"
+            )
+
+        # --- /busy queue|steer|interrupt ---------------------------------------
+        if arg not in {"queue", "interrupt", "steer"}:
+            return EphemeralReply(
+                f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
+            )
+
+        # Persist to config FIRST, then update in-memory.
+        # This prevents divergent state when the save fails.
+        try:
+            user_config = _load_gateway_config()
+            if not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            user_config["display"]["busy_input_mode"] = arg
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save busy_input_mode: %s", e)
+            self._busy_input_mode = arg
+            return EphemeralReply(
+                f"Busy input mode set to **`{arg}`** for this session only.\n"
+                f"(Could not save to config: {e})"
+            )
+
+        self._busy_input_mode = arg
+        if arg == "queue":
+            behavior = "Follow-up messages will be queued for the next turn."
+        elif arg == "steer":
+            behavior = "Follow-up messages will be steered into the current run (after the next tool call)."
+        else:
+            behavior = "Follow-up messages will interrupt the current run."
+        return EphemeralReply(
+            f"Busy input mode set to **`{arg}`** (saved).\n"
+            f"_{behavior}_"
+        )
 
     async def _handle_footer_command(self, event: MessageEvent) -> str:
         """Handle /footer command — toggle the runtime-metadata footer.
