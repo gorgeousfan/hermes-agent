@@ -1623,6 +1623,54 @@ class GatewayRunner:
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+
+        # Runtime bot-loop detection: track per-session turn timestamps to
+        # detect rapid-fire bot-to-bot reply loops (e.g., WhatsApp bots
+        # that auto-reply to every message).  When N turns happen within a
+        # short window, the session is auto-suspended to stop the loop.
+        # Key: session_key, Value: list of monotonic timestamps (float).
+        self._loop_detect_turns: Dict[str, List[float]] = {}
+        try:
+            self._LOOP_DETECT_MAX_TURNS = int(os.getenv(
+                "HERMES_LOOP_DETECT_MAX_TURNS", "6",
+            ))
+        except (TypeError, ValueError):
+            self._LOOP_DETECT_MAX_TURNS = 6
+        try:
+            self._LOOP_DETECT_WINDOW_SEC = float(os.getenv(
+                "HERMES_LOOP_DETECT_WINDOW_SEC", "90.0",
+            ))
+        except (TypeError, ValueError):
+            self._LOOP_DETECT_WINDOW_SEC = 90.0
+
+        # Content similarity detection: track last N outbound response
+        # digests per session.  If 3+ consecutive responses are near-
+        # identical (Jaccard similarity > threshold), it's a repetition
+        # loop even if it's slower than the turn-rate threshold.
+        # Key: session_key, Value: list of (sha256_hex, word_set) tuples.
+        self._loop_detect_responses: Dict[str, List[tuple]] = {}
+        try:
+            self._LOOP_DETECT_MAX_SIMILAR = int(os.getenv(
+                "HERMES_LOOP_DETECT_MAX_SIMILAR", "3",
+            ))
+        except (TypeError, ValueError):
+            self._LOOP_DETECT_MAX_SIMILAR = 3
+        self._LOOP_DETECT_SIMILARITY_THRESHOLD = 0.7  # Jaccard index
+
+        # Per-chat auto-blacklist: once a sender triggers loop detection,
+        # they are auto-blocked for a cooldown period so even slow loops
+        # are stopped.  Persisted to JSON so it survives restarts.
+        # Key: (platform, chat_id) or (platform, user_id), Value: expiry timestamp.
+        self._loop_blacklist: Dict[str, float] = {}
+        self._LOOP_BLACKLIST_FILE = ".loop_blacklist.json"
+        try:
+            self._LOOP_BLACKLIST_COOLDOWN = float(os.getenv(
+                "HERMES_LOOP_BLACKLIST_COOLDOWN", "3600.0",
+            ))
+        except (TypeError, ValueError):
+            self._LOOP_BLACKLIST_COOLDOWN = 3600.0  # 1 hour default
+        self._load_loop_blacklist()
+
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -3458,6 +3506,252 @@ class GatewayRunner:
                     path.unlink(missing_ok=True)
         except Exception:
             pass
+
+    def _record_turn_for_loop_detection(self, session_key: str) -> bool:
+        """Record a turn timestamp for this session and check for a bot-to-bot loop.
+
+        Returns True if a loop is detected (caller should suspend and bail out).
+        The check is: more than _LOOP_DETECT_MAX_TURNS agent turns within
+        _LOOP_DETECT_WINDOW_SEC seconds for the same session.  This catches
+        rapid-fire bot-to-bot reply loops on WhatsApp, Telegram, Discord, etc.
+        """
+        now = time.monotonic()
+        window = self._LOOP_DETECT_WINDOW_SEC
+        max_turns = self._LOOP_DETECT_MAX_TURNS
+
+        turns = self._loop_detect_turns.get(session_key)
+        if turns is None:
+            turns = []
+            self._loop_detect_turns[session_key] = turns
+
+        turns.append(now)
+
+        # Prune timestamps outside the window
+        cutoff = now - window
+        while turns and turns[0] < cutoff:
+            turns.pop(0)
+
+        if len(turns) > max_turns:
+            # Loop detected — clear the tracker so a future /new can start fresh
+            self._loop_detect_turns.pop(session_key, None)
+            return True
+
+        return False
+
+    def _record_response_for_similarity_check(self, session_key: str, response: str) -> bool:
+        """Track outbound response content and detect repetition loops.
+
+        Returns True if the last N responses are near-identical (Jaccard
+        similarity above threshold).  This catches slow loops where the
+        turn-rate check doesn't fire but the agent is clearly stuck
+        re-sending the same thing.
+        """
+        import hashlib
+
+        if not response or not response.strip():
+            return False
+
+        words = set(response.lower().split())
+        if len(words) < 3:
+            return False  # Too short to meaningfully compare
+
+        digest = hashlib.sha256(response.encode("utf-8", errors="replace")).hexdigest()
+        entry = (digest, words)
+
+        responses = self._loop_detect_responses.get(session_key)
+        if responses is None:
+            responses = []
+            self._loop_detect_responses[session_key] = responses
+
+        responses.append(entry)
+
+        # Keep only last N+1 responses for comparison
+        max_keep = self._LOOP_DETECT_MAX_SIMILAR + 2
+        while len(responses) > max_keep:
+            responses.pop(0)
+
+        # Check if the last N responses are all similar to each other
+        if len(responses) >= self._LOOP_DETECT_MAX_SIMILAR:
+            recent = responses[-self._LOOP_DETECT_MAX_SIMILAR:]
+            all_similar = True
+            for i in range(len(recent) - 1):
+                w1 = recent[i][1]
+                w2 = recent[i + 1][1]
+                if not w1 or not w2:
+                    all_similar = False
+                    break
+                jaccard = len(w1 & w2) / len(w1 | w2)
+                if jaccard < self._LOOP_DETECT_SIMILARITY_THRESHOLD:
+                    all_similar = False
+                    break
+
+            if all_similar:
+                self._loop_detect_responses.pop(session_key, None)
+                return True
+
+        return False
+
+    @staticmethod
+    def _looks_like_auto_reply(text: str) -> bool:
+        """Heuristic check: does this inbound message look like an automated bot reply?
+
+        Catches common patterns:
+        - Numbered menus: lines starting with 1. 2. 3. 4. or 1) 2) 3) 4)
+        - Selection prompts: "Reply with 1, 2, 3, or 4", "Press 1 for..."
+        - Keyword triggers: "Type 'help'", "Send 'menu'"
+        - Template greeting: "Thank you for contacting", "Hi, I'm a bot"
+        """
+        if not text or not text.strip():
+            return False
+
+        import re
+        lower = text.strip().lower()
+
+        # Numbered menu pattern: multiple lines starting with digits
+        numbered_lines = len(re.findall(r"^\s*\d+[\.\):]\s+", text, re.MULTILINE))
+        if numbered_lines >= 3:
+            return True
+
+        # Selection prompt patterns
+        selection_patterns = [
+            r"reply\s+(with\s+)?(?:a\s+)?(?:number|digit|1|option)",
+            r"(?:press|type|send|enter|choose|select)\s+(?:\d|a\s+number|an?\s+option)",
+            r"(?:options?|choices?)\s*:\s*$",
+            r"^\s*(?:1|2|3|4|5)\s*[\.\):]\s+",  # starts with a numbered option
+        ]
+        for pattern in selection_patterns:
+            if re.search(pattern, lower):
+                # Only trigger if the message is relatively short (menus are
+                # usually under ~500 chars) and has at least one number.
+                if len(text) < 600 and re.search(r"\d", text):
+                    return True
+
+        # Keyword-trigger patterns (bot commands)
+        trigger_patterns = [
+            r"type\s+['\"]?\w+['\"]?\s+(?:to|for)\s+",
+            r"send\s+['\"]?\w+['\"]?\s+(?:to|for)\s+",
+            r"reply\s+['\"]?\w+['\"]?\s+(?:to|for)\s+",
+        ]
+        for pattern in trigger_patterns:
+            if re.search(pattern, lower):
+                return True
+
+        # Bot self-identification patterns
+        bot_id_patterns = [
+            r"i(?:'m| am)\s+(?:a\s+)?(?:bot|automated|virtual)",
+            r"this\s+(?:is\s+)?(?:an?\s+)?automated",
+            r"automated\s+(?:message|reply|response|assistant)",
+        ]
+        for pattern in bot_id_patterns:
+            if re.search(pattern, lower):
+                return True
+
+        return False
+
+    # ── Loop blacklist persistence ─────────────────────────────────
+
+    def _load_loop_blacklist(self) -> None:
+        """Load the persisted loop blacklist from disk."""
+        import json
+        path = _hermes_home / self._LOOP_BLACKLIST_FILE
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+            if isinstance(data, dict):
+                now = time.time()
+                # Only load non-expired entries
+                self._loop_blacklist = {
+                    k: v for k, v in data.items()
+                    if isinstance(v, (int, float)) and v > now
+                }
+        except Exception:
+            self._loop_blacklist = {}
+
+    def _save_loop_blacklist(self) -> None:
+        """Persist the loop blacklist to disk (non-blocking best-effort)."""
+        import json
+        path = _hermes_home / self._LOOP_BLACKLIST_FILE
+        try:
+            now = time.time()
+            # Prune expired entries before saving
+            pruned = {k: v for k, v in self._loop_blacklist.items() if v > now}
+            self._loop_blacklist = pruned
+            atomic_json_write(path, pruned, indent=2)
+        except Exception:
+            pass
+
+    def _add_to_loop_blacklist(self, source: "SessionSource") -> None:
+        """Add a chat/user to the auto-blacklist after loop detection fires."""
+        now = time.time()
+        expiry = now + self._LOOP_BLACKLIST_COOLDOWN
+        platform_str = source.platform.value if source.platform else "unknown"
+
+        # Blacklist by (platform, chat_id) for DMs and (platform, user_id) as backup
+        if source.chat_id:
+            key = f"{platform_str}:{source.chat_id}"
+            self._loop_blacklist[key] = expiry
+        if source.user_id and source.user_id != source.chat_id:
+            key = f"{platform_str}:uid:{source.user_id}"
+            self._loop_blacklist[key] = expiry
+
+        self._save_loop_blacklist()
+        logger.info(
+            "Added to loop blacklist: platform=%s chat=%s user=%s cooldown=%.0fs",
+            platform_str, source.chat_id, source.user_id,
+            self._LOOP_BLACKLIST_COOLDOWN,
+        )
+
+    def _is_loop_blacklisted(self, source: "SessionSource") -> bool:
+        """Check if a sender is currently auto-blacklisted for loop behavior."""
+        now = time.time()
+        platform_str = source.platform.value if source.platform else "unknown"
+
+        # Check chat_id
+        if source.chat_id:
+            key = f"{platform_str}:{source.chat_id}"
+            expiry = self._loop_blacklist.get(key, 0)
+            if expiry > now:
+                return True
+            # Clean up expired entry
+            self._loop_blacklist.pop(key, None)
+
+        # Check user_id
+        if source.user_id:
+            key = f"{platform_str}:uid:{source.user_id}"
+            expiry = self._loop_blacklist.get(key, 0)
+            if expiry > now:
+                return True
+            self._loop_blacklist.pop(key, None)
+
+        return False
+
+    def _clear_loop_detection(self, session_key: str) -> None:
+        """Clear loop-detection state for a session (e.g., on /new, /reset)."""
+        self._loop_detect_turns.pop(session_key, None)
+        self._loop_detect_responses.pop(session_key, None)
+
+    def _unblock_sender(self, source: "SessionSource") -> bool:
+        """Remove a sender from the loop blacklist.  Returns True if anything was removed."""
+        platform_str = source.platform.value if source.platform else "unknown"
+        removed = False
+
+        if source.chat_id:
+            key = f"{platform_str}:{source.chat_id}"
+            if self._loop_blacklist.pop(key, None) is not None:
+                removed = True
+        if source.user_id:
+            key = f"{platform_str}:uid:{source.user_id}"
+            if self._loop_blacklist.pop(key, None) is not None:
+                removed = True
+
+        if removed:
+            self._save_loop_blacklist()
+            logger.info(
+                "Unblocked sender: platform=%s chat=%s user=%s",
+                platform_str, source.chat_id, source.user_id,
+            )
+        return removed
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -6762,6 +7056,16 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # /unblock — remove the sender from the loop blacklist.  Must run
+        # before the agent dispatch so it works even when the session is
+        # locked.  No args needed — clears all blacklist entries for this
+        # platform + chat/user.
+        if event.get_command() == "unblock":
+            _unblocked = self._unblock_sender(source)
+            if _unblocked:
+                return "✅ Sender unblocked — loop blacklist entry removed."
+            return "ℹ️ This sender was not in the loop blacklist."
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -7573,6 +7877,76 @@ class GatewayRunner:
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        # ── Runtime bot-to-bot loop detection ─────────────────────────
+        # Three layers of protection:
+        #   1. Blacklist check — is this chat already flagged for looping?
+        #   2. Inbound auto-reply detection — does the message look like a bot?
+        #   3. Turn-rate check — too many turns in a short window?
+        try:
+            # Layer 1: Blacklist check (persisted across restarts)
+            if self._is_loop_blacklisted(source):
+                logger.info(
+                    "Silently dropping message from loop-blacklisted sender: "
+                    "platform=%s chat=%s user=%s",
+                    source.platform.value if source.platform else "?",
+                    source.chat_id, source.user_id,
+                )
+                return None  # Silent drop — don't even acknowledge
+
+            # Layer 2: Inbound auto-reply heuristic
+            _inbound_text = (event.text or "").strip()
+            _auto_reply_detected = False
+            if _inbound_text and self._looks_like_auto_reply(_inbound_text):
+                _auto_reply_detected = True
+                logger.info(
+                    "Inbound auto-reply pattern detected: platform=%s chat=%s text=%r",
+                    source.platform.value if source.platform else "?",
+                    source.chat_id, _inbound_text[:120],
+                )
+
+            # Layer 3: Turn-rate check (original logic)
+            _loop_detected = False
+            _detection_reason = ""
+            if self._record_turn_for_loop_detection(_quick_key):
+                _loop_detected = True
+                _detection_reason = "turn-rate"
+            # Content similarity is checked AFTER the agent responds
+            # (see post-response hook below), not here.
+
+            if _loop_detected:
+                logger.warning(
+                    "Bot-to-bot loop detected (%s) for session %s — "
+                    "auto-resetting session and blacklisting sender.",
+                    _detection_reason, _quick_key,
+                )
+                self._clear_loop_detection(_quick_key)
+                self._add_to_loop_blacklist(source)
+                # Reset the session so the next message starts fresh
+                self.session_store.reset_session(_quick_key)
+                self._evict_cached_agent(_quick_key)
+                self._session_model_overrides.pop(_quick_key, None)
+                self._set_session_reasoning_override(_quick_key, None)
+                return (
+                    "🔄 **Loop detected** — I was caught in an automatic "
+                    "reply loop (likely with a bot). The session has been "
+                    "reset and the sender temporarily blocked.\n\n"
+                    "Use `/unblock` to re-enable, or wait for the cooldown "
+                    "to expire. Use `/new` if you need a fresh start."
+                )
+
+            # If inbound looks like an auto-reply but hasn't triggered the
+            # turn-rate check yet, inject a subtle warning into the agent
+            # context so it can self-correct before the loop escalates.
+            if _auto_reply_detected and not _loop_detected:
+                event.text = (
+                    "[SYSTEM: The previous message appears to be an automated "
+                    "bot reply. Do NOT continue this exchange. Respond to the "
+                    "user (not the bot) and suggest stopping.]\n\n"
+                    + _inbound_text
+                )
+        except Exception as _loop_err:
+            logger.debug("Loop detection check failed (non-fatal): %s", _loop_err)
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -8569,6 +8943,31 @@ class GatewayRunner:
                 _response_time, _api_calls, _resp_len,
             )
 
+            # Post-response content similarity check: if the last N responses
+            # from this session are near-identical, it's a repetition loop.
+            # This catches slow loops that evade the turn-rate check.
+            try:
+                if response and self._record_response_for_similarity_check(
+                    session_key or _quick_key, response
+                ):
+                    logger.warning(
+                        "Content-similarity loop detected for session %s — "
+                        "auto-resetting and blacklisting.",
+                        session_key,
+                    )
+                    self._clear_loop_detection(session_key or _quick_key)
+                    self._add_to_loop_blacklist(source)
+                    self.session_store.reset_session(session_key or _quick_key)
+                    self._evict_cached_agent(session_key or _quick_key)
+                    response = (
+                        "🔄 **Repetition detected** — I've been sending the "
+                        "same response repeatedly. The session has been reset "
+                        "and the sender temporarily blocked.\n\n"
+                        "Use `/unblock` to re-enable."
+                    )
+            except Exception as _sim_err:
+                logger.debug("Similarity check failed (non-fatal): %s", _sim_err)
+
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
             # restarts where the session was active (never completed).
@@ -8744,6 +9143,7 @@ class GatewayRunner:
                 )
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
+                self._clear_loop_detection(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
@@ -9117,6 +9517,9 @@ class GatewayRunner:
 
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
+
+        # Clear loop-detection state so the fresh session starts with a clean slate.
+        self._clear_loop_detection(session_key)
 
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
