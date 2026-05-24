@@ -5303,6 +5303,8 @@ class GatewayRunner:
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if not _kb.board_dispatch_enabled(slug):
+                    continue
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
@@ -5324,6 +5326,8 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if not _kb.board_dispatch_enabled(slug):
+                    continue
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
@@ -5377,6 +5381,8 @@ class GatewayRunner:
             successes = 0
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if not _kb.board_auto_decompose_enabled(slug):
+                    continue
                 if attempted >= auto_decompose_per_tick:
                     break
                 # Pin this board for the duration of the call — same

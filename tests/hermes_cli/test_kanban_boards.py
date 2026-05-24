@@ -242,6 +242,58 @@ class TestBoardCRUD:
         assert again["description"] == "desc"
         assert again["icon"] == "📦"
 
+    def test_board_policy_requires_execution_domain_and_explicit_dispatch(self, fresh_home):
+        kb.create_board("normal")
+        assert kb.board_dispatch_enabled("normal") is False
+        assert kb.board_auto_decompose_enabled("normal") is False
+
+        kb.write_board_metadata(
+            "normal",
+            board_class="execution-domain",
+            dispatch=True,
+            auto_decompose=True,
+        )
+        assert kb.board_dispatch_enabled("normal") is True
+        assert kb.board_auto_decompose_enabled("normal") is True
+
+    def test_board_policy_blocks_human_owned_classes(self, fresh_home):
+        for slug, board_class in {
+            "ideas": "human-backlog",
+            "inbox": "human-decision-inbox",
+            "proposal": "governance-proposal",
+        }.items():
+            kb.create_board(slug)
+            kb.write_board_metadata(
+                slug,
+                board_class=board_class,
+                dispatch=True,
+                auto_decompose=True,
+            )
+            assert kb.board_dispatch_enabled(slug) is False
+            assert kb.board_auto_decompose_enabled(slug) is False
+
+    def test_board_policy_explicit_flags_block_execution(self, fresh_home):
+        kb.create_board("protected")
+        kb.write_board_metadata("protected", dispatch=False, auto_decompose=False)
+        assert kb.board_dispatch_enabled("protected") is False
+        assert kb.board_auto_decompose_enabled("protected") is False
+
+    def test_dispatch_once_noops_when_board_policy_disables_dispatch(self, fresh_home, monkeypatch):
+        kb.create_board("protected")
+        kb.write_board_metadata("protected", dispatch=False)
+        monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+        with kb.connect(board="protected") as conn:
+            tid = kb.create_task(conn, title="must not run", assignee="worker")
+            res = kb.dispatch_once(
+                conn,
+                board="protected",
+                spawn_fn=lambda *_args, **_kwargs: 12345,
+            )
+            task = kb.get_task(conn, tid)
+        assert res.spawned == []
+        assert task.status == "ready"
+        assert task.claim_lock is None
+
     def test_remove_archive(self, fresh_home):
         kb.create_board("toremove")
         res = kb.remove_board("toremove")

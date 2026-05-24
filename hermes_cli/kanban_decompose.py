@@ -281,6 +281,17 @@ def decompose_task(
     configured, API error, malformed response, decomposer returned
     fanout=true with empty task list) — those surface via ``ok=False``.
     """
+    # Protected/non-execution boards must never be decomposed. The
+    # `auto_decompose` board flag gates only the gateway's automatic
+    # `author="auto-decomposer"` path; an explicit operator/dashboard
+    # decompose on an execution-domain board remains available even when
+    # automatic decomposition is off.
+    if author == "auto-decomposer":
+        if not kb.board_auto_decompose_enabled():
+            return DecomposeOutcome(task_id, False, "board auto_decompose disabled")
+    elif not kb.board_dispatch_enabled():
+        return DecomposeOutcome(task_id, False, "board dispatch disabled")
+
     with kb.connect() as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
@@ -467,6 +478,8 @@ def decompose_task(
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Return task ids currently in the triage column."""
+    if not kb.board_auto_decompose_enabled():
+        return []
     with kb.connect() as conn:
         rows = kb.list_tasks(
             conn,

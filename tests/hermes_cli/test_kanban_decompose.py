@@ -26,6 +26,12 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
+    kb.write_board_metadata(
+        kb.DEFAULT_BOARD,
+        board_class="execution-domain",
+        dispatch=True,
+        auto_decompose=True,
+    )
     return home
 
 
@@ -112,6 +118,64 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
     assert c1.assignee == "engineer"
+
+
+def test_decompose_task_respects_board_auto_decompose_policy(kanban_home, monkeypatch):
+    kb.create_board("ideas")
+    kb.write_board_metadata("ideas", board_class="human-backlog")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "ideas")
+    with kb.connect(board="ideas") as conn:
+        tid = kb.create_task(conn, title="raw idea", triage=True)
+
+    outcome = decomp.decompose_task(tid, author="auto-decomposer")
+
+    assert outcome.ok is False
+    assert "auto_decompose disabled" in outcome.reason
+    with kb.connect(board="ideas") as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "triage"
+
+
+def test_list_triage_ids_respects_board_auto_decompose_policy(kanban_home, monkeypatch):
+    kb.create_board("ideas")
+    kb.write_board_metadata("ideas", auto_decompose=False)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "ideas")
+    with kb.connect(board="ideas") as conn:
+        kb.create_task(conn, title="raw idea", triage=True)
+
+    assert decomp.list_triage_ids() == []
+
+
+def test_manual_decompose_allowed_when_only_auto_decompose_disabled(kanban_home):
+    kb.write_board_metadata(kb.DEFAULT_BOARD, auto_decompose=False)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="operator requested", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "manual operator path",
+        "title": "Manual title",
+        "body": "Manual body",
+    })
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="operator")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.status == "ready"
 
 
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):

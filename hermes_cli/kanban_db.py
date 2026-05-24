@@ -438,6 +438,9 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    board_class: Optional[str] = None,
+    dispatch: Optional[bool] = None,
+    auto_decompose: Optional[bool] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -461,6 +464,16 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if board_class is not None:
+        value = str(board_class).strip().lower()
+        if value:
+            meta["board_class"] = value
+        else:
+            meta.pop("board_class", None)
+    if dispatch is not None:
+        meta["dispatch"] = bool(dispatch)
+    if auto_decompose is not None:
+        meta["auto_decompose"] = bool(auto_decompose)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -471,6 +484,76 @@ def write_board_metadata(
     )
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
+
+
+_EXECUTION_BOARD_CLASSES = frozenset({
+    "execution-domain",
+})
+
+_PROTECTED_BOARD_CLASSES = frozenset({
+    "archive",
+    "governance-proposal",
+    "human-backlog",
+    "human-decision-inbox",
+    "human_inbox",
+    "human-inbox",
+    "inbox",
+    "quarantine",
+    "protected",
+    "read-only",
+    "readonly",
+    "test-canary",
+})
+
+
+def _metadata_bool(meta: dict, key: str, default: bool) -> bool:
+    value = meta.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+    return default
+
+
+def board_dispatch_enabled(board: Optional[str] = None) -> bool:
+    """Return whether worker dispatch is allowed for ``board`` metadata.
+
+    Board-level protection is enforced at runtime, not just documented.
+    ``dispatch: false`` always blocks dispatch. Only boards explicitly
+    classified as ``execution-domain`` may dispatch, and they must opt in
+    with ``dispatch: true``. Human/protected/archive/proposal boards,
+    unknown classes, unclassified legacy boards, and archived boards are
+    non-dispatchable.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    meta = read_board_metadata(slug)
+    if bool(meta.get("archived")):
+        return False
+    board_class = str(meta.get("board_class") or "").strip().lower()
+    if board_class in _PROTECTED_BOARD_CLASSES:
+        return False
+    if board_class not in _EXECUTION_BOARD_CLASSES:
+        return False
+    return _metadata_bool(meta, "dispatch", False)
+
+
+def board_auto_decompose_enabled(board: Optional[str] = None) -> bool:
+    """Return whether automatic triage decomposition is allowed for ``board``."""
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    meta = read_board_metadata(slug)
+    if not board_dispatch_enabled(slug):
+        return False
+    return _metadata_bool(meta, "auto_decompose", True)
 
 
 def create_board(
@@ -4959,6 +5042,13 @@ def dispatch_once(
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
     """
+    dispatch_board = _normalize_board_slug(board)
+    if dispatch_board is None:
+        dispatch_board = get_current_board()
+    result = DispatchResult()
+    if not board_dispatch_enabled(dispatch_board):
+        return result
+
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
     # via _default_spawn (start_new_session=True only detaches the
@@ -4992,7 +5082,6 @@ def dispatch_once(
         except Exception:
             pass
 
-    result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
