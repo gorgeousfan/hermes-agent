@@ -724,6 +724,11 @@ def create_profile(
                 src = source_dir / filename
                 if src.exists():
                     shutil.copy2(src, profile_dir / filename)
+                    if filename == ".env":
+                        try:
+                            os.chmod(str(profile_dir / filename), 0o600)
+                        except (OSError, NotImplementedError):
+                            pass
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled

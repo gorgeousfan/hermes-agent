@@ -329,9 +329,11 @@ fi
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
+        chmod 600 .env
         echo -e "${GREEN}✓${NC} Created .env from template"
     fi
 else
+    chmod 600 .env
     echo -e "${GREEN}✓${NC} .env exists"
 fi
 
