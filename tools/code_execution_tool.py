@@ -1066,6 +1066,53 @@ def execute_code(
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
     env_type = _get_env_config()["env_type"]
+
+    try:
+        from tools.approval import check_execute_code_guard
+
+        approval = check_execute_code_guard(code, env_type)
+    except Exception as exc:
+        logger.error("execute_code approval guard failed: %s", exc, exc_info=True)
+        return json.dumps({
+            "status": "blocked",
+            "output": "",
+            "error": (
+                "execute_code approval guard failed before the script could "
+                "run. This path is fail-closed because execute_code can spawn "
+                "subprocesses outside terminal command approval."
+            ),
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+        }, ensure_ascii=False)
+
+    if not approval.get("approved"):
+        if approval.get("status") == "pending_approval":
+            return json.dumps({
+                "status": "pending_approval",
+                "approval_pending": True,
+                "output": "",
+                "error": "",
+                "command": approval.get("command", "execute_code"),
+                "description": approval.get("description", "execute_code approval"),
+                "pattern_key": approval.get("pattern_key", "execute_code"),
+                "tool_calls_made": 0,
+                "duration_seconds": 0,
+            }, ensure_ascii=False)
+        return json.dumps({
+            "status": "blocked",
+            "output": "",
+            "error": approval.get(
+                "message",
+                "BLOCKED: execute_code was not approved by the user.",
+            ),
+            "description": approval.get("description", "execute_code approval"),
+            "pattern_key": approval.get("pattern_key", "execute_code"),
+            "outcome": approval.get("outcome", "blocked"),
+            "user_consent": approval.get("user_consent", False),
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+        }, ensure_ascii=False)
+
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 

@@ -17,6 +17,7 @@ import pytest
 
 import json
 import os
+import tempfile
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -835,6 +836,116 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             ))
         self.assertEqual(result["status"], "success")
         self.assertIn("fallback ok", result["output"])
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_gateway_execute_code_denial_blocks_child_process(self):
+        """Gateway approval denial must stop execute_code before spawn."""
+        from tools.approval import (
+            clear_session,
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "execute-code-deny"
+        notified = []
+        result_holder = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "marker.txt")
+            code = (
+                "from pathlib import Path\n"
+                f"Path({marker!r}).write_text('ran')\n"
+                "print('should-not-run')\n"
+            )
+
+            register_gateway_notify(session_key, lambda data: notified.append(data))
+            token = set_current_session_key(session_key)
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
+            os.environ["HERMES_EXEC_ASK"] = "1"
+            os.environ["HERMES_SESSION_KEY"] = session_key
+            try:
+                thread = threading.Thread(
+                    target=lambda: result_holder.append(json.loads(execute_code(
+                        code,
+                        task_id="test-exec-deny",
+                        enabled_tools=[],
+                    )))
+                )
+                thread.start()
+
+                deadline = time.monotonic() + 5
+                while not notified and time.monotonic() < deadline:
+                    time.sleep(0.05)
+
+                self.assertEqual(len(notified), 1)
+                self.assertIn("execute_code <<'PY'", notified[0]["command"])
+                self.assertFalse(os.path.exists(marker))
+
+                resolve_gateway_approval(session_key, "deny")
+                thread.join(timeout=10)
+
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(result_holder[0]["status"], "blocked")
+                self.assertFalse(os.path.exists(marker))
+            finally:
+                os.environ.pop("HERMES_GATEWAY_SESSION", None)
+                os.environ.pop("HERMES_EXEC_ASK", None)
+                os.environ.pop("HERMES_SESSION_KEY", None)
+                unregister_gateway_notify(session_key)
+                clear_session(session_key)
+                reset_current_session_key(token)
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_gateway_execute_code_runs_after_one_shot_approval(self):
+        """Approving the execute_code preflight allows the script to run."""
+        from tools.approval import (
+            clear_session,
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        session_key = "execute-code-approve"
+        notified = []
+        result_holder = []
+        register_gateway_notify(session_key, lambda data: notified.append(data))
+        token = set_current_session_key(session_key)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_EXEC_ASK"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = session_key
+        try:
+            thread = threading.Thread(
+                target=lambda: result_holder.append(json.loads(execute_code(
+                    "print('approved-run')",
+                    task_id="test-exec-approve",
+                    enabled_tools=[],
+                )))
+            )
+            thread.start()
+
+            deadline = time.monotonic() + 5
+            while not notified and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+            self.assertEqual(len(notified), 1)
+            resolve_gateway_approval(session_key, "once")
+            thread.join(timeout=10)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result_holder[0]["status"], "success")
+            self.assertIn("approved-run", result_holder[0]["output"])
+        finally:
+            os.environ.pop("HERMES_GATEWAY_SESSION", None)
+            os.environ.pop("HERMES_EXEC_ASK", None)
+            os.environ.pop("HERMES_SESSION_KEY", None)
+            unregister_gateway_notify(session_key)
+            clear_session(session_key)
+            reset_current_session_key(token)
 
 
 # ---------------------------------------------------------------------------

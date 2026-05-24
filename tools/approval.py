@@ -910,6 +910,228 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
         return "escalate"
 
 
+def _gateway_approval_wait_timeout() -> int:
+    """Return the gateway approval wait timeout in seconds."""
+    timeout = _get_approval_config().get("gateway_timeout", 300)
+    try:
+        return int(timeout)
+    except (ValueError, TypeError):
+        return 300
+
+
+def _wait_for_gateway_entry(entry: _ApprovalEntry, label: str) -> bool:
+    """Wait for a gateway approval entry while keeping activity alive."""
+    timeout = _gateway_approval_wait_timeout()
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover
+        touch_activity_if_due = None
+
+    now = time.monotonic()
+    deadline = now + max(timeout, 0)
+    activity_state = {"last_touch": now, "start": now}
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if entry.event.wait(timeout=min(1.0, remaining)):
+            return True
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(activity_state, label)
+
+
+def check_execute_code_guard(code: str, env_type: str) -> dict:
+    """Require approval before local/SSH execute_code can run in async contexts.
+
+    execute_code runs arbitrary Python, and that Python can call subprocess,
+    os.system, ctypes, or other process/file APIs directly. Those calls do not
+    pass through terminal() and therefore cannot be reliably inspected by
+    DANGEROUS_PATTERNS at the shell-string layer. In gateway/ask contexts we
+    fail closed by approving the script execution itself before the child
+    process is spawned.
+    """
+    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        return {"approved": True, "message": None}
+
+    approval_mode = _get_approval_mode()
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+
+    is_gateway = _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cron = env_var_enabled("HERMES_CRON_SESSION")
+
+    if is_cron and _get_cron_approval_mode() == "deny":
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: execute_code can run arbitrary local Python, "
+                "including subprocess calls that bypass shell-string approval "
+                "checks. Cron jobs run without a user present to approve it. "
+                "Use normal tools instead, or set approvals.cron_mode: approve "
+                "only if this cron profile is intentionally trusted."
+            ),
+            "pattern_key": "execute_code",
+            "description": "execute_code script execution",
+            "outcome": "blocked",
+            "user_consent": False,
+        }
+
+    # Preserve ordinary non-interactive script behavior outside gateway/ask.
+    if not is_gateway and not is_ask:
+        return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
+    pattern_key = "execute_code"
+    description = (
+        "execute_code script execution. The script can spawn subprocesses "
+        "or mutate files without passing through terminal command approval; "
+        "approval is one-shot for this run."
+    )
+    command = f"execute_code <<'PY'\n{code}\nPY"
+
+    if approval_mode == "smart":
+        verdict = _smart_approve(command, description)
+        if verdict == "approve":
+            logger.debug("Smart approval: auto-approved execute_code for session %s", session_key)
+            return {
+                "approved": True,
+                "message": None,
+                "smart_approved": True,
+                "description": description,
+            }
+        if verdict == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED by smart approval: execute_code script execution "
+                    "was assessed as genuinely dangerous. Do NOT retry."
+                ),
+                "smart_denied": True,
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+
+    if notify_cb is None:
+        submit_pending(session_key, {
+            "command": command,
+            "pattern_key": pattern_key,
+            "pattern_keys": [pattern_key],
+            "description": description,
+        })
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "status": "pending_approval",
+            "approval_pending": True,
+            "command": command,
+            "description": description,
+            "message": (
+                f"⚠️ {description}. Asking the user for approval.\n\n"
+                f"**Code:**\n```python\n{code}\n```"
+            ),
+        }
+
+    approval_data = {
+        "command": command,
+        "pattern_key": pattern_key,
+        "pattern_keys": [pattern_key],
+        "description": description,
+        "allow_permanent": False,
+    }
+    entry = _ApprovalEntry(approval_data)
+    with _lock:
+        _gateway_queues.setdefault(session_key, []).append(entry)
+
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="gateway",
+    )
+
+    try:
+        notify_cb(approval_data)
+    except Exception as exc:
+        logger.warning("Gateway execute_code approval notify failed: %s", exc)
+        with _lock:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+        return {
+            "approved": False,
+            "message": "BLOCKED: Failed to send execute_code approval request to user. Do NOT retry.",
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "notify_failed",
+            "user_consent": False,
+        }
+
+    resolved = _wait_for_gateway_entry(entry, "waiting for execute_code approval")
+
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        if entry in queue:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    choice = entry.result
+    outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="gateway",
+        choice=outcome,
+    )
+
+    if not resolved or choice is None or choice == "deny":
+        if not resolved:
+            reason = "timed out without user response"
+            timeout_addendum = " Silence is not consent."
+            result_outcome = "timeout"
+        else:
+            reason = "denied by user"
+            timeout_addendum = ""
+            result_outcome = "denied"
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: execute_code {reason}. The user has NOT consented "
+                f"to running this script. Do NOT retry this command, do NOT "
+                f"rephrase it, and do NOT attempt the same outcome through "
+                f"subprocess, terminal, or another tool."
+                f"{timeout_addendum}"
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": result_outcome,
+            "user_consent": False,
+        }
+
+    return {
+        "approved": True,
+        "message": None,
+        "user_approved": True,
+        "description": description,
+    }
+
+
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None) -> dict:
     """Check if a command is dangerous and handle approval.
@@ -1233,43 +1455,9 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min).
-            # Poll in short slices so we can fire activity heartbeats every
-            # ~10s to the agent's inactivity tracker.  Without this, the
-            # blocking event.wait() never touches activity, and the
-            # gateway's inactivity watchdog (agent.gateway_timeout, default
-            # 1800s) kills the agent while the user is still responding to
-            # the approval prompt.  Mirrors the _wait_for_process() cadence
-            # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
-            try:
-                timeout = int(timeout)
-            except (ValueError, TypeError):
-                timeout = 300
-
-            try:
-                from tools.environments.base import touch_activity_if_due
-            except Exception:  # pragma: no cover
-                touch_activity_if_due = None
-
-            _now = time.monotonic()
-            _deadline = _now + max(timeout, 0)
-            _activity_state = {"last_touch": _now, "start": _now}
-            resolved = False
-            while True:
-                _remaining = _deadline - time.monotonic()
-                if _remaining <= 0:
-                    break
-                # 1s poll slice — the event is set immediately when the
-                # user responds, so slice length only controls heartbeat
-                # cadence, not user-visible responsiveness.
-                if entry.event.wait(timeout=min(1.0, _remaining)):
-                    resolved = True
-                    break
-                if touch_activity_if_due is not None:
-                    touch_activity_if_due(
-                        _activity_state, "waiting for user approval"
-                    )
+            # Block until the user responds or timeout while keeping the
+            # gateway inactivity watchdog fed during the approval wait.
+            resolved = _wait_for_gateway_entry(entry, "waiting for user approval")
 
             # Clean up this entry from the queue
             with _lock:
