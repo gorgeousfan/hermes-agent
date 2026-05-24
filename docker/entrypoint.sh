@@ -45,6 +45,31 @@ if [ "$(id -u)" = "0" ]; then
             echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
     fi
 
+    # Runtime dashboard/TUI startup can still need write access inside the
+    # install tree (for example packages/hermes-ink/dist and npm-managed
+    # node_modules caches). When HERMES_UID remaps the hermes user, those
+    # paths remain owned by the image's original uid unless we re-chown them
+    # here. Keep the scope narrow to the runtime-mutable trees under
+    # /opt/hermes rather than recursively chowning the whole install dir.
+    runtime_mutable_paths=(
+        "$INSTALL_DIR/ui-tui"
+        "$INSTALL_DIR/node_modules"
+    )
+    for runtime_path in "${runtime_mutable_paths[@]}"; do
+        [ -e "$runtime_path" ] || continue
+        runtime_needs_chown=false
+        if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "10000" ]; then
+            runtime_needs_chown=true
+        elif [ "$(stat -c %u "$runtime_path" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+            runtime_needs_chown=true
+        fi
+        if [ "$runtime_needs_chown" = true ]; then
+            echo "Fixing ownership of $runtime_path to hermes ($actual_hermes_uid)"
+            chown -R hermes:hermes "$runtime_path" 2>/dev/null || \
+                echo "Warning: chown failed for $runtime_path (rootless container?) — continuing anyway"
+        fi
+    done
+
     # Ensure config.yaml is readable by the hermes runtime user even if it was
     # edited on the host after initial ownership setup. Must run here (as root)
     # rather than after the gosu drop, otherwise a non-root caller like
