@@ -1771,11 +1771,21 @@ class SlackAdapter(BasePlatformAdapter):
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
+        # Always ignore our own messages to prevent echo loops.
+        # This guard MUST run for ALL channel types — DM channels (starting with "D")
+        # must never process their own bot's messages as inbound, or two Hermes
+        # agents in a DM thread will ping-pong responses indefinitely.
+        msg_user = event.get("user", "")
+        if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
+            return
+
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
-        #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        #   "all"      — accept all bot messages
+        # Note: DM channels are excluded from allow_bots filtering below so that
+        # human-to-bot DMs always work regardless of settings.
+        if (event.get("bot_id") or event.get("subtype") == "bot_message") and not event.get("channel", "").startswith("D"):
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -1787,10 +1797,6 @@ class SlackAdapter(BasePlatformAdapter):
                 if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
                     return
             # "all" falls through to process the message
-            # Always ignore our own messages to prevent echo loops
-            msg_user = event.get("user", "")
-            if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
-                return
 
         # Ignore message edits and deletions
         subtype = event.get("subtype")
