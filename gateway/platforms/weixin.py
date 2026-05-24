@@ -976,6 +976,24 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
+def _metadata_non_negative_int(metadata: Optional[Dict[str, Any]], key: str, default: int) -> int:
+    if not isinstance(metadata, dict) or key not in metadata:
+        return default
+    try:
+        return max(0, int(metadata[key]))
+    except (TypeError, ValueError):
+        return default
+
+
+def _metadata_non_negative_float(metadata: Optional[Dict[str, Any]], key: str, default: float) -> float:
+    if not isinstance(metadata, dict) or key not in metadata:
+        return default
+    try:
+        return max(0.0, float(metadata[key]))
+    except (TypeError, ValueError):
+        return default
+
+
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
@@ -1592,6 +1610,9 @@ class WeixinAdapter(BasePlatformAdapter):
         chunk: str,
         context_token: Optional[str],
         client_id: str,
+        max_retries: Optional[int] = None,
+        retry_delay_seconds: Optional[float] = None,
+        rate_limit_backoff_seconds: Optional[float] = None,
     ) -> None:
         """Send a single text chunk with per-chunk retry and backoff.
 
@@ -1602,7 +1623,18 @@ class WeixinAdapter(BasePlatformAdapter):
         """
         last_error: Optional[Exception] = None
         retried_without_token = False
-        for attempt in range(self._send_chunk_retries + 1):
+        max_attempt_retries = self._send_chunk_retries if max_retries is None else max(0, int(max_retries))
+        retry_delay = (
+            self._send_chunk_retry_delay_seconds
+            if retry_delay_seconds is None
+            else max(0.0, float(retry_delay_seconds))
+        )
+        rate_limit_backoff = (
+            self._send_chunk_rate_limit_backoff_seconds
+            if rate_limit_backoff_seconds is None
+            else max(0.0, float(rate_limit_backoff_seconds))
+        )
+        for attempt in range(max_attempt_retries + 1):
             if not self._send_available():
                 raise RuntimeError("Not connected")
             try:
@@ -1653,9 +1685,9 @@ class WeixinAdapter(BasePlatformAdapter):
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
-                            if attempt >= self._send_chunk_retries:
+                            if attempt >= max_attempt_retries:
                                 break
-                            wait = self._send_chunk_rate_limit_backoff_seconds
+                            wait = rate_limit_backoff
                             if not self._send_available():
                                 raise RuntimeError("Not connected")
                             logger.warning(
@@ -1672,15 +1704,15 @@ class WeixinAdapter(BasePlatformAdapter):
                 return
             except Exception as exc:
                 last_error = exc
-                if attempt >= self._send_chunk_retries:
+                if attempt >= max_attempt_retries:
                     break
-                wait = self._send_chunk_retry_delay_seconds * (attempt + 1)
+                wait = retry_delay * (attempt + 1)
                 logger.warning(
                     "[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
                     self.name,
                     _safe_id(chat_id),
                     attempt + 1,
-                    self._send_chunk_retries + 1,
+                    max_attempt_retries + 1,
                     wait,
                     exc,
                 )
@@ -1698,6 +1730,19 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> SendResult:
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
+        send_chunk_retries = _metadata_non_negative_int(
+            metadata, "weixin_send_chunk_retries", self._send_chunk_retries
+        )
+        send_chunk_retry_delay_seconds = _metadata_non_negative_float(
+            metadata,
+            "weixin_send_chunk_retry_delay_seconds",
+            self._send_chunk_retry_delay_seconds,
+        )
+        send_chunk_rate_limit_backoff_seconds = _metadata_non_negative_float(
+            metadata,
+            "weixin_send_chunk_rate_limit_backoff_seconds",
+            self._send_chunk_rate_limit_backoff_seconds,
+        )
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
         media_files, cleaned_content = self.extract_media(content)
@@ -1751,6 +1796,9 @@ class WeixinAdapter(BasePlatformAdapter):
                     chunk=chunk,
                     context_token=context_token,
                     client_id=client_id,
+                    max_retries=send_chunk_retries,
+                    retry_delay_seconds=send_chunk_retry_delay_seconds,
+                    rate_limit_backoff_seconds=send_chunk_rate_limit_backoff_seconds,
                 )
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:

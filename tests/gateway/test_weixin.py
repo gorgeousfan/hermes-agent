@@ -426,6 +426,28 @@ class TestWeixinChunkDelivery:
         send_message_mock.assert_not_awaited()
         sleep_mock.assert_not_awaited()
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_rate_limit_respects_metadata_retry_override(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "rate limited"}
+
+        result = asyncio.run(
+            adapter.send(
+                "wxid_test123",
+                "hello",
+                metadata={
+                    "weixin_send_chunk_retries": 0,
+                    "weixin_send_chunk_rate_limit_backoff_seconds": 0,
+                },
+            )
+        )
+
+        assert result.success is False
+        assert "rate limited" in (result.error or "").lower()
+        send_message_mock.assert_awaited_once()
+        sleep_mock.assert_not_awaited()
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):

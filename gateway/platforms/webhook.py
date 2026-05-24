@@ -1026,10 +1026,12 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
-        metadata = None
+        # Pass per-route metadata through so delivery targets can tune a single
+        # webhook route without changing the platform's global send behavior.
+        raw_metadata = extra.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
-            metadata = {"thread_id": thread_id}
+            metadata["thread_id"] = thread_id
 
-        return await adapter.send(chat_id, content, metadata=metadata)
+        return await adapter.send(chat_id, content, metadata=metadata or None)

@@ -177,6 +177,41 @@ class TestDeliverOnlyBypassesAgent:
             "thread_id": "topic-42"
         }
 
+    @pytest.mark.asyncio
+    async def test_deliver_extra_metadata_passed_through(self):
+        """deliver_extra.metadata lets routes tune target-adapter delivery."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {
+                    "chat_id": "c-1",
+                    "metadata": {
+                        "weixin_send_chunk_retries": 0,
+                        "weixin_send_chunk_rate_limit_backoff_seconds": 0,
+                    },
+                },
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-metadata-1"},
+            )
+            assert resp.status == 200
+
+        assert mock_target.send.await_args.kwargs["metadata"] == {
+            "weixin_send_chunk_retries": 0,
+            "weixin_send_chunk_rate_limit_backoff_seconds": 0,
+        }
+
 
 # ===================================================================
 # HTTP status codes
