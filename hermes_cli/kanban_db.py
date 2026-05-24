@@ -1181,7 +1181,8 @@ def connect(
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("PRAGMA wal_autocheckpoint=100")
             conn.execute("PRAGMA foreign_keys=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
