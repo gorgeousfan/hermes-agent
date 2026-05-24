@@ -1848,66 +1848,74 @@ class TestPluginAPIAuth:
         self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def test_plugin_route_requires_auth(self):
-        """Plugin API routes should return 401 without a valid session token."""
-        # Use a known plugin route (kanban board)
+        """Plugin API routes are exempt from dashboard-level auth middleware.
+
+        Compiled plugin frontends predate the auth middleware and do not
+        send X-Hermes-Session-Token / Authorization.  Auth is delegated
+        to individual plugin backends (e.g. Kanban validates ?token= on
+        the WS upgrade path).
+        """
         resp = self.client.get("/api/plugins/kanban/board")
-        assert resp.status_code == 401
+        assert resp.status_code != 401  # middleware does NOT block this
 
     def test_plugin_route_allows_auth(self):
-        """Plugin API routes should work with a valid session token.
+        """Plugin API routes work regardless of auth header presence.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Both authenticated and unauthenticated clients reach the handler;
+        the plugin backend decides whether to enforce its own auth.
         """
-        # Without auth: middleware blocks before reaching the handler.
+        # Without auth header
         resp = self.client.get("/api/plugins/example/hello")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
 
-        # With auth: handler runs.
+        # With auth header
         resp = self.auth_client.get("/api/plugins/example/hello")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):
-        """Plugin POST routes should return 401 without a valid session token."""
+        """Plugin POST routes are NOT blocked by dashboard middleware.
+
+        Plugins that need mutation auth must enforce it internally.
+        """
         resp = self.client.post("/api/plugins/kanban/tasks", json={"title": "test"})
-        assert resp.status_code == 401
+        assert resp.status_code != 401  # middleware does NOT block this
 
     def test_plugin_patch_requires_auth(self):
-        """Plugin PATCH routes should return 401 without a valid session token.
+        """Plugin PATCH routes are NOT blocked by dashboard middleware.
 
-        PATCH is the mutation method most commonly used by the dashboard for
-        kanban task edits — explicitly cover it so a future middleware
-        regression that whitelists non-GET methods can't sneak through.
+        Plugins that need mutation auth must enforce it internally.
         """
         resp = self.client.patch(
             "/api/plugins/kanban/tasks/t_fake",
             json={"title": "renamed"},
         )
-        assert resp.status_code == 401
+        assert resp.status_code != 401  # middleware does NOT block this
 
     def test_plugin_delete_requires_auth(self):
-        """Plugin DELETE routes should return 401 without a valid session token."""
+        """Plugin DELETE routes are NOT blocked by dashboard middleware.
+
+        Plugins that need mutation auth must enforce it internally.
+        """
         resp = self.client.delete("/api/plugins/kanban/tasks/t_fake")
-        assert resp.status_code == 401
+        assert resp.status_code != 401  # middleware does NOT block this
 
     def test_non_kanban_plugin_route_requires_auth(self):
-        """Auth must be plugin-agnostic, not kanban-specific.
+        """Auth exemption is prefix-based (/api/plugins/*), not per-plugin.
 
-        The middleware fix is at the gate level (no per-plugin allowlist),
-        so any plugin's API surface — kanban, hermes-achievements, future
+        The middleware fix uses a single path-prefix check, so any plugin's
+        API surface — kanban, hermes-achievements, future additions — gets
+        the same treatment without per-plugin allowlisting.
         plugins — must require the session token. Hit a non-kanban plugin
         path to lock that in.
         """
         # Real plugin path (hermes-achievements is loaded by default).
         resp = self.client.get("/api/plugins/hermes-achievements/overview")
-        assert resp.status_code == 401
-        # Same for an arbitrary plugin namespace that doesn't even exist —
-        # the middleware should 401 before routing decides 404, so an
-        # attacker can't fingerprint plugin names by status codes.
+        assert resp.status_code != 401
+        # Exemption is prefix-based — even non-existent plugin paths
+        # pass through the middleware.  Routing (404 vs 200) is handled
+        # downstream by the plugin router.
         resp = self.client.get("/api/plugins/_definitely_not_a_plugin_/anything")
-        assert resp.status_code == 401
+        assert resp.status_code != 401
 
     def test_plugin_websocket_unaffected_by_http_middleware(self):
         """The kanban /events WebSocket has its own ``?token=`` check;

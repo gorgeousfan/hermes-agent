@@ -236,9 +236,16 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require the session token on all /api/ routes except the public list.
+
+    Plugin routes under /api/plugins/ are also exempt from dashboard-level
+    auth: compiled plugin frontends predate the auth middleware and do not
+    send the X-Hermes-Session-Token / Authorization header.  Plugin backends
+    that need auth must enforce it internally (e.g. the Kanban WS endpoint
+    validates ?token= against _SESSION_TOKEN).
+    """
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
