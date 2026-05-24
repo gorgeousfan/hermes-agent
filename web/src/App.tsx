@@ -67,6 +67,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import MissionControlPage from "@/pages/MissionControlPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -78,7 +79,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/mission-control" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -107,6 +108,7 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/mission-control": MissionControlPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -315,6 +317,12 @@ export default function App() {
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
+  const isMissionControlRoute = normalizedPath === "/mission-control";
+  // When embedded chat is on, the terminal host should be visible on
+  // both /chat and /mission-control.  On any other route (sessions,
+  // analytics, etc.) the persistent host stays hidden.
+  const showPersistentChat =
+    isChatRoute || isMissionControlRoute;
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
@@ -426,6 +434,7 @@ export default function App() {
       <Backdrop />
       <PluginSlot name="backdrop" />
 
+      {!isMissionControlRoute && (
       <header
         className={cn(
           "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
@@ -458,6 +467,7 @@ export default function App() {
           {t.app.brand}
         </Typography>
       </header>
+      )}
 
       {mobileOpen && (
         <Button
@@ -591,19 +601,20 @@ export default function App() {
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6",
+                showPersistentChat
+                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
+                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
                 isDocsRoute && "min-h-0 flex-1",
+                isMissionControlRoute && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute &&
+                  !showPersistentChat &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute) &&
+                  (isDocsRoute || showPersistentChat) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
@@ -622,7 +633,7 @@ export default function App() {
                 {embeddedChat &&
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
-                    isChatRoute ? (
+                    showPersistentChat ? (
                       <div
                         className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
                         aria-busy="true"
@@ -636,14 +647,14 @@ export default function App() {
                     ) : null
                   ) : (
                     <div
-                      data-chat-active={isChatRoute ? "true" : "false"}
+                      data-chat-active={showPersistentChat ? "true" : "false"}
                       className={cn(
                         "min-h-0 min-w-0",
-                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
+                        showPersistentChat ? "flex flex-1 flex-col" : "hidden",
                       )}
-                      aria-hidden={!isChatRoute}
+                      aria-hidden={!showPersistentChat}
                     >
-                      <ChatPage isActive={isChatRoute} />
+                      <ChatPage isActive={showPersistentChat} />
                     </div>
                   ))}
               </div>
