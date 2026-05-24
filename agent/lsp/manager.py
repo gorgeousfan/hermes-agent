@@ -134,6 +134,12 @@ class _BackgroundLoop:
         self._loop = None
         self._thread = None
 
+    def schedule(self, coro) -> Optional[asyncio.Task]:
+        """Schedule a coroutine on the background loop without blocking."""
+        if self._loop is None:
+            return None
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
 
 class LSPService:
     """The process-wide LSP service.
@@ -187,6 +193,11 @@ class LSPService:
         # out anything in the baseline so the agent only sees errors
         # introduced by the current edit.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Start idle-subprocess reaper
+        self._reaper_handle = None
+        if self._enabled:
+            self._reaper_handle = self._loop.schedule(self._reaper_loop())
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
@@ -436,10 +447,42 @@ class LSPService:
         if not already_broken:
             eventlog.log_spawn_failed(srv.server_id, per_server_root, exc)
 
+    # ------------------------------------------------------------------
+    # idle reaper
+    # ------------------------------------------------------------------
+
+    async def _reaper_loop(self) -> None:
+        """Periodically reap LSP subprocesses that have been idle too long."""
+        while True:
+            await asyncio.sleep(self._idle_timeout / 2)
+            await self._reap_idle()
+
+    async def _reap_idle(self) -> None:
+        """Single pass: shut down clients idle for longer than *_idle_timeout*."""
+        now = time.time()
+        to_reap: list = []
+        with self._state_lock:
+            for key, last in list(self._last_used.items()):
+                if now - last > self._idle_timeout:
+                    client = self._clients.pop(key, None)
+                    self._last_used.pop(key, None)
+                    if client is not None:
+                        to_reap.append(client)
+        for client in to_reap:
+            try:
+                await client.shutdown()
+                logger.info("Reaped idle LSP server %s (%s)", client.server_id, client.workspace_root)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Error reaping LSP client: %s", e)
+
     def shutdown(self) -> None:
         """Tear down all clients and stop the background loop."""
         if not self._enabled:
             return
+        # Cancel the reaper before tearing down clients
+        if self._reaper_handle is not None:
+            self._reaper_handle.cancel()
+            self._reaper_handle = None
         try:
             self._loop.run(self._shutdown_async(), timeout=10.0)
         except Exception as e:  # noqa: BLE001
