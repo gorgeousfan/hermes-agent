@@ -867,6 +867,157 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer._final_response_sent is True
 
 
+class TestFallbackDispatchOnFinalEdit:
+    """Regression coverage for #21760 — when the final edit at got_done
+    exhausts the adaptive-backoff flood-strike budget and enters fallback
+    mode *during* the call, the existing ``if self._fallback_final_send:``
+    check at the top of the got_done block misses it (the strike count
+    crossed the threshold only after that check ran).  Without the
+    re-check after the final edit, the accumulated tail is silently
+    dropped — the user sees a frozen partial and the post-strike text
+    never lands.
+    """
+
+    @pytest.mark.asyncio
+    async def test_strike_3_during_final_edit_dispatches_fallback(self):
+        """Deterministic reproducer for #21760.
+
+        Seed the consumer to look like a streaming run that already delivered
+        a partial edit and accumulated two flood strikes from earlier
+        throttled edits.  When ``finish()`` triggers the got_done flush, the
+        first attempt (the ``should_edit`` block at line 501) fails with
+        flood (strike → MAX-1, no fallback yet, ``current_update_visible``
+        stays False).  The got_done block then falls through to the
+        ``elif self._message_id`` branch and retries — that retry fails too,
+        strike count crosses MAX, fallback mode is entered *inside* the
+        ``_send_or_edit`` call.
+
+        Without the re-check at the bottom of the got_done block,
+        ``_send_fallback_final`` is never called and the accumulated tail
+        is silently discarded — this is the exact bug #21760 describes.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_tail"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="flood_control:6"),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        # buffer_only=True avoids time-based mid-stream edits — the only
+        # edits run are the got_done finalize attempts.  That makes the
+        # "strike crosses threshold during the finalize" path deterministic.
+        config = StreamConsumerConfig(
+            edit_interval=0.01, buffer_threshold=5, buffer_only=True, cursor=" ▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Seed: a partial was already delivered as ``msg_1`` with prefix
+        # "Hello"; two flood strikes have accumulated from earlier edits.
+        # MAX_FLOOD_STRIKES is 3, so the NEXT failure brings us to MAX-1,
+        # and the one AFTER that crosses MAX → triggers fallback entry.
+        consumer._message_id = "msg_1"
+        consumer._last_sent_text = "Hello"
+        consumer._already_sent = True
+        consumer._flood_strikes = consumer._MAX_FLOOD_STRIKES - 2
+
+        consumer.on_delta(" world")
+        consumer.finish()
+
+        await consumer.run()
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        # Without the fix: zero sends (the tail was dropped after fallback
+        # was entered inside _send_or_edit but never dispatched).
+        # With the fix: one send carrying the missing tail.
+        assert any("world" in t for t in sent_texts), (
+            f"Tail dropped — sends: {sent_texts!r}"
+        )
+        assert consumer._final_response_sent, (
+            "_fallback_final_send was set but _send_fallback_final never ran"
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_already_active_path_unchanged(self):
+        """Pre-existing happy path: when ``_fallback_final_send`` is already
+        True at the top of the got_done block, fallback is dispatched there
+        and the re-check at the bottom must be a no-op (fallback clears the
+        flag).  Guards against double-dispatch from my fix.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01, buffer_threshold=5, buffer_only=True,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Hello world")
+        consumer.finish()
+
+        # Simulate state after a prior strike-3 failure during mid-stream:
+        # initial send already happened, fallback mode is set.
+        consumer._already_sent = True
+        consumer._message_id = "msg_1"
+        consumer._last_sent_text = "Hello"
+        consumer._fallback_final_send = True
+        consumer._fallback_prefix = "Hello"
+        consumer._edit_supported = False
+
+        await consumer.run()
+
+        # Exactly one fallback send (the tail) — not two.
+        tail_sends = [
+            call for call in adapter.send.call_args_list
+            if "world" in call[1].get("content", "")
+        ]
+        assert len(tail_sends) == 1, (
+            f"Tail was double-dispatched: {[c[1]['content'] for c in adapter.send.call_args_list]!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_successful_final_edit_skips_fallback_recheck(self):
+        """Happy path: the final edit succeeds — fallback flag never flips,
+        the re-check is a no-op, no extra send.  Guards against fallback
+        dispatch firing when the final edit landed cleanly.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(
+            edit_interval=0.01, buffer_threshold=5, buffer_only=True,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Hello world")
+        consumer.finish()
+
+        await consumer.run()
+
+        # One send (initial), zero or more edits (finalize) — but no second
+        # send call (which would mean fallback fired spuriously).
+        assert adapter.send.call_count == 1, (
+            f"Unexpected extra send: {[c[1]['content'] for c in adapter.send.call_args_list]!r}"
+        )
+        assert consumer._fallback_final_send is False
+
+
 class TestFinalResponseDeliveryGuard:
     """Regression coverage for #10748 — _final_response_sent must reflect
     actual delivery of the *current* chunked send, not the cumulative

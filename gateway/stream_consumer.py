@@ -577,6 +577,20 @@ class GatewayStreamConsumer:
                             )
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                        # The final edit above may have exhausted the
+                        # flood-strike budget and entered fallback mode
+                        # mid-call (#21760).  In that case the edit returned
+                        # False without delivering the tail, and the
+                        # ``_fallback_final_send`` check at the top of this
+                        # block missed it — the strike count crossed the
+                        # threshold only *during* the edit.  Drive the
+                        # fallback continuation here so the tail is not
+                        # silently dropped.
+                        if (
+                            self._fallback_final_send
+                            and not self._final_response_sent
+                        ):
+                            await self._send_fallback_final(self._accumulated)
                     return
 
                 if commentary_text is not None:
