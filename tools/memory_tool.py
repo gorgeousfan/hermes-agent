@@ -13,6 +13,10 @@ Mid-session writes update files on disk immediately (durable) but do NOT change
 the system prompt -- this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
 
+A helper `get_live_vs_snapshot_status()` is provided so agents performing
+proactive compaction can detect when live usage has diverged from the
+numbers shown in the current system prompt (a normal and expected situation).
+
 Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
@@ -420,6 +424,41 @@ class MemoryStore:
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
+    def get_live_vs_snapshot_status(self, target: str = "memory") -> dict:
+        """
+        Return live memory usage compared to the frozen snapshot used in the
+        system prompt.
+
+        This allows agents and governance reviews that perform proactive
+        memory compaction to reliably detect when the capacity numbers in
+        the injected system prompt are stale. The snapshot is frozen at
+        session start for prompt cache stability; mid-session compaction
+        updates the live state and disk file but not the prompt block until
+        the next session.
+        """
+        if target not in {"memory", "user"}:
+            return {"error": "invalid_target"}
+
+        live_current = self._char_count(target)
+        live_limit = self._char_limit(target)
+        live_pct = min(100, int((live_current / live_limit) * 100)) if live_limit > 0 else 0
+
+        snapshot_block = self._system_prompt_snapshot.get(target, "")
+        snapshot_current = len(snapshot_block)
+
+        differs = abs(live_current - snapshot_current) > 80
+
+        return {
+            "target": target,
+            "live_usage": f"{live_pct}% — {live_current:,}/{live_limit:,} chars",
+            "snapshot_differs_significantly": differs,
+            "note": (
+                "Live state has diverged from the frozen snapshot used in the "
+                "system prompt (expected after compaction this session)."
+                if differs else "Live state is close to the snapshot."
+            ),
+        }
+
     # -- Internal helpers --
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
@@ -646,8 +685,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "enum": ["add", "replace", "remove", "status"],
+                "description": "The action to perform. Use 'status' to check whether live memory has diverged from the frozen snapshot in the current system prompt."
             },
             "target": {
                 "type": "string",
