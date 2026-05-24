@@ -6374,12 +6374,34 @@ class GatewayRunner:
         # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
         # allowlist and still works everywhere for backward compatibility.
         allowed_ids = set()
+        non_numeric_ids = set()
         if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+            for uid in (v.strip() for v in platform_allowlist.split(",") if v.strip()):
+                allowed_ids.add(uid)
+                if not uid.lstrip("-").isdigit():
+                    non_numeric_ids.add(uid)
         if group_user_allowlist:
-            allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
+            for uid in (v.strip() for v in group_user_allowlist.split(",") if v.strip()):
+                allowed_ids.add(uid)
+                if not uid.lstrip("-").isdigit():
+                    non_numeric_ids.add(uid)
         if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+            for uid in (v.strip() for v in global_allowlist.split(",") if v.strip()):
+                allowed_ids.add(uid)
+                if not uid.lstrip("-").isdigit():
+                    non_numeric_ids.add(uid)
+
+        if non_numeric_ids and not getattr(self, "_warned_non_numeric_allowed_users", False):
+            logger.warning(
+                "%s_ALLOWED_USERS contains non-numeric value(s): %s. "
+                "User IDs must be numeric (e.g. '469682876'), not @usernames. "
+                "Non-numeric values will be checked against the user's display name "
+                "as a best-effort fallback. Send /id to @userinfobot to find "
+                "your numeric ID.",
+                source.platform.value.upper() if source.platform else "PLATFORM",
+                ", ".join(sorted(non_numeric_ids)),
+            )
+            self._warned_non_numeric_allowed_users = True
 
         # "*" in any allowlist means allow everyone (consistent with
         # SIGNAL_GROUP_ALLOWED_USERS precedent)
@@ -6389,6 +6411,16 @@ class GatewayRunner:
         check_ids = {user_id}
         if "@" in user_id:
             check_ids.add(user_id.split("@")[0])
+
+        # Non-numeric allowed values: also check against user_name (case-insensitive)
+        # so that a username like "ChipuEatFast" in TELEGRAM_ALLOWED_USERS can
+        # match a user's display name. This is a best-effort fallback — the
+        # user should use numeric IDs.
+        if non_numeric_ids and source.user_name:
+            user_name_lower = source.user_name.strip().lower()
+            check_ids.update(
+                nid for nid in non_numeric_ids if nid.strip().lower() == user_name_lower
+            )
 
         # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
         if source.platform == Platform.WHATSAPP:
