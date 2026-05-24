@@ -91,6 +91,10 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    # Fake CDN URLs resolve to private IPs in test envs — bypass SSRF guard.
+    monkeypatch.setattr(
+        "gateway.platforms.discord.is_safe_url", lambda url: True
+    )
 
 
 @pytest.fixture
