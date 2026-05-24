@@ -161,6 +161,13 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_OIDC_TOKEN` | Vercel short-lived OIDC token (development-only alternative) |
 
+### SIMPLICIO_PROMPT
+
+| Variable | Description |
+|----------|-------------|
+| `SIMPLICIO_PROMPT` | `true` auto-loads the bundled SIMPLICIO_PROMPT plugin and injects the local vendored SIMPLICIO_PROMPT V2 tuple-space overlay into each main-agent turn. |
+| `HERMES_SIMPLICIO_PROMPT` | Alias for `SIMPLICIO_PROMPT`. |
+
 ### Langfuse Observability
 
 Environment variables for the bundled [`observability/langfuse`](/docs/user-guide/features/built-in-plugins#observabilitylangfuse) plugin. Set these in `~/.hermes/.env`. The plugin must also be enabled (`hermes plugins enable observability/langfuse`, or check the box in `hermes plugins`) before any of these take effect.
