@@ -63,6 +63,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
+    runner._queued_events = {}
     runner._busy_ack_ts = {}
     runner._draining = False
     runner.adapters = {}
@@ -116,6 +117,31 @@ class TestBusySessionAck:
         assert sk in adapter._pending_messages
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
+        running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_message_interrupt_mode_queues_when_delegate_child_is_active(self):
+        """Default interrupt mode must not propagate follow-ups into active delegates."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="let the delegate finish first")
+        sk = build_session_key(event.source)
+
+        child = MagicMock()
+        running_agent = MagicMock()
+        running_agent._active_children = [child]
+        running_agent._active_children_lock = None
+        runner._busy_input_mode = "interrupt"
+        runner._running_agents[sk] = running_agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        assert adapter._pending_messages[sk] is event
         running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
@@ -270,6 +296,62 @@ class TestBusySessionAck:
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
         assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_queues_when_delegate_child_is_active(self):
+        """User follow-ups during delegate_task must not kill active subagents."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="keep this for after the subagent")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        child = MagicMock()
+        agent = MagicMock()
+        agent._active_children = [child]
+        agent._active_children_lock = None
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 4,
+            "max_iterations": 60,
+            "current_tool": "delegate_task",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "delegate_task",
+            "seconds_since_activity": 0.2,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages[sk] is event
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+        assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_still_interrupts_without_delegate_child(self):
+        """Normal interrupt-mode behavior is unchanged outside delegation."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="interrupt the regular turn")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent._active_children = []
+        agent._active_children_lock = None
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.interrupt.assert_called_once_with("interrupt the regular turn")
+        assert adapter._pending_messages[sk] is event
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):

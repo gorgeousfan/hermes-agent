@@ -2515,6 +2515,23 @@ class GatewayRunner:
         return depth
 
     @staticmethod
+    def _agent_has_active_children(agent: Any) -> bool:
+        """Return True when an agent is currently waiting on delegate_task children."""
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            return False
+        children = getattr(agent, "_active_children", None)
+        if not isinstance(children, list):
+            return False
+        lock = getattr(agent, "_active_children_lock", None)
+        if lock is not None:
+            try:
+                with lock:
+                    return any(child is not None for child in children)
+            except Exception:
+                pass
+        return any(child is not None for child in children)
+
+    @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
 
@@ -2996,6 +3013,15 @@ class GatewayRunner:
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+        elif (
+            effective_mode == "interrupt"
+            and self._agent_has_active_children(running_agent)
+        ):
+            logger.debug(
+                "Gateway busy interrupt converted to queue for %s: delegate_task child active",
+                session_key,
+            )
+            effective_mode = "queue"
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -7131,6 +7157,14 @@ class GatewayRunner:
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
+            if self._agent_has_active_children(running_agent):
+                logger.debug(
+                    "PRIORITY interrupt converted to queue for %s: delegate_task child active",
+                    _quick_key,
+                )
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
+
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
             # NOTE: self._pending_messages was write-only (never consumed).
