@@ -4228,6 +4228,7 @@ class _AgentPluginInstallBody(BaseModel):
     identifier: str
     force: bool = False
     enable: bool = True
+    select: Optional[List[str]] = None
 
 
 def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
@@ -4369,6 +4370,7 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
         body.identifier.strip(),
         force=body.force,
         enable=body.enable,
+        select=body.select,
     )
     if not result.get("ok"):
         raise HTTPException(
@@ -4376,7 +4378,8 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
             detail=result.get("error") or "Install failed.",
         )
     _get_dashboard_plugins(force_rescan=True)
-    # Strip internal paths from the response
+    # Strip internal paths from the response (after_install.md content is still
+    # returned inline as `after_install_md` for multi-plugin installs).
     result.pop("after_install_path", None)
     return result
 
