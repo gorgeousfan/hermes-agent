@@ -19,6 +19,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from agent.redact import redact_sensitive_text
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -2644,10 +2645,11 @@ class BasePlatformAdapter(ABC):
         network errors, sends the user a brief delivery-failure notice so they
         know to retry rather than waiting indefinitely.
         """
+        safe_content = redact_sensitive_text(content)
 
         result = await self.send(
             chat_id=chat_id,
-            content=content,
+            content=safe_content,
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -2674,7 +2676,7 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(delay)
                 result = await self.send(
                     chat_id=chat_id,
-                    content=content,
+                    content=safe_content,
                     reply_to=reply_to,
                     metadata=metadata,
                 )
@@ -2701,7 +2703,7 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=f"(Response formatting failed, plain text:)\n\n{safe_content[:3500]}",
             reply_to=reply_to,
             metadata=metadata,
         )
