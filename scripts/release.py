@@ -1273,6 +1273,7 @@ AUTHOR_MAP = {
     "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
     "erik.engervall@gmail.com": "erikengervall",  # PR #28774 (firecrawl integration tag)
     "egilewski@egilewski.com": "egilewski",  # PR #30432 (MEDIA path traversal fix, GHSA-jmf9-9729-7pp8)
+    "wock9000@users.noreply.github.com": "wock9000",  # azure-foundry model resolution salvage
 }
 
 
