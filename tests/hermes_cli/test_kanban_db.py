@@ -276,8 +276,8 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         # Complete the parent
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        # Manually block the child (simulates a worker that failed
-        # after the parent finished)
+        # Manually block the child (simulates a dependency-only block after
+        # parent completion; no blocked/gave_up event is emitted).
         conn.execute(
             "UPDATE tasks SET status='blocked', consecutive_failures=5, "
             "last_failure_error='persistent error' WHERE id=?",
@@ -292,6 +292,38 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_recompute_ready_keeps_gave_up_circuit_breaker_blocked(kanban_home):
+    """A circuit-breaker block is a human intervention point, not a dependency wait.
+
+    Regression: a parentless task that hit failure_limit emitted ``gave_up`` and
+    was immediately auto-promoted by ``recompute_ready()``, resetting failures
+    and creating a crash -> gave_up -> promoted -> respawn loop.
+    """
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="crashy", assignee="atlas")
+        kb._record_task_failure(
+            conn,
+            task_id,
+            "Unknown skill(s): notion-client-capitalization",
+            outcome="spawn_failed",
+            failure_limit=1,
+            release_claim=False,
+            end_run=False,
+        )
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+
+        promoted = kb.recompute_ready(conn)
+
+        task = kb.get_task(conn, task_id)
+        assert promoted == 0
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert task.last_failure_error == "Unknown skill(s): notion-client-capitalization"
 
 
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
