@@ -678,19 +678,86 @@ class SessionDB:
         except sqlite3.OperationalError:
             pass  # Index already exists
 
-        # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
-        try:
-            cursor.execute("SELECT * FROM messages_fts LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+        # ── FTS5 setup with integrity verification ───────────────────────
+        # FTS5 virtual tables can become silently corrupted (e.g. stale WAL
+        # after unclean shutdown).  The existence check below catches missing
+        # tables, but corrupted tables pass it.  After creation or reuse, we
+        # run a verify query and drop-recreate-backfill on failure.
+        def _ensure_fts_table(create_sql: str, table_name: str, backfill_sql: str) -> None:
+            try:
+                cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
+            except sqlite3.OperationalError:
+                cursor.executescript(create_sql)
+            # Verify the FTS table is functional by running a simple search.
+            # A corrupted FTS passes the LIMIT 0 existence check but fails on
+            # content queries.  Use a MATCH query (not just rowid LIMIT 1)
+            # because FTS5 corruption lives in the inverted-index b-trees,
+            # not the content table — SELECT rowid only reads the content
+            # table and misses index-btree corruption (e.g. from stale WAL
+            # after unclean shutdown).
+            try:
+                cursor.execute(
+                    f"SELECT rowid FROM {table_name} WHERE {table_name} MATCH 'the' LIMIT 1"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                logger.warning("FTS5 table %s is corrupted — dropping and recreating", table_name)
+                try:
+                    cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+                except sqlite3.OperationalError:
+                    pass
+                cursor.executescript(create_sql)
 
-        # Trigram FTS5 for CJK/substring search
-        try:
-            cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
-        except sqlite3.OperationalError:
-            cursor.executescript(FTS_TRIGRAM_SQL)
+        _ensure_fts_table(
+            FTS_SQL, "messages_fts",
+            "INSERT INTO messages_fts(rowid, content) "
+            "SELECT id, COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') FROM messages",
+        )
+        _ensure_fts_table(
+            FTS_TRIGRAM_SQL, "messages_fts_trigram",
+            "INSERT INTO messages_fts_trigram(rowid, content) "
+            "SELECT id, COALESCE(content, '') || ' ' || "
+            "COALESCE(tool_name, '') || ' ' || "
+            "COALESCE(tool_calls, '') FROM messages",
+        )
 
         self._conn.commit()
+
+        # ── FTS backfill after potential recreate ─────────────────────────
+        # If either table was just recreated (dropped then re-created above),
+        # its index is empty.  Backfill all existing messages rows.
+        for fts_table, backfill in [
+            ("messages_fts", "INSERT OR IGNORE INTO messages_fts(rowid, content) "
+             "SELECT id, COALESCE(content, '') || ' ' || "
+             "COALESCE(tool_name, '') || ' ' || "
+             "COALESCE(tool_calls, '') FROM messages"),
+            ("messages_fts_trigram", "INSERT OR IGNORE INTO messages_fts_trigram(rowid, content) "
+             "SELECT id, COALESCE(content, '') || ' ' || "
+             "COALESCE(tool_name, '') || ' ' || "
+             "COALESCE(tool_calls, '') FROM messages"),
+        ]:
+            try:
+                cur = cursor.execute(f"SELECT COUNT(*) FROM {fts_table}")
+                fts_count = cur.fetchone()[0]
+                cur = cursor.execute("SELECT COUNT(*) FROM messages")
+                msg_count = cur.fetchone()[0]
+                if fts_count < msg_count:
+                    logger.info(
+                        "FTS5 %s has %d rows, messages has %d — backfilling",
+                        fts_table, fts_count, msg_count,
+                    )
+                    cursor.execute(backfill)
+            except sqlite3.OperationalError:
+                logger.warning("FTS5 %s backfill failed — attempting recreate", fts_table)
+                try:
+                    cursor.execute(f"DROP TABLE IF EXISTS {fts_table}")
+                except sqlite3.OperationalError:
+                    pass
+                cursor.executescript(
+                    FTS_SQL if "trigram" not in fts_table else FTS_TRIGRAM_SQL
+                )
+                cursor.execute(backfill)
 
     # =========================================================================
     # Session lifecycle
