@@ -7333,6 +7333,9 @@ class GatewayRunner:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
+        if canonical == "history":
+            return await self._handle_history_command(event)
+
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
@@ -12806,6 +12809,144 @@ class GatewayRunner:
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+    async def _handle_history_command(self, event: MessageEvent) -> str:
+        """Handle /history command -- show or search conversation history.
+
+        Usage:
+          /history          Show recent user prompts (page 1, 5 per page)
+          /history <page>   Show a specific page
+          /history <keyword> Search history for matching prompts
+
+        On platforms supporting interactive cards (Feishu), renders a
+        paginated card with \"Reuse\" buttons per prompt.
+        """
+        source = event.source
+        raw_args = event.get_command_args().strip()
+        page_size = 5
+
+        # Determine mode and page
+        search_query = None
+        page = 1
+        if raw_args:
+            try:
+                page = int(raw_args)
+                if page < 1:
+                    page = 1
+            except ValueError:
+                # Check for navigation keywords
+                args_lower = raw_args.lower()
+                if args_lower in ("prev", "previous", "p"):
+                    page = max(page - 1, 1)
+                elif args_lower in ("next", "n"):
+                    page = page + 1
+                else:
+                    search_query = raw_args
+
+        # Load session transcript
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            history = self.session_store.load_transcript(session_entry.session_id)
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "history: session store unavailable: %s", exc
+            )
+            return t("gateway.shared.session_db_unavailable_prefix")
+
+        # Extract user messages, filter to the prompt content only
+        user_prompts = []
+        for msg in history:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if content and isinstance(content, str):
+                    user_prompts.append(content.strip())
+
+        # If searching, use FTS5 if available, else substring match
+        if search_query:
+            _fts5_db = getattr(self, "_session_db", None)
+            if _fts5_db is not None:
+                try:
+                    _results = _fts5_db.search_messages(
+                        query=search_query,
+                        role_filter=["user"],
+                        limit=100,
+                    )
+                    user_prompts = []
+                    for r in _results:
+                        content = r.get("content", "")
+                        if content and isinstance(content, str):
+                            user_prompts.append(content.strip())
+                    if not user_prompts:
+                        return (
+                            f"No history items found matching \"{search_query}\"."
+                            f"\n\nTo see all recent history: /history"
+                        )
+                except Exception as _fts5_err:
+                    import logging as _logging
+                    _logging.getLogger(__name__).debug(
+                        "history: FTS5 search failed, falling back: %s", _fts5_err
+                    )
+                    # Fall through to substring matching below
+                    q = search_query.lower()
+                    user_prompts = [p for p in user_prompts if q in p.lower()]
+                    if not user_prompts:
+                        return (
+                            f"No history items found matching \"{search_query}\"."
+                            f"\n\nTo see all recent history: /history"
+                        )
+            else:
+                # Fallback: substring matching when session_db unavailable
+                q = search_query.lower()
+                user_prompts = [p for p in user_prompts if q in p.lower()]
+                if not user_prompts:
+                    return (
+                        f"No history items found matching \"{search_query}\"."
+                        f"\n\nTo see all recent history: /history"
+                    )
+
+        if not user_prompts:
+            return "(._.) No conversation history yet."
+
+        # Paginate
+        total_pages = (len(user_prompts) + page_size - 1) // page_size
+        if page > total_pages:
+            page = total_pages
+        start = (page - 1) * page_size
+        end = min(start + page_size, len(user_prompts))
+        page_items = user_prompts[start:end]
+
+        # Check if source platform supports interactive cards
+        is_feishu = source.platform == Platform.FEISHU if hasattr(source, 'platform') else False
+
+        # Build result
+        lines = []
+        header = f"📜 Session History"
+        if search_query:
+            header += f" — search \"{search_query}\""
+        lines.append(f"{header} (Page {page}/{total_pages})")
+        lines.append("")
+
+        for i, prompt in enumerate(page_items, start=start + 1):
+            preview = prompt[:200]
+            if len(prompt) > 200:
+                preview += "..."
+            lines.append(f"[{i}] {preview}")
+            lines.append("")
+
+        if total_pages > 1:
+            nav = []
+            if page > 1:
+                nav.append("/history prev")
+            else:
+                nav.append("—")
+            nav.append(f"Page {page}/{total_pages}")
+            if page < total_pages:
+                nav.append("/history next")
+            else:
+                nav.append("—")
+            lines.append("  ".join(nav))
+
+        return "\n".join(lines)
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
