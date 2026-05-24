@@ -6116,6 +6116,13 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_daemon(args):
+    """Manage the local Hermes session daemon."""
+    from hermes_cli.daemon import daemon_command
+
+    return daemon_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -11833,6 +11840,44 @@ def main():
     _add_accept_hooks_flag(cron_tick)
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # daemon command
+    # =========================================================================
+    daemon_parser = subparsers.add_parser(
+        "daemon",
+        help="Manage the local Hermes session daemon",
+        description=(
+            "Manage the local profile-scoped Hermes session daemon. The daemon "
+            "is an MVP for jcode-style single-server / multi-client session surfaces."
+        ),
+    )
+    daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_action")
+    daemon_subparsers.add_parser("serve", help="Run daemon in the foreground")
+    daemon_subparsers.add_parser("start", help="Start daemon in the background")
+    daemon_subparsers.add_parser("stop", help="Stop daemon")
+    daemon_subparsers.add_parser("restart", help="Restart daemon")
+    daemon_status = daemon_subparsers.add_parser("status", help="Show daemon status")
+    daemon_status.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    daemon_sessions = daemon_subparsers.add_parser("sessions", help="List sessions via daemon")
+    daemon_sessions.add_argument("--limit", type=int, default=20, help="Max sessions to show")
+    daemon_sessions.add_argument("--json", action="store_true", help="Print raw daemon response JSON")
+    daemon_create = daemon_subparsers.add_parser("create-session", help="Create an empty session record via daemon")
+    daemon_create.add_argument("--title", default=None, help="Optional session title")
+    daemon_create.add_argument("--source", default="daemon", help="Session source label")
+    daemon_create.add_argument("--model", default=None, help="Optional model label")
+    daemon_send = daemon_subparsers.add_parser("send", help="Send a message to a daemon-owned session run")
+    daemon_send.add_argument("message", help="User message to send")
+    daemon_send.add_argument("--session-id", default=None, help="Existing session id or title to continue")
+    daemon_send.add_argument("--title", default=None, help="Title when creating a new session")
+    daemon_send.add_argument("--source", default="daemon", help="Session source label for new sessions")
+    daemon_send.add_argument("--model", default=None, help="Optional model override")
+    daemon_events = daemon_subparsers.add_parser("events", help="Read daemon run/session events")
+    daemon_events.add_argument("--session-id", default=None, help="Filter by session id")
+    daemon_events.add_argument("--run-id", default=None, help="Filter by run id")
+    daemon_events.add_argument("--since", type=int, default=0, help="Only return events after this sequence")
+    daemon_events.add_argument("--limit", type=int, default=100, help="Max events to return")
+    daemon_parser.set_defaults(func=cmd_daemon)
 
     # =========================================================================
     # webhook command
