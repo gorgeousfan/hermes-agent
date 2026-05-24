@@ -2462,6 +2462,31 @@ async def get_session_latest_descendant(session_id: str):
         "changed": bool(path and latest != path[0]),
     }
 
+def _normalize_dashboard_message_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return dashboard-only message copies with synthetic vision results labeled as tools.
+
+    Gateway image text-mode routing pre-analyzes attachments with vision_analyze
+    and prepends the description to the next user message. That synthetic text is
+    intentionally persisted as a user turn for conversation replay, but the
+    Dashboard should not present the vision model output as if the user typed it.
+    """
+    normalized: List[Dict[str, Any]] = []
+    for msg in messages:
+        item = dict(msg)
+        content = item.get("content")
+        if (
+            item.get("role") == "user"
+            and isinstance(content, str)
+            and content.startswith("[The user sent an image~ Here's what I can see:\n")
+            and "vision_analyze" in content
+        ):
+            item["role"] = "tool"
+            if not item.get("tool_name"):
+                item["tool_name"] = "vision_analyze"
+        normalized.append(item)
+    return normalized
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
     from hermes_state import SessionDB
@@ -2470,7 +2495,7 @@ async def get_session_messages(session_id: str):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        messages = db.get_messages(sid)
+        messages = _normalize_dashboard_message_roles(db.get_messages(sid))
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()
