@@ -295,6 +295,13 @@ class TestBlocklistCoverage:
             "VERCEL_TOKEN",
             "VERCEL_PROJECT_ID",
             "VERCEL_TEAM_ID",
+            "VIRTUAL_ENV",
+            "VIRTUAL_ENV_PROMPT",
+            "UV_PROJECT_ENVIRONMENT",
+            "POETRY_ACTIVE",
+            "PIPENV_ACTIVE",
+            "CONDA_PREFIX",
+            "CONDA_DEFAULT_ENV",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
