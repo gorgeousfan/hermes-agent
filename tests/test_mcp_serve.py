@@ -790,6 +790,57 @@ class TestMCPToolParameterCoercion:
         assert result["event"] is not None
         assert result["event"]["content"] == "waiting for this"
 
+    def test_optional_string_filters_ignore_structured_values(
+        self,
+        fake_mcp_server,
+        _event_loop,
+    ):
+        from mcp_serve import QueueEvent
+
+        server, bridge = fake_mcp_server
+        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
+
+        conversations = _run_tool(
+            server,
+            "conversations_list",
+            {"platform": ["slack"], "search": ["Alice"]},
+        )
+        channels = _run_tool(server, "channels_list", {"platform": ["slack"]})
+        events = _run_tool(server, "events_poll", {"session_key": []})
+
+        assert conversations["count"] == 3
+        assert channels["count"] == 3
+        assert len(events["events"]) == 1
+
+    def test_required_string_args_reject_structured_values(
+        self,
+        fake_mcp_server,
+        _event_loop,
+    ):
+        server, bridge = fake_mcp_server
+        bridge._pending_approvals["a1"] = {"id": "a1", "kind": "exec"}
+
+        message_read = _run_tool(server, "messages_read", {"session_key": []})
+        attachments = _run_tool(
+            server,
+            "attachments_fetch",
+            {
+                "session_key": "agent:main:telegram:dm:123456",
+                "message_id": [],
+            },
+        )
+        send = _run_tool(server, "messages_send", {"target": [], "message": "hi"})
+        approval = _run_tool(
+            server,
+            "permissions_respond",
+            {"id": [], "decision": "deny"},
+        )
+
+        assert message_read["error"] == "session_key must be a string"
+        assert attachments["error"] == "message_id must be a string"
+        assert send["error"] == "target must be a string"
+        assert approval["error"] == "id must be a string"
+
 
 class TestE2EMessagesSend:
     def test_send_missing_args(self, mcp_server_e2e, _event_loop):
