@@ -102,7 +102,7 @@ _REVEAL_WINDOW_SECONDS = 30
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|100\.\d+\.\d+\.\d+)(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -120,6 +120,12 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    # WebSocket routes validate the session token themselves via query
+    # params (browsers cannot set custom headers on WebSocket upgrades).
+    "/api/events",
+    "/api/pub",
+    "/api/pty",
+    "/api/ws",
 })
 
 
@@ -3305,9 +3311,17 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
     Allows loopback always; allows any IP when bound to all-interfaces
-    (--insecure mode, guarded by session token auth).
+    (--insecure mode, guarded by session token auth); also allows any IP
+    when bound to a specific non-loopback address (e.g. Tailscale IP with
+    --insecure), since that also implies an intentional non-loopback bind.
     """
     if _is_public_bind():
+        return True
+    # When bound to a specific non-loopback address (Tailscale IP, etc.)
+    # with --insecure, allow any client — the operator explicitly chose
+    # a non-loopback bind.
+    bound_host = getattr(app.state, "bound_host", "")
+    if bound_host and bound_host not in _LOOPBACK_HOSTS:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
