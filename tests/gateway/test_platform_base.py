@@ -329,6 +329,13 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_extracts_html_documents(self):
+        content = "Here is the export\nMEDIA:/tmp/书签_分类整理_新.html"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/书签_分类整理_新.html", False)]
+        assert "Here is the export" in cleaned
+        assert "MEDIA:" not in cleaned
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
