@@ -488,6 +488,32 @@ export interface AnalyticsSkillsSummary {
   distinct_skills_used: number;
 }
 
+export interface ProviderMonthlyUsageEntry {
+  provider: string;
+  status: string;
+  scope: string;
+  unit: string;
+  value: number;
+  period: {
+    kind: string;
+    start?: string | null;
+    end?: string | null;
+  };
+  breakdown: Record<string, unknown>;
+  fetched_at: number;
+  source: string;
+}
+
+export interface ProviderMonthlyUsageUnsupportedEntry {
+  provider: string;
+  reason: string;
+}
+
+export interface ProviderMonthlyUsageResponse {
+  sources: ProviderMonthlyUsageEntry[];
+  unsupported: ProviderMonthlyUsageUnsupportedEntry[];
+}
+
 export interface AnalyticsResponse {
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
@@ -505,6 +531,7 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
+  provider_monthly_usage: ProviderMonthlyUsageResponse;
 }
 
 export interface ProfileInfo {

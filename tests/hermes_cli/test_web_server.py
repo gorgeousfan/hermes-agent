@@ -959,9 +959,11 @@ class TestNewEndpoints:
         assert "by_model" in data
         assert "totals" in data
         assert "skills" in data
+        assert "provider_monthly_usage" in data
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
         assert "total_api_calls" in data["totals"]
+        assert set(data["provider_monthly_usage"]) == {"sources", "unsupported"}
         assert data["skills"] == {
             "summary": {
                 "total_skill_loads": 0,
