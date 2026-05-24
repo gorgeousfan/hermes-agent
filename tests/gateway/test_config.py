@@ -70,6 +70,16 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_from_dict_ignores_null_home_channel(self):
+        restored = PlatformConfig.from_dict({"enabled": True, "home_channel": None})
+        assert restored.enabled is True
+        assert restored.home_channel is None
+
+    def test_from_dict_ignores_malformed_home_channel_mapping(self):
+        restored = PlatformConfig.from_dict({"enabled": True, "home_channel": {}})
+        assert restored.enabled is True
+        assert restored.home_channel is None
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -161,6 +171,19 @@ class TestSessionResetPolicy:
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
+
+    def test_from_dict_coerces_quoted_numeric_values(self):
+        restored = SessionResetPolicy.from_dict(
+            {"at_hour": "6", "idle_minutes": "120"}
+        )
+        assert restored.at_hour == 6
+        assert restored.idle_minutes == 120
+
+    def test_from_dict_normalizes_scalar_notify_excludes(self):
+        restored = SessionResetPolicy.from_dict(
+            {"notify_exclude_platforms": "api_server"}
+        )
+        assert restored.notify_exclude_platforms == ("api_server",)
 
 
 class TestStreamingConfig:

@@ -184,6 +184,19 @@ class TestResetPolicyNotify:
         policy = SessionResetPolicy.from_dict({"notify": False})
         assert policy.notify is False
 
+    def test_from_dict_quoted_numeric_values_work_in_reset_checks(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy.from_dict({"mode": "idle", "idle_minutes": "1"}),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now() - timedelta(minutes=10),
+            updated_at=datetime.now() - timedelta(minutes=5),
+        )
+        assert store._is_session_expired(entry) is True
+
     def test_from_dict_with_custom_excludes(self):
         policy = SessionResetPolicy.from_dict({
             "notify_exclude_platforms": ["api_server", "webhook", "homeassistant"],

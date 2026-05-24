@@ -56,6 +56,22 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _coerce_str_tuple(
+    value: Any,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Coerce a list-like config value to a tuple of non-empty strings."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        stripped = value.strip()
+        return (stripped,) if stripped else default
+    if isinstance(value, (list, tuple, set)):
+        items = tuple(str(item).strip() for item in value if str(item).strip())
+        return items or default
+    return default
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
     """Normalize unauthorized DM behavior to a supported value."""
     if isinstance(value, str):
@@ -270,10 +286,12 @@ class SessionResetPolicy:
         exclude = data.get("notify_exclude_platforms")
         return cls(
             mode=mode if mode is not None else "both",
-            at_hour=at_hour if at_hour is not None else 4,
-            idle_minutes=idle_minutes if idle_minutes is not None else 1440,
+            at_hour=_coerce_int(at_hour, 4),
+            idle_minutes=_coerce_int(idle_minutes, 1440),
             notify=_coerce_bool(notify, True),
-            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
+            notify_exclude_platforms=_coerce_str_tuple(
+                exclude, ("api_server", "webhook")
+            ),
         )
 
 
@@ -319,7 +337,12 @@ class PlatformConfig:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         home_channel = None
-        if "home_channel" in data:
+        home_data = data.get("home_channel")
+        if (
+            isinstance(home_data, dict)
+            and "platform" in home_data
+            and "chat_id" in home_data
+        ):
             home_channel = HomeChannel.from_dict(data["home_channel"])
 
         # gateway_restart_notification may be bridged into extra via the
