@@ -1,0 +1,10 @@
+name: save_to_spotify
+version: 1.0.0
+description: "CLI-backed Save to Spotify integration for uploading personal audio, managing shows/episodes, and setting companion timelines."
+author: NousResearch
+kind: backend
+provides_tools:
+  - save_to_spotify_upload
+  - save_to_spotify_shows
+  - save_to_spotify_episodes
+  - save_to_spotify_timeline
