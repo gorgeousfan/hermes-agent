@@ -6168,6 +6168,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_antfarm(args):
+    """Operate Antfarm Software Factory through the Hermes bridge."""
+    from hermes_cli.antfarm_bridge import antfarm_command
+
+    return antfarm_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -10674,7 +10681,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "antfarm", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11911,6 +11918,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # antfarm command — Software Factory operator bridge
+    # =========================================================================
+    from hermes_cli.antfarm_bridge import build_parser as _build_antfarm_parser
+
+    antfarm_parser = _build_antfarm_parser(subparsers)
+    antfarm_parser.set_defaults(func=cmd_antfarm)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management
