@@ -1493,10 +1493,10 @@ async def _send_homeassistant(token, extra, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-        token = token or os.getenv("HASS_TOKEN", "")
+        hass_url = (extra.get("url") or os.getenv("HASS_TOOL_URL") or os.getenv("HASS_URL", "")).rstrip("/")
+        token = token or os.getenv("HASS_TOOL_TOKEN") or os.getenv("HASS_TOKEN", "")
         if not hass_url or not token:
-            return {"error": "Home Assistant not configured (HASS_URL, HASS_TOKEN required)"}
+            return {"error": "Home Assistant not configured (HASS_TOOL_URL/HASS_TOOL_TOKEN or HASS_URL/HASS_TOKEN required)"}
         url = f"{hass_url}/api/services/notify/notify"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:

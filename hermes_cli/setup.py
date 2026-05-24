@@ -522,8 +522,12 @@ def _print_setup_summary(config: dict, hermes_home):
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
-    # Home Assistant
-    if get_env_value("HASS_TOKEN"):
+    # Home Assistant — satisfied by legacy HASS_TOKEN or by the
+    # surface-specific HASS_TOOL_TOKEN / HASS_PLATFORM_TOKEN split.
+    if any(
+        get_env_value(k)
+        for k in ("HASS_TOKEN", "HASS_TOOL_TOKEN", "HASS_PLATFORM_TOKEN")
+    ):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
 
     # Spotify (OAuth via hermes auth spotify — check auth.json, not env vars)

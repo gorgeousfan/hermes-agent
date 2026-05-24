@@ -6057,7 +6057,10 @@ class GatewayRunner:
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
             if not check_ha_requirements():
-                logger.warning("HomeAssistant: aiohttp not installed or HASS_TOKEN not set")
+                logger.warning(
+                    "HomeAssistant: aiohttp not installed or no HA token configured "
+                    "(set HASS_TOKEN, HASS_TOOL_TOKEN, or HASS_PLATFORM_TOKEN)"
+                )
                 return None
             return HomeAssistantAdapter(config)
 

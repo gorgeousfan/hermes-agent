@@ -1402,13 +1402,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         )
 
     # Home Assistant
-    hass_token = os.getenv("HASS_TOKEN")
-    if hass_token:
+    # Backward-compatible default: HASS_TOKEN/HASS_URL still configure both the
+    # HA tool surface and, unless explicitly disabled, the gateway websocket
+    # platform. Operators can split them when they need a local proxy/tool-only
+    # setup:
+    #   - HASS_TOOL_TOKEN / HASS_TOOL_URL for Home Assistant tools
+    #   - HASS_PLATFORM_TOKEN / HASS_PLATFORM_URL for the websocket platform
+    #   - HASS_PLATFORM_DISABLE=1 to suppress websocket startup entirely
+    hass_platform_token = os.getenv("HASS_PLATFORM_TOKEN") or os.getenv("HASS_TOKEN")
+    hass_platform_disable = os.getenv("HASS_PLATFORM_DISABLE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if hass_platform_token and not hass_platform_disable:
         if Platform.HOMEASSISTANT not in config.platforms:
             config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
         config.platforms[Platform.HOMEASSISTANT].enabled = True
-        config.platforms[Platform.HOMEASSISTANT].token = hass_token
-        hass_url = os.getenv("HASS_URL")
+        config.platforms[Platform.HOMEASSISTANT].token = hass_platform_token
+        hass_url = os.getenv("HASS_PLATFORM_URL") or os.getenv("HASS_URL")
         if hass_url:
             config.platforms[Platform.HOMEASSISTANT].extra["url"] = hass_url
 

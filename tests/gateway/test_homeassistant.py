@@ -34,6 +34,11 @@ class TestCheckRequirements:
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is True
 
+    def test_returns_true_with_platform_token(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        monkeypatch.setenv("HASS_PLATFORM_TOKEN", "platform-token")
+        assert check_ha_requirements() is True
+
     @patch("gateway.platforms.homeassistant.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "test-token")
@@ -438,13 +443,35 @@ class TestConfigIntegration:
         assert ha.extra["url"] == "http://10.0.0.5:8123"
 
     def test_no_env_no_platform(self, monkeypatch):
-        for v in ["HASS_TOKEN", "HASS_URL", "TELEGRAM_BOT_TOKEN",
+        for v in ["HASS_TOKEN", "HASS_URL", "HASS_PLATFORM_TOKEN", "HASS_PLATFORM_URL", "HASS_PLATFORM_DISABLE", "TELEGRAM_BOT_TOKEN",
                    "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN"]:
             monkeypatch.delenv(v, raising=False)
 
         from gateway.config import load_gateway_config
         config = load_gateway_config()
         assert Platform.HOMEASSISTANT not in config.platforms
+
+    def test_platform_disable_skips_ha_platform(self, monkeypatch):
+        monkeypatch.setenv("HASS_TOKEN", "env-token")
+        monkeypatch.setenv("HASS_URL", "http://10.0.0.5:8123")
+        monkeypatch.setenv("HASS_PLATFORM_DISABLE", "1")
+
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        assert Platform.HOMEASSISTANT not in config.platforms
+
+    def test_platform_specific_env_overrides_shared_values(self, monkeypatch):
+        monkeypatch.setenv("HASS_TOKEN", "shared-token")
+        monkeypatch.setenv("HASS_URL", "http://127.0.0.1:18123")
+        monkeypatch.setenv("HASS_PLATFORM_TOKEN", "platform-token")
+        monkeypatch.setenv("HASS_PLATFORM_URL", "http://10.0.0.5:8123")
+
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+
+        ha = config.platforms[Platform.HOMEASSISTANT]
+        assert ha.token == "platform-token"
+        assert ha.extra["url"] == "http://10.0.0.5:8123"
 
     def test_config_roundtrip_preserves_extra(self):
         config = GatewayConfig(

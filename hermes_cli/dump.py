@@ -110,7 +110,11 @@ def _configured_platforms() -> list[str]:
         "sms": "TWILIO_ACCOUNT_SID",
         "matrix": "MATRIX_HOMESERVER_URL",
         "mattermost": "MATTERMOST_URL",
-        "homeassistant": "HASS_TOKEN",
+        # HOMEASSISTANT is satisfied by either the legacy HASS_TOKEN or
+        # either of the surface-specific tokens (HASS_TOOL_TOKEN for the
+        # REST tool surface, HASS_PLATFORM_TOKEN for the gateway websocket
+        # platform). Reported as "present" if any of the three is set.
+        "homeassistant": ("HASS_TOKEN", "HASS_TOOL_TOKEN", "HASS_PLATFORM_TOKEN"),
         "dingtalk": "DINGTALK_CLIENT_ID",
         "feishu": "FEISHU_APP_ID",
         "wecom": "WECOM_BOT_ID",
@@ -118,7 +122,13 @@ def _configured_platforms() -> list[str]:
         "weixin": "WEIXIN_ACCOUNT_ID",
         "qqbot": "QQ_APP_ID",
     }
-    return [name for name, env in checks.items() if os.getenv(env)]
+
+    def _present(env_spec) -> bool:
+        if isinstance(env_spec, tuple):
+            return any(os.getenv(e) for e in env_spec)
+        return bool(os.getenv(env_spec))
+
+    return [name for name, env in checks.items() if _present(env)]
 
 
 def _memory_provider(config: dict) -> str:

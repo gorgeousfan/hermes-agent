@@ -428,6 +428,14 @@ TOOL_CATEGORIES = {
         "icon": "🏠",
         "providers": [
             {
+                # Wizard prompts only for the single-target HASS_TOKEN / HASS_URL
+                # to keep the common case fast. Advanced operators who want to
+                # point the HA tool surface and the gateway websocket platform
+                # at different HA instances (or disable the websocket entirely)
+                # can set HASS_TOOL_TOKEN / HASS_TOOL_URL, HASS_PLATFORM_TOKEN /
+                # HASS_PLATFORM_URL, and HASS_PLATFORM_DISABLE directly in
+                # ~/.hermes/.env — documented in gateway/platforms/homeassistant.py
+                # and tools/homeassistant_tool.py.
                 "name": "Home Assistant",
                 "tag": "REST API integration",
                 "env_vars": [

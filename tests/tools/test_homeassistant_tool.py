@@ -11,6 +11,7 @@ import pytest
 
 from tools.homeassistant_tool import (
     _check_ha_available,
+    _get_config,
     _filter_and_summarize,
     _build_service_payload,
     _parse_service_response,
@@ -447,6 +448,33 @@ class TestServiceNameValidation:
 
 
 # ---------------------------------------------------------------------------
+# Environment config
+# ---------------------------------------------------------------------------
+
+
+class TestGetConfig:
+    def test_prefers_tool_specific_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_URL", "http://legacy.example:8123")
+        monkeypatch.setenv("HASS_TOKEN", "legacy-token")
+        monkeypatch.setenv("HASS_TOOL_URL", "http://tool.example:8123")
+        monkeypatch.setenv("HASS_TOOL_TOKEN", "tool-token")
+
+        url, token = _get_config()
+        assert url == "http://tool.example:8123"
+        assert token == "tool-token"
+
+    def test_falls_back_to_legacy_env(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOOL_URL", raising=False)
+        monkeypatch.delenv("HASS_TOOL_TOKEN", raising=False)
+        monkeypatch.setenv("HASS_URL", "http://legacy.example:8123")
+        monkeypatch.setenv("HASS_TOKEN", "legacy-token")
+
+        url, token = _get_config()
+        assert url == "http://legacy.example:8123"
+        assert token == "legacy-token"
+
+
+# ---------------------------------------------------------------------------
 # Availability check
 # ---------------------------------------------------------------------------
 
@@ -458,6 +486,11 @@ class TestCheckAvailable:
 
     def test_available_with_token(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "eyJ0eXAiOiJKV1Q")
+        assert _check_ha_available() is True
+
+    def test_available_with_tool_specific_token(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        monkeypatch.setenv("HASS_TOOL_TOKEN", "tool-token")
         assert _check_ha_available() is True
 
     def test_empty_token_is_unavailable(self, monkeypatch):
