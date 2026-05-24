@@ -2385,17 +2385,19 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
 
 
 def _preserve_ctrl_enter_newline() -> bool:
-    """Detect environments where Ctrl+Enter must produce a newline, not submit.
+    """Detect environments where LF/c-j should produce a newline, not submit.
 
-    Native Windows, WSL, SSH sessions, and Windows Terminal all send Ctrl+Enter
-    as bare LF (c-j). On those terminals c-j must NOT be bound to submit;
-    binding it to submit makes Ctrl+Enter (intended as 'newline like Alt+Enter')
-    submit instead. Local POSIX TTYs that deliver Enter as LF (docker exec,
-    some thin PTYs without SSH) still need c-j bound to submit, so we keep
-    that binding for those.
+    The classic CLI uses Enter (c-m) for submit. Some terminals deliver
+    Shift+Enter / Ctrl+Enter as bare LF (c-j), and those should keep working as
+    multiline newlines by default. Thin PTYs that really need LF submit can opt
+    back in with ``HERMES_CLI_SUBMIT_ON_LF=1``.
 
-    See issue #22379.
+    This preserves the pre-regression local multiline behavior on macOS while
+    keeping an explicit escape hatch for thin PTYs. See issues #22379 and
+    #22908.
     """
+    if str(os.environ.get("HERMES_CLI_SUBMIT_ON_LF", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return False
     if sys.platform == "win32":
         return True
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
@@ -2403,6 +2405,8 @@ def _preserve_ctrl_enter_newline() -> bool:
     if os.environ.get("WT_SESSION"):
         return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
+        return True
+    if sys.platform != "win32":
         return True
     # WSL detection — env vars can be scrubbed under sudo, also peek /proc.
     for p in ("/proc/version", "/proc/sys/kernel/osrelease"):
@@ -2418,16 +2422,9 @@ def _preserve_ctrl_enter_newline() -> bool:
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
-    Enter is always submit. On POSIX we also bind c-j (LF) to submit because
-    some thin PTYs (docker exec, certain SSH flavors) deliver Enter as LF
-    instead of CR — without this, Enter appears dead on those terminals.
-
-    Exception: on Windows, WSL, SSH sessions, and Windows Terminal,
-    c-j is the wire encoding of Ctrl+Enter (a distinct keystroke from
-    plain Enter / c-m). We leave c-j unbound there so the c-j newline
-    handler registered separately can fire — giving the user an
-    Enter-involving newline keystroke without terminal settings changes.
-    See _preserve_ctrl_enter_newline() and issue #22379.
+    Enter is always submit. LF/c-j is reserved for newline by default so local
+    multiline composition keeps working. Thin PTYs that need LF submit can opt
+    back in with ``HERMES_CLI_SUBMIT_ON_LF=1``.
     """
     kb.add("enter")(handler)
     if sys.platform != "win32" and not _preserve_ctrl_enter_newline():
@@ -12464,16 +12461,15 @@ class HermesCLI:
         if _preserve_ctrl_enter_newline():
             @kb.add('c-j')
             def handle_ctrl_enter_newline(event):
-                """Ctrl+Enter inserts a newline on Windows, WSL, SSH, and WT.
+                """LF/c-j inserts a newline whenever submit-on-LF is disabled.
 
-                Windows Terminal (incl. WSL/SSH sessions through it) delivers
-                Ctrl+Enter as LF (c-j), distinct from plain Enter (c-m). This
-                binding makes Ctrl+Enter the equivalent of Alt+Enter on those
-                terminals, giving an Enter-involving newline keystroke
-                without requiring terminal settings changes. Ctrl+J (the raw
-                LF keystroke) also triggers this by virtue of being the same
-                key code — a harmless side effect since Ctrl+J has no
-                conflicting Hermes binding. See issue #22379.
+                This keeps Shift+Enter / Ctrl+Enter working on terminals that
+                deliver those keys as LF (c-j), and restores the local macOS
+                multiline behavior from before the LF-submit regression. Thin
+                PTYs can still opt back into LF submit via
+                ``HERMES_CLI_SUBMIT_ON_LF=1``. Ctrl+J also triggers this
+                binding because it shares the same key code, which is harmless
+                because Hermes does not reserve Ctrl+J for anything else.
                 """
                 event.current_buffer.insert_text('\n')
 

@@ -52,14 +52,20 @@ def test_windows_terminal_session_preserves_newline():
 
 
 def test_pure_local_linux_does_not_preserve():
-    """A bare local Linux TTY (no SSH/WSL/WT) keeps c-j → submit so docker exec
-    style Enter-as-LF stays usable."""
+    """A bare local Linux TTY now preserves LF/c-j for multiline composition."""
     import cli as cli_mod
     # Stub out /proc reads — those are the WSL fallback signal.
     with patch.object(sys, "platform", "linux"):
         with patch.dict(os.environ, {}, clear=True):
             with patch("builtins.open", side_effect=OSError("no /proc")):
-                assert cli_mod._preserve_ctrl_enter_newline() is False
+                assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
+def test_submit_on_lf_env_disables_newline_preservation():
+    import cli as cli_mod
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {"HERMES_CLI_SUBMIT_ON_LF": "1"}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is False
 
 
 def test_proc_version_microsoft_marker_preserves_newline():
