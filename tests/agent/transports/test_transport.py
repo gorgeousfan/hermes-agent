@@ -4,7 +4,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, has_non_empty_openai_choices
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 from agent.transports import get_transport, register_transport, _REGISTRY
 
@@ -45,6 +45,19 @@ class TestProviderTransportABC:
         assert t.validate_response(None) is True  # default
         assert t.extract_cache_stats(None) is None  # default
         assert t.map_finish_reason("end_turn") == "end_turn"  # default passthrough
+
+
+class TestOpenAIChoicesValidation:
+
+    def test_rejects_missing_choices(self):
+        assert has_non_empty_openai_choices(None) is False
+        assert has_non_empty_openai_choices(SimpleNamespace()) is False
+        assert has_non_empty_openai_choices(SimpleNamespace(choices=None)) is False
+        assert has_non_empty_openai_choices(SimpleNamespace(choices=[])) is False
+
+    def test_accepts_non_empty_choices(self):
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])
+        assert has_non_empty_openai_choices(response) is True
 
 
 # ── Registry tests ───────────────────────────────────────────────────────

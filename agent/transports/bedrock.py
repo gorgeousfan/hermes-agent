@@ -8,7 +8,7 @@ boto3 calls stay on AIAgent.
 
 from typing import Any, Dict, List, Optional
 
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, has_non_empty_openai_choices
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -128,7 +128,7 @@ class BedrockTransport(ProviderTransport):
             return "output" in response
         # Already-normalized SimpleNamespace
         if hasattr(response, "choices"):
-            return bool(response.choices)
+            return has_non_empty_openai_choices(response)
         return False
 
     def map_finish_reason(self, raw_reason: str) -> str:

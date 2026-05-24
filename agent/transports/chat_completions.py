@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, has_non_empty_openai_choices
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -600,13 +600,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
     def validate_response(self, response: Any) -> bool:
         """Check that response has valid choices."""
-        if response is None:
-            return False
-        if not hasattr(response, "choices") or response.choices is None:
-            return False
-        if not response.choices:
-            return False
-        return True
+        return has_non_empty_openai_choices(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
         """Extract OpenRouter/OpenAI cache stats from prompt_tokens_details."""

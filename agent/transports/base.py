@@ -13,6 +13,17 @@ from typing import Any, Dict, List, Optional
 from agent.transports.types import NormalizedResponse
 
 
+def has_non_empty_openai_choices(response: Any) -> bool:
+    """Return whether an OpenAI-compatible response has usable choices."""
+    if response is None:
+        return False
+    if not hasattr(response, "choices") or response.choices is None:
+        return False
+    if not response.choices:
+        return False
+    return True
+
+
 class ProviderTransport(ABC):
     """Base class for provider-specific format conversion and normalization."""
 
