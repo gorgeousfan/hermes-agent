@@ -52,6 +52,55 @@ List the files in /home/user/projects and summarize the repo structure.
 
 Hermes will discover the MCP server's tools and use them like any other tool.
 
+## Use Hermes itself as an MCP server
+
+Hermes can also run as a local stdio MCP server so other MCP clients can route
+messages through your Hermes gateway sessions and approval queue.
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "hermes",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+For fresh package-manager installs, include the MCP extra so the FastMCP runtime
+is available:
+
+```bash
+pip install "hermes-agent[mcp]"
+hermes mcp serve
+```
+
+For MCP clients that cannot parse PyPI extras from registry metadata, create a
+small virtual environment first, install the extra into it, and point the client
+at that environment's `hermes` executable:
+
+```bash
+python -m venv ~/.local/share/hermes-mcp
+~/.local/share/hermes-mcp/bin/pip install "hermes-agent[mcp]"
+~/.local/share/hermes-mcp/bin/hermes mcp serve
+```
+
+Then configure the client with command
+`~/.local/share/hermes-mcp/bin/hermes` and args `["mcp", "serve"]`.
+
+If your MCP client consumes registry `server.json` files, this repository ships a
+root [`server.json`](https://github.com/NousResearch/hermes-agent/blob/main/server.json)
+entry that describes the PyPI package, stdio transport, and fixed `mcp serve`
+launch arguments. The fixed arguments are important: clients should start the MCP
+surface with `hermes mcp serve` (or `hermes-agent mcp serve` in package-runtime
+contexts), not plain `hermes`.
+
+The server exposes conversation and channel tools such as `conversations_list`,
+`conversation_get`, `channels_list`, `messages_read`, `messages_send`,
+`events_poll`, `events_wait`, `attachments_fetch`, `permissions_list_open`, and
+`permissions_respond`.
+
 ## Two kinds of MCP servers
 
 ### Stdio servers

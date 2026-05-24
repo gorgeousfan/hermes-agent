@@ -18,6 +18,26 @@ def _load_package_data():
     return tool["setuptools"]["package-data"]
 
 
+def _load_project_scripts():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    return project["scripts"]
+
+
+def test_hermes_agent_console_script_routes_to_cli():
+    """Package-runtime launchers may invoke the distribution-named binary.
+
+    Keep `hermes-agent mcp serve` equivalent to `hermes mcp serve` so MCP
+    registry clients that derive the executable name from the PyPI identifier
+    do not accidentally start the legacy direct-agent entry point.
+    """
+    scripts = _load_project_scripts()
+
+    assert scripts["hermes"] == "hermes_cli.main:main"
+    assert scripts["hermes-agent"] == "hermes_cli.main:main"
+
+
 def test_matrix_extra_not_in_all():
     """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
     which has Linux-only wheels and no native build path on Windows or
