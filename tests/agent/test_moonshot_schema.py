@@ -560,3 +560,124 @@ class TestEnumNullStripping:
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"], \
             "null/empty enum values must be stripped after anyOf collapse"
+
+
+class TestUnionTypeList:
+    """Regression: ``type: ["number", "string"]`` must not crash with
+    ``TypeError: unhashable type: 'list'`` (issue #30095).
+
+    JSON Schema allows ``type`` to be an array of allowed types, but
+    Python lists are not hashable and cannot be tested for membership in
+    ``{None, ""}``.  The fix normalises list types to the first concrete
+    (non-null) type before the set membership check.
+    """
+
+    def test_union_type_number_string_normalises_to_first(self):
+        """``type: ["number", "string"]`` → ``type: "number"``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": ["number", "string"],
+                    "description": "Max results",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["limit"]["type"] == "number"
+
+    def test_union_type_string_integer(self):
+        """``type: ["string", "integer"]`` → ``type: "string"``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": ["string", "integer"],
+                    "description": "flexible value",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["value"]["type"] == "string"
+
+    def test_union_type_with_null_skips_null(self):
+        """``type: ["null", "string"]`` → ``type: "string"`` (null skipped)."""
+        params = {
+            "type": "object",
+            "properties": {
+                "maybe": {
+                    "type": ["null", "string"],
+                    "description": "nullable value",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["maybe"]["type"] == "string"
+
+    def test_union_type_all_null_falls_back_to_string(self):
+        """``type: ["null"]`` → falls back to ``"string"``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "empty": {
+                    "type": ["null"],
+                    "description": "only null",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["empty"]["type"] == "string"
+
+    def test_union_type_preserves_other_keys(self):
+        """Non-type keys like description must survive the normalisation."""
+        params = {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": ["integer", "string"],
+                    "description": "An ID or name",
+                    "default": 0,
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        field = out["properties"]["field"]
+        assert field["type"] == "integer"
+        assert field["description"] == "An ID or name"
+        assert field["default"] == 0
+
+    def test_union_type_in_nested_property(self):
+        """Union type in a nested object property is also normalised."""
+        params = {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "timeout": {
+                            "type": ["number", "string"],
+                            "description": "seconds or human-readable",
+                        },
+                    },
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["config"]["properties"]["timeout"]["type"] == "number"
+
+    def test_union_type_in_array_items(self):
+        """Union type in array items schema is also normalised."""
+        params = {
+            "type": "object",
+            "properties": {
+                "values": {
+                    "type": "array",
+                    "items": {
+                        "type": ["boolean", "string"],
+                        "description": "mixed items",
+                    },
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["values"]["items"]["type"] == "boolean"
