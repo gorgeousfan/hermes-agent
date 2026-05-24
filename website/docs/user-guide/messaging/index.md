@@ -33,7 +33,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 | QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
-| Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
+| Microsoft Teams | — | ✅ | ✅ | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
 | ntfy | — | — | — | — | — | — | — |
 
