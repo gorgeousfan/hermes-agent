@@ -97,3 +97,24 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
     )
 
     assert managed_tool_gateway.read_nous_access_token() == "fresh-token"
+
+
+def test_read_nous_provider_state_reads_auth_json_as_utf8(monkeypatch):
+    class Utf8OnlyAuthPath:
+        def is_file(self):
+            return True
+
+        def read_text(self, *, encoding):
+            assert encoding == "utf-8"
+            return json.dumps({
+                "providers": {
+                    "nous": {
+                        "access_token": "cached-token",
+                        "expires_at": "2999-01-01T00:00:00Z",
+                    }
+                }
+            })
+
+    monkeypatch.setattr(managed_tool_gateway, "auth_json_path", lambda: Utf8OnlyAuthPath())
+
+    assert managed_tool_gateway.read_nous_access_token() == "cached-token"
