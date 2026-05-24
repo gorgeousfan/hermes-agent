@@ -358,3 +358,52 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Subsequent read returns profile (shadows global).
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Codex OAuth — shared root store
+# ---------------------------------------------------------------------------
+
+
+def _codex_state(access: str, refresh: str) -> dict:
+    return {
+        "tokens": {"access_token": access, "refresh_token": refresh},
+        "last_refresh": "2026-01-01T00:00:00Z",
+        "auth_mode": "chatgpt",
+    }
+
+
+def test_codex_tokens_use_global_store_even_when_profile_has_stale_state(profile_env):
+    """Codex refresh tokens rotate, so profile-local copies must never shadow root."""
+    from hermes_cli.auth import _read_codex_tokens
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": _codex_state("global-access", "global-refresh"),
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": _codex_state("stale-profile-access", "stale-profile-refresh"),
+    }))
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "global-access"
+    assert data["tokens"]["refresh_token"] == "global-refresh"
+
+
+def test_save_codex_tokens_writes_global_store_from_profile(profile_env):
+    """Refreshing Codex from a profile updates the single shared token chain."""
+    from hermes_cli.auth import _save_codex_tokens
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "openai-codex": _codex_state("old-profile-access", "old-profile-refresh"),
+    }))
+
+    _save_codex_tokens({"access_token": "new-access", "refresh_token": "new-refresh"})
+
+    global_store = json.loads((profile_env["global"] / "auth.json").read_text())
+    profile_store = json.loads((profile_env["profile"] / "auth.json").read_text())
+
+    assert global_store["providers"]["openai-codex"]["tokens"]["access_token"] == "new-access"
+    assert global_store["providers"]["openai-codex"]["tokens"]["refresh_token"] == "new-refresh"
+    # Stale profile-local state is deliberately not touched; it is ignored by reads.
+    assert profile_store["providers"]["openai-codex"]["tokens"]["access_token"] == "old-profile-access"

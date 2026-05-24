@@ -892,6 +892,7 @@ def _auth_lock_path() -> Path:
 
 
 _auth_lock_holder = threading.local()
+_codex_auth_lock_holder = threading.local()
 
 
 @contextmanager
@@ -1025,8 +1026,8 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], auth_file: Optional[Path] = None) -> Path:
+    auth_file = auth_file or _auth_file_path()
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -3119,24 +3120,57 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 
 
 # =============================================================================
-# OpenAI Codex auth — tokens stored in ~/.hermes/auth.json (not ~/.codex/)
+# OpenAI Codex auth — tokens stored in the shared root Hermes auth store
 #
 # Hermes maintains its own Codex OAuth session separate from the Codex CLI
 # and VS Code extension. This prevents refresh token rotation conflicts
 # where one app's refresh invalidates the other's session.
+#
+# Codex refresh tokens rotate on use. Named Hermes profiles therefore must
+# not keep independent profile-local copies: one worker can refresh and make
+# every sibling profile's copy stale. In profile mode, Codex reads and writes
+# the global-root auth.json so all profiles coordinate through one lock and
+# one token chain.
 # =============================================================================
+def _codex_auth_file_path() -> Path:
+    """Return the auth store path that owns the shared Codex OAuth session."""
+    return _global_auth_file_path() or _auth_file_path()
+
+
+def _codex_auth_lock_path() -> Path:
+    return _codex_auth_file_path().with_suffix(".lock")
+
+
+@contextmanager
+def _codex_auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    with _file_lock(
+        _codex_auth_lock_path(),
+        _codex_auth_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for Codex auth store lock",
+    ):
+        yield
+
+
+def _load_codex_auth_store() -> Dict[str, Any]:
+    return _load_auth_store(_codex_auth_file_path())
+
+
+def _save_codex_auth_store(auth_store: Dict[str, Any]) -> Path:
+    return _save_auth_store(auth_store, _codex_auth_file_path())
+
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
-    """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
+    """Read Codex OAuth tokens from the shared Hermes auth store.
     
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
     """
     if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
+        with _codex_auth_store_lock():
+            auth_store = _load_codex_auth_store()
     else:
-        auth_store = _load_auth_store()
+        auth_store = _load_codex_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
         raise AuthError(
@@ -3176,17 +3210,17 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+    """Save Codex OAuth tokens to the shared Hermes auth store."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    with _codex_auth_store_lock():
+        auth_store = _load_codex_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         _save_provider_state(auth_store, "openai-codex", state)
-        _save_auth_store(auth_store)
+        _save_codex_auth_store(auth_store)
 
 
 def refresh_codex_oauth_pure(
@@ -3364,8 +3398,8 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        # Re-read under the shared Codex lock to avoid racing with other Hermes processes.
+        with _codex_auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
