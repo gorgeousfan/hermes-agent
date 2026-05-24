@@ -257,3 +257,60 @@ class TestHandleResumeCommand:
 
         assert real_key not in runner._agent_cache
         db.close()
+
+
+class TestHandleSessionsCommand:
+    """Tests for GatewayRunner._handle_sessions_command."""
+
+    @pytest.mark.asyncio
+    async def test_no_session_db(self):
+        runner = _make_runner(session_db=None)
+        event = _make_event(text="/sessions")
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "not available" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_lists_recent_sessions_for_platform(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_current", "telegram")
+        db.set_session_title("sess_current", "Current Work")
+        db.append_message("sess_current", "user", "current preview")
+        db.create_session("sess_other", "telegram")
+        db.set_session_title("sess_other", "Other Work")
+        db.append_message("sess_other", "user", "other preview")
+        db.create_session("sess_slack", "slack")
+        db.set_session_title("sess_slack", "Slack Work")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="sess_current",
+            event=event,
+        )
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Recent Sessions" in result
+        assert "Current Work" in result
+        assert "Other Work" in result
+        assert "Slack Work" not in result
+        assert "current preview" in result
+        assert "`sess_current`" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_no_sessions_message(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "No recent sessions" in result
+        db.close()

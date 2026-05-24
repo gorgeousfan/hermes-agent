@@ -7366,6 +7366,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "sessions":
+            return await self._handle_sessions_command(event)
+
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
@@ -12714,6 +12717,51 @@ class GatewayRunner:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions command — list recent sessions for this gateway platform."""
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        user_source = source.platform.value if source.platform else None
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source,
+                limit=10,
+                order_by_last_active=True,
+            )
+        except Exception as e:
+            logger.debug("Failed to list sessions: %s", e)
+            return f"Could not list sessions: {e}"
+
+        if not sessions:
+            return "No recent sessions found. Send a message to start one."
+
+        current_id = ""
+        try:
+            current_id = self.session_store.get_or_create_session(source).session_id
+        except Exception:
+            pass
+
+        lines = ["📋 **Recent Sessions**\n"]
+        for session in sessions[:10]:
+            session_id = str(session.get("id") or "")
+            title = session.get("title") or "Untitled session"
+            preview = (session.get("preview") or "").strip()
+            msg_count = int(session.get("message_count") or 0)
+            marker = "→" if session_id == current_id else "•"
+            ended = "ended" if session.get("ended_at") else "active"
+            line = (
+                f"{marker} **{title}** `{session_id[:12]}` "
+                f"({msg_count} message{'s' if msg_count != 1 else ''}, {ended})"
+            )
+            if preview:
+                line = f"{line}\n  _{preview}_"
+            lines.append(line)
+
+        lines.append("\nUse `/title <name>` to name this chat, then `/resume <name>` to return later.")
+        return "\n".join(lines)
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
