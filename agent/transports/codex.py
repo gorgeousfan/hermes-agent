@@ -89,7 +89,7 @@ class ResponsesApiTransport(ProviderTransport):
             elif reasoning_config.get("effort"):
                 reasoning_effort = reasoning_config["effort"]
 
-        _effort_clamp = {"minimal": "low"}
+        _effort_clamp = {"minimal": "low", "max": "high"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)

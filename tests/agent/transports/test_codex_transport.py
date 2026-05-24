@@ -187,6 +187,17 @@ class TestCodexBuildKwargs:
         # "minimal" should be clamped to "low"
         assert kw.get("reasoning", {}).get("effort") == "low"
 
+    def test_max_effort_clamped(self, transport):
+        """\"max\" is an Anthropic-only adaptive-thinking level. The Codex
+        Responses backend (OpenAI/xAI) does not accept it; clamp to \"high\"
+        rather than 400ing the request."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            reasoning_config={"effort": "max"},
+        )
+        assert kw.get("reasoning", {}).get("effort") == "high"
+
     def test_xai_reasoning_effort_passed(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

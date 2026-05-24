@@ -281,13 +281,21 @@ def get_subprocess_home() -> str | None:
     return None
 
 
-VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
+    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh", "max".
+
+    "max" is the strongest level Anthropic exposes on Claude 4.7+ adaptive
+    thinking (and is also the strongest level Claude 4.6 accepts, since 4.6
+    has no "xhigh"). Provider adapters that don't support a distinct "max"
+    treat it as their own ceiling — for example, OpenRouter/OpenAI-style
+    `reasoning.effort` consumers should map "max" to their highest supported
+    level.
+
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none".
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
