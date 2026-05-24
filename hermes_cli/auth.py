@@ -5646,7 +5646,11 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        from hermes_cli.config import get_env_value
+        env_url = (
+            get_env_value(pconfig.base_url_env_var)
+            or os.getenv(pconfig.base_url_env_var, "")
+        ).strip()
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -5835,7 +5839,11 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        from hermes_cli.config import get_env_value
+        env_url = (
+            get_env_value(pconfig.base_url_env_var)
+            or os.getenv(pconfig.base_url_env_var, "")
+        ).strip()
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -5864,7 +5872,14 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    if pconfig.base_url_env_var:
+        from hermes_cli.config import get_env_value
+        base_url = (
+            get_env_value(pconfig.base_url_env_var)
+            or os.getenv(pconfig.base_url_env_var, "")
+        ).strip()
+    else:
+        base_url = ""
     if not base_url:
         base_url = pconfig.inference_base_url
 
