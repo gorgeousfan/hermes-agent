@@ -43,6 +43,7 @@ class TestProviderRegistry:
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
+        ("aether", "Aether", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -67,6 +68,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("NVIDIA_API_KEY",)
         assert pconfig.base_url_env_var == "NVIDIA_BASE_URL"
         assert pconfig.inference_base_url == "https://integrate.api.nvidia.com/v1"
+
+    def test_aether_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["aether"]
+        assert pconfig.api_key_env_vars == ("AETHER_API_KEY",)
+        assert pconfig.base_url_env_var == "AETHER_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.aetherapi.dev/v1"
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]

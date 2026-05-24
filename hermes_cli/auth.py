@@ -370,6 +370,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("NVIDIA_API_KEY",),
         base_url_env_var="NVIDIA_BASE_URL",
     ),
+    "aether": ProviderConfig(
+        id="aether",
+        name="Aether",
+        auth_type="api_key",
+        inference_base_url="https://api.aetherapi.dev/v1",
+        api_key_env_vars=("AETHER_API_KEY",),
+        base_url_env_var="AETHER_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="Vercel AI Gateway",
