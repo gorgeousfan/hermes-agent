@@ -30,7 +30,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
-from gateway.platforms.helpers import strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        # Suppress duplicate inbound webhooks for the same message GUID.
+        # BlueBubbles fires both `new-message` and `updated-message` on
+        # delivered/read/edit echoes for the same message; without dedup the
+        # second event normalizes to a different chat key (chatIdentifier vs
+        # chatGuid) and spins up a parallel session for the same chat.
+        # Explicit bounds: 2000 entries / 5 min TTL cap memory for
+        # long-running gateway processes.
+        self._dedup = MessageDeduplicator(max_size=2000, ttl_seconds=300)
 
     # ------------------------------------------------------------------
     # API helpers
@@ -809,6 +817,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or record.get("is_from_me")
         )
         if is_from_me:
+            return web.Response(text="ok")
+
+        # Dedup by message GUID before any session-key derivation. Mirrors
+        # the pattern used by slack/dingtalk/wecom/weixin/mattermost/feishu
+        # via the same `MessageDeduplicator` helper.
+        msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if msg_guid and self._dedup.is_duplicate(msg_guid):
             return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages
