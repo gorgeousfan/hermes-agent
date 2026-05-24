@@ -278,6 +278,8 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
     contents: List[Dict[str, Any]] = []
     tool_name_by_call_id: Dict[str, str] = {}
 
+    pending_tool_parts: List[Dict[str, Any]] = []
+
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -287,19 +289,20 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
+        # Buffer tool/function results; flush as a single user turn later
         if role in {"tool", "function"}:
-            contents.append(
-                {
-                    "role": "user",
-                    "parts": [
-                        _translate_tool_result_to_gemini(
-                            msg,
-                            tool_name_by_call_id=tool_name_by_call_id,
-                        )
-                    ],
-                }
+            pending_tool_parts.append(
+                _translate_tool_result_to_gemini(
+                    msg,
+                    tool_name_by_call_id=tool_name_by_call_id,
+                )
             )
             continue
+
+        # Flush buffered tool results as a single user turn
+        if pending_tool_parts:
+            contents.append({"role": "user", "parts": pending_tool_parts})
+            pending_tool_parts = []
 
         gemini_role = "model" if role == "assistant" else "user"
         parts: List[Dict[str, Any]] = []
@@ -319,6 +322,10 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
 
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
+
+    # Flush any remaining tool results after the loop
+    if pending_tool_parts:
+        contents.append({"role": "user", "parts": pending_tool_parts})
 
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()

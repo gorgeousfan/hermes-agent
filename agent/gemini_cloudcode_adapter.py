@@ -137,6 +137,8 @@ def _build_gemini_contents(
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
 
+    pending_tool_parts: List[Dict[str, Any]] = []
+
     for msg in messages:
         if not isinstance(msg, dict):
             continue
@@ -146,13 +148,15 @@ def _build_gemini_contents(
             system_text_parts.append(_coerce_content_to_text(msg.get("content")))
             continue
 
-        # Tool result message — emit a user-role turn with functionResponse
+        # Buffer tool/function results; flush as a single user turn later
         if role == "tool" or role == "function":
-            contents.append({
-                "role": "user",
-                "parts": [_translate_tool_result_to_gemini(msg)],
-            })
+            pending_tool_parts.append(_translate_tool_result_to_gemini(msg))
             continue
+
+        # Flush buffered tool results as a single user turn
+        if pending_tool_parts:
+            contents.append({"role": "user", "parts": pending_tool_parts})
+            pending_tool_parts = []
 
         gemini_role = _ROLE_MAP_OPENAI_TO_GEMINI.get(role, "user")
         parts: List[Dict[str, Any]] = []
@@ -173,6 +177,10 @@ def _build_gemini_contents(
             continue
 
         contents.append({"role": gemini_role, "parts": parts})
+
+    # Flush any remaining tool results after the loop
+    if pending_tool_parts:
+        contents.append({"role": "user", "parts": pending_tool_parts})
 
     system_instruction: Optional[Dict[str, Any]] = None
     joined_system = "\n".join(p for p in system_text_parts if p).strip()

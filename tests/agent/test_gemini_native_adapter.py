@@ -326,3 +326,92 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+class TestParallelToolResponseCoalescing:
+    """Regression test: consecutive tool-role messages must be bundled into a
+    single Gemini user turn with all functionResponse parts, not emitted as
+    separate user turns (which causes HTTP 400 INVALID_ARGUMENT).
+    """
+
+    def test_parallel_tool_results_coalesced_into_single_user_turn(self):
+        from agent.gemini_native_adapter import build_gemini_request
+
+        messages = [
+            {"role": "user", "content": "Check these three files"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "b.txt"}'},
+                    },
+                    {
+                        "id": "call_c",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path": "c.txt"}'},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_a",
+                "content": "content of a",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_b",
+                "content": "content of b",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_c",
+                "content": "content of c",
+            },
+            {"role": "user", "content": "Now summarize them"},
+        ]
+
+        req = build_gemini_request(messages=messages)
+        contents = req["contents"]
+
+        # Expected structure:
+        # [0] user turn (initial "Check these three files")
+        # [1] model turn with 3 functionCall parts
+        # [2] user turn with 3 functionResponse parts (coalesced!)
+        # [3] user turn ("Now summarize them")
+
+        # Verify model turn has 3 functionCall parts
+        model_turn = contents[1]
+        assert model_turn["role"] == "model"
+        fc_parts = [p for p in model_turn["parts"] if "functionCall" in p]
+        assert len(fc_parts) == 3
+
+        # Verify exactly ONE user turn for all 3 tool results
+        tool_response_turn = contents[2]
+        assert tool_response_turn["role"] == "user"
+        fr_parts = [p for p in tool_response_turn["parts"] if "functionResponse" in p]
+        assert len(fr_parts) == 3, (
+            f"Expected 3 functionResponse parts in a single turn, got {len(fr_parts)}"
+        )
+
+        # Verify the function names are resolved from tool_name_by_call_id
+        names = [p["functionResponse"]["name"] for p in fr_parts]
+        assert names == ["read_file", "read_file", "read_file"]
+
+        # Verify the next turn is the user follow-up, not another tool result
+        assert contents[3]["role"] == "user"
+        assert contents[3]["parts"] == [{"text": "Now summarize them"}]
+
+        # Most important: there should be exactly 4 turns total, NOT 6
+        # (6 would mean each tool result got its own user turn)
+        assert len(contents) == 4, (
+            f"Expected 4 content turns, got {len(contents)} — "
+            "tool results were not coalesced"
+        )
