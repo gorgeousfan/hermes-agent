@@ -7726,6 +7726,10 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    platform=source.platform,
+                    chat_id=str(source.chat_id) if source.chat_id else None,
+                    message_id=str(event.message_id) if event.message_id else None,
+                    thread_id=str(source.thread_id) if source.thread_id else None,
                 )
                 _stt_fail_markers = (
                     "No STT provider",
@@ -14348,14 +14352,27 @@ class GatewayRunner:
         self,
         user_text: str,
         audio_paths: List[str],
+        *,
+        platform: str = None,
+        chat_id: str = None,
+        message_id: str = None,
+        thread_id: str = None,
     ) -> str:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
         and prepend the transcript to the message text.
 
+        When ``stt.reply_transcript`` is enabled, also reply to the original voice
+        message with the transcription text so it becomes searchable and quotable
+        in the chat history.
+
         Args:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
+            platform:    Source platform name (for reply delivery).
+            chat_id:     Chat where the voice was sent.
+            message_id:  Original voice message ID (for reply_to).
+            thread_id:   Thread/topic ID if applicable.
 
         Returns:
             The enriched message string with transcriptions prepended.
@@ -14394,6 +14411,15 @@ class GatewayRunner:
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
+                    # Reply to the original message with the transcription
+                    if getattr(self.config, "stt_reply_transcript", False) and platform and chat_id and message_id:
+                        try:
+                            reply_text = f"\U0001f3a4 \u00ab{transcript}\u00bb"
+                            await self._send_reply_transcript(
+                                platform, chat_id, message_id, reply_text, thread_id=thread_id
+                            )
+                        except Exception as reply_err:
+                            logger.debug("stt_reply_transcript delivery failed: %s", reply_err)
                 else:
                     error = result.get("error", "unknown error")
                     if (
@@ -14437,6 +14463,37 @@ class GatewayRunner:
                 return f"{prefix}\n\n{user_text}"
             return prefix
         return user_text
+
+    async def _send_reply_transcript(
+        self,
+        platform: str,
+        chat_id: str,
+        message_id: str,
+        text: str,
+        *,
+        thread_id: str = None,
+    ) -> None:
+        """Send a reply to the original voice message with the transcription text.
+
+        This makes voice message content searchable and quotable in the chat
+        history. The reply is fire-and-forget — failures are logged but never
+        block message processing.
+        """
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            return
+        send_fn = getattr(adapter, "send", None)
+        if not send_fn:
+            return
+        metadata = {}
+        if thread_id:
+            metadata["thread_id"] = thread_id
+        await send_fn(
+            chat_id=chat_id,
+            content=text,
+            reply_to=message_id,
+            metadata=metadata or None,
+        )
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
