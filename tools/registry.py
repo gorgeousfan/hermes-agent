@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -532,10 +533,23 @@ class ToolRegistry:
             if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
                 available.append(ts)
             else:
+                toolset_entries = [e for e in entries if e.toolset == ts]
+                env_vars = []
+                for ts_entry in toolset_entries:
+                    for env in ts_entry.requires_env:
+                        if env not in env_vars:
+                            env_vars.append(env)
+                missing_env_vars = [env for env in env_vars if not os.getenv(env)]
+                logger.warning(
+                    "Toolset %s unavailable; missing env vars: %s. "
+                    "Check ~/.hermes/.env or export in your shell.",
+                    ts,
+                    ", ".join(missing_env_vars or env_vars) or "none",
+                )
                 unavailable.append({
                     "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in entries if e.toolset == ts],
+                    "env_vars": env_vars,
+                    "tools": [e.name for e in toolset_entries],
                 })
         return available, unavailable
 

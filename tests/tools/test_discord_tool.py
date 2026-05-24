@@ -1,6 +1,7 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
+import logging
 import os
 import urllib.error
 from io import BytesIO
@@ -61,6 +62,40 @@ class TestCheckRequirements:
     def test_valid_token(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token-123")
         assert check_discord_tool_requirements() is True
+
+    def test_check_tool_availability_warns_when_token_missing(self, monkeypatch, caplog):
+        from tools.registry import ToolRegistry
+
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        reg = ToolRegistry()
+        reg.register(
+            name="discord",
+            toolset="discord",
+            schema={
+                "name": "discord",
+                "description": "Discord test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+            check_fn=check_discord_tool_requirements,
+            requires_env=["DISCORD_BOT_TOKEN"],
+        )
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            available, unavailable = reg.check_tool_availability()
+
+        assert "discord" not in available
+        assert unavailable == [{
+            "name": "discord",
+            "env_vars": ["DISCORD_BOT_TOKEN"],
+            "tools": ["discord"],
+        }]
+        assert any(
+            "Toolset discord unavailable" in record.message
+            and "DISCORD_BOT_TOKEN" in record.message
+            and "Check ~/.hermes/.env or export in your shell" in record.message
+            for record in caplog.records
+        )
 
     def test_get_bot_token(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "  my-token  ")
