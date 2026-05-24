@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
+from agent.subprocess_utils import create_subprocess
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED,
     ERROR_METHOD_NOT_FOUND,
@@ -250,7 +251,7 @@ class LSPClient:
             env.update(self._env)
 
         try:
-            self._proc = await asyncio.create_subprocess_exec(
+            self._proc = await create_subprocess(
                 self._command[0],
                 *self._command[1:],
                 stdin=asyncio.subprocess.PIPE,
@@ -273,9 +274,29 @@ class LSPClient:
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
             return
+        stderr = self._proc.stderr
         try:
             while True:
-                line = await self._proc.stderr.readline()
+                try:
+                    line = await stderr.readline()
+                except asyncio.LimitOverrunError as exc:
+                    # Drain the oversized line so the pipe buffer doesn't fill and
+                    # deadlock the server.  With the 16 MiB stream limit this is a
+                    # last-resort safeguard.
+                    logger.warning(
+                        "[%s] stderr: line exceeded stream limit (%d bytes), discarding",
+                        self.server_id,
+                        exc.consumed,
+                    )
+                    try:
+                        await stderr.read(exc.consumed)
+                        while True:
+                            chunk = await stderr.read(65536)
+                            if not chunk or b"\n" in chunk:
+                                break
+                    except OSError:
+                        return
+                    continue
                 if not line:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
