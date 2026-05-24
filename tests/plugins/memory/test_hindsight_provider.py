@@ -6,6 +6,7 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
 import re
 import sys
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _ensure_hindsight_embed_on_path,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -149,6 +151,45 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
 def test_normalize_retain_tags_accepts_json_array_string():
     value = json.dumps(["agent:fakeassistantname", "source_system:hermes-agent"])
     assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
+
+
+def test_ensure_hindsight_embed_on_path_adds_sys_executable_dir(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    embed_name = "hindsight-embed.exe" if os.name == "nt" else "hindsight-embed"
+    python_name = "python.exe" if os.name == "nt" else "python3"
+    embed = bin_dir / embed_name
+    embed.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\nexit 0\n", encoding="utf-8")
+    embed.chmod(0o755)
+    python_bin = bin_dir / python_name
+    python_bin.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("plugins.memory.hindsight.sys.executable", str(python_bin))
+    env = {"PATH": os.pathsep.join(["/usr/bin", "/bin"])}
+
+    resolved = _ensure_hindsight_embed_on_path(env)
+
+    assert resolved == str(embed)
+    assert str(bin_dir) in env["PATH"].split(os.pathsep)
+
+
+def test_ensure_hindsight_embed_on_path_keeps_existing_lookup(monkeypatch):
+    env = {"PATH": os.pathsep.join(["/custom/bin", "/usr/bin"])}
+    target = "hindsight-embed.exe" if os.name == "nt" else "hindsight-embed"
+    resolved_path = str((os.pathsep.join(["/custom/bin", target])).replace(os.pathsep, "/"))
+
+    def fake_which(name, path=None):
+        assert name == target
+        if path == env["PATH"]:
+            return resolved_path
+        raise AssertionError("helper should not rebuild PATH when lookup already works")
+
+    monkeypatch.setattr("plugins.memory.hindsight.shutil.which", fake_which)
+
+    resolved = _ensure_hindsight_embed_on_path(env)
+
+    assert resolved == resolved_path
+    assert env["PATH"] == os.pathsep.join(["/custom/bin", "/usr/bin"])
 
 
 # ---------------------------------------------------------------------------
@@ -1548,4 +1589,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

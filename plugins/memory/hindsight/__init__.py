@@ -35,6 +35,8 @@ import json
 import logging
 import os
 import queue
+import shutil
+import sys
 import threading
 
 from datetime import datetime, timezone
@@ -97,6 +99,56 @@ def _check_local_runtime() -> tuple[bool, str | None]:
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+def _ensure_hindsight_embed_on_path(env: dict[str, str] | None = None) -> str | None:
+    """Best-effort PATH repair for ``hindsight-embed`` in minimal runtimes.
+
+    Some dashboard/plugin entrypoints run with a stripped PATH that omits the
+    active venv or uv tool bin directory. When local_embedded mode starts the
+    daemon manager, it shells out to ``hindsight-embed`` and fails even though
+    the package is installed. Patch the PATH in-process with the most likely
+    Hermes install locations before starting the daemon.
+    """
+    from pathlib import Path
+
+    target = "hindsight-embed.exe" if os.name == "nt" else "hindsight-embed"
+    target_env = os.environ if env is None else env
+    current_path = target_env.get("PATH", "")
+    resolved = shutil.which(target, path=current_path)
+    if resolved:
+        return resolved
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_dir(path_like: os.PathLike[str] | str | None) -> None:
+        if not path_like:
+            return
+        path = Path(path_like).expanduser()
+        try:
+            normalized = str(path.resolve())
+        except OSError:
+            normalized = str(path)
+        if normalized in seen or not path.is_dir():
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    add_dir(Path(sys.executable).resolve().parent)
+    venv = target_env.get("VIRTUAL_ENV", "").strip()
+    if venv:
+        add_dir(Path(venv) / ("Scripts" if os.name == "nt" else "bin"))
+    add_dir(target_env.get("UV_TOOL_BIN_DIR", "").strip() or None)
+    add_dir(Path.home() / ".local" / "bin")
+
+    if not candidates:
+        return None
+
+    existing_parts = [part for part in current_path.split(os.pathsep) if part]
+    merged_parts = [*candidates, *[part for part in existing_parts if part not in seen]]
+    target_env["PATH"] = os.pathsep.join(merged_parts)
+    return shutil.which(target, path=target_env.get("PATH", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -1220,6 +1272,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:
+                    embed_bin = _ensure_hindsight_embed_on_path()
+                    if not embed_bin:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(
+                                "\n=== hindsight-embed not found on current PATH; "
+                                "daemon start will rely on downstream resolution ===\n"
+                            )
                     # Redirect the daemon manager's Rich console to our log file
                     # instead of stderr. This avoids global fd redirects that
                     # would capture output from other threads.
