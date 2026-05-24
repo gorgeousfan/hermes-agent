@@ -545,6 +545,7 @@ def run_conversation(
     #
     # All injected context is ephemeral (not persisted to session DB).
     _plugin_user_context = ""
+    agent._pre_llm_allowed_tools = None  # Reset per-turn tool filter
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -558,13 +559,21 @@ def run_conversation(
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []
+        _allowed_tools: set[str] | None = None
         for r in _pre_results:
-            if isinstance(r, dict) and r.get("context"):
-                _ctx_parts.append(str(r["context"]))
+            if isinstance(r, dict):
+                if r.get("context"):
+                    _ctx_parts.append(str(r["context"]))
+                if "tools" in r and isinstance(r["tools"], list):
+                    if _allowed_tools is None:
+                        _allowed_tools = set()
+                    _allowed_tools.update(r["tools"])
             elif isinstance(r, str) and r.strip():
                 _ctx_parts.append(r)
         if _ctx_parts:
             _plugin_user_context = "\n\n".join(_ctx_parts)
+        if _allowed_tools is not None:
+            agent._pre_llm_allowed_tools = _allowed_tools
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
@@ -1050,7 +1059,10 @@ def run_conversation(
 
             try:
                 agent._reset_stream_delivery_tracking()
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                api_kwargs = agent._build_api_kwargs(
+                    api_messages,
+                    allowed_tools=getattr(agent, "_pre_llm_allowed_tools", None),
+                )
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":

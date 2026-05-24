@@ -277,9 +277,21 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def build_api_kwargs(agent, api_messages: list) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
+def build_api_kwargs(agent, api_messages: list, allowed_tools: set[str] | None = None) -> dict:
+    """Build the keyword arguments dict for the active API mode.
+
+    If *allowed_tools* is provided (a set of tool function names), the
+    tool schema is filtered to include only those tools for this turn.
+    This supports the ``pre_llm_call`` hook's ``{"tools": [...]}``
+    mechanism for stage-level tool whitelisting (RFC #26524).
+    """
     tools_for_api = agent.tools
+    if allowed_tools and tools_for_api:
+        tools_for_api = [
+            t for t in tools_for_api
+            if getattr(t, "function", None) is not None
+            and getattr(t.function, "name", None) in allowed_tools
+        ]
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
