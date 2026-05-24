@@ -597,9 +597,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
             except Exception:
                 pass  # Bridge not running, start a new one
             
-            # Kill any orphaned bridge from a previous gateway run
-            _kill_stale_bridge_by_pidfile(self._session_path)
-            _kill_port_process(self._bridge_port)
+            # Kill any orphaned bridge from a previous gateway run.
+            # If an external bridge is managed by systemd/another process, do not kill it.
+            if os.getenv("WHATSAPP_EXTERNAL_BRIDGE", "").lower() not in ("true", "1", "yes"):
+                _kill_stale_bridge_by_pidfile(self._session_path)
+                _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
             
             # Start the bridge process in its own process group.

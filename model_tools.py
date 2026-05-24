@@ -481,6 +481,116 @@ def _compute_tool_definitions(
     except Exception as e:  # pragma: no cover — defensive
         logger.warning("Schema sanitization skipped: %s", e)
 
+    # =========================================================================
+    # Hard limit: Azure OpenAI rejects tool arrays longer than 128 items.
+    # When the total exceeds 128, we prune in priority order:
+    #   1. Non-critical MCP tools (github, supabase, firecrawl, etc.)
+    #   2. Niche toolsets (rl, kanban, video, feishu, homeassistant, yuanbao)
+    #   3. Less-priority MCP tools (obsidian, sequential-thinking, memory)
+    #   4. Browser tools (bulky — 12 schemas)
+    # This ensures the agent always has core tools (terminal, file, web)
+    # regardless of how many MCP servers are configured.
+    # =========================================================================
+    _TOOL_TRUNCATION_LIMIT = 128
+
+    if len(filtered_tools) > _TOOL_TRUNCATION_LIMIT:
+        if not quiet_mode:
+            print(f"⚠️  Tool count ({len(filtered_tools)}) exceeds {_TOOL_TRUNCATION_LIMIT} — pruning...")
+
+        # Priority tiers for pruning. Lower tier = pruned first.
+        # Tier 5: always kept — core Hermes tools
+        _KEEP_TOOL_PREFIXES = {
+            # Terminal & file
+            "terminal", "process", "read_file", "write_file", "patch", "search_files",
+            # Web search
+            "web_search", "web_extract",
+            # Skills & memory
+            "skills_list", "skill_view", "skill_manage", "memory", "session_search", "todo",
+            # Messaging
+            "send_message", "clarify",
+            # Delegation
+            "delegate_task", "execute_code",
+            # Vision & TTS
+            "vision_analyze", "text_to_speech",
+            # Cron
+            "cronjob",
+        }
+
+        # Pruning tiers (function name prefixes — MCP tools use mcp_ prefix)
+        # Tier 1 — pruned first: non-essential MCP servers
+        mcp_tier1_prefixes = ("mcp_github_", "mcp_supabase_", "mcp_firecrawl_", "mcp_exa_", "mcp_tavily_", "mcp_playwright_")
+        # Tier 2 — pruned second: niche/hermetic toolsets
+        niche_tool_names = {"rl_list_environments", "rl_select_environment", "rl_get_current_config",
+                            "rl_edit_config", "rl_start_training", "rl_check_status", "rl_stop_training",
+                            "rl_get_results", "rl_list_runs", "rl_test_inference",
+                            "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+                            "kanban_comment", "kanban_create", "kanban_link",
+                            "video_analyze", "mixture_of_agents",
+                            "feishu_doc_read", "feishu_drive_add_comment", "feishu_drive_list_comment_replies",
+                            "feishu_drive_list_comments", "feishu_drive_reply_comment",
+                            "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
+                            "yb_send_dm", "yb_send_sticker",
+                            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+                            "discord", "discord_admin"}
+        # Tier 3 — pruned third: less-critical MCP tools
+        mcp_tier3_prefixes = ("mcp_obsidian_", "mcp_sequential_thinking_", "mcp_memory_")
+        # Tier 4 — pruned last: browser tools (bulky — 12 schemas)
+        browser_tool_names = {"browser_navigate", "browser_snapshot", "browser_click", "browser_type",
+                              "browser_scroll", "browser_back", "browser_press", "browser_get_images",
+                              "browser_vision", "browser_console", "browser_cdp", "browser_dialog"}
+
+        pruned = []
+        # Separate: always-keep tools, then tiered candidates
+        always_keep = []
+        candidates = []
+
+        for td in filtered_tools:
+            name = td.get("function", {}).get("name", "")
+            if name in _KEEP_TOOL_PREFIXES or name == "image_generate":
+                always_keep.append(td)
+            else:
+                candidates.append(td)
+
+        # Classify candidates by prune tier
+        def _tier(td):
+            name = td["function"]["name"]
+            if name.startswith(mcp_tier1_prefixes):
+                return 1
+            if name in niche_tool_names:
+                return 2
+            if name.startswith(mcp_tier3_prefixes):
+                return 3
+            if name in browser_tool_names:
+                return 4
+            return 0  # unknown — keep
+
+        candidates.sort(key=_tier)
+
+        # Slots remaining after always-keep
+        remaining_slots = _TOOL_TRUNCATION_LIMIT - len(always_keep)
+        if remaining_slots < 0:
+            # Extreme case: even always-keep exceeds limit. Keep first 128.
+            pruned = always_keep[:_TOOL_TRUNCATION_LIMIT]
+            if not quiet_mode:
+                print(f"  🚨 Core tools exceed limit — truncated to {_TOOL_TRUNCATION_LIMIT}")
+        else:
+            kept_candidates = candidates[:remaining_slots]
+            pruned_count = len(candidates) - len(kept_candidates)
+            pruned = always_keep + kept_candidates
+            if pruned_count > 0 and not quiet_mode:
+                tiers_pruned = {}
+                for td in candidates[remaining_slots:]:
+                    name = td["function"]["name"]
+                    t = _tier(td)
+                    tiers_pruned.setdefault(t, []).append(name)
+                for t in sorted(tiers_pruned):
+                    names = ", ".join(sorted(tiers_pruned[t]))
+                    tier_label = {1: "non-essential MCP", 2: "niche toolset", 3: "lower-priority MCP", 4: "browser"}
+                    print(f"  🗑️  Pruned tier-{t} ({tier_label.get(t, 'other')}): {names}")
+                print(f"  ✅ Final tool count: {len(pruned)} ({pruned_count} pruned)")
+
+        filtered_tools = pruned
+
     return filtered_tools
 
 
