@@ -2105,6 +2105,20 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
+def _looks_like_pytest_temp_path(path: str | Path) -> bool:
+    """Return True when ``path`` looks like a pytest tmpdir artifact.
+
+    Used to keep generated systemd/launchd service templates from baking in
+    stale `/tmp/pytest-of-.../hermes_test/...` paths that a previous test run
+    may have left behind on the developer's machine (e.g. via a
+    `~/.local/bin/node` symlink that still resolves into a pytest tempdir).
+
+    Requires ``/pytest-of-`` to appear in the path so a legitimate user
+    directory called ``hermes_test`` is not mistaken for a pytest leftover.
+    """
+    return "/pytest-of-" in str(path)
+
+
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     """Build PATH directory list for service units, excluding non-existent dirs."""
     if project_root is None:
@@ -2149,7 +2163,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
-        if resolved_node_dir not in path_entries:
+        # Skip stale pytest-tmpdir resolutions (e.g. ~/.local/bin/node
+        # symlinks left over from a prior test run) so the systemd unit
+        # never bakes in /tmp/pytest-of-.../hermes_test/node/bin — that
+        # also causes systemd_unit_is_current() to flap "outdated"
+        # forever on the next `hermes gateway status`. (#31074)
+        if (
+            resolved_node_dir not in path_entries
+            and not _looks_like_pytest_temp_path(resolved_node_dir)
+        ):
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
@@ -2801,10 +2823,22 @@ def generate_launchd_plist() -> str:
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
-        if resolved_node_dir not in priority_dirs:
+        # Skip stale pytest-tmpdir resolutions so the launchd plist never
+        # bakes in /tmp/pytest-of-.../hermes_test/node/bin (#31074).
+        if (
+            resolved_node_dir not in priority_dirs
+            and not _looks_like_pytest_temp_path(resolved_node_dir)
+        ):
             priority_dirs.append(resolved_node_dir)
     sane_path = ":".join(
-        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
+        dict.fromkeys(
+            priority_dirs
+            + [
+                p
+                for p in os.environ.get("PATH", "").split(":")
+                if p and not _looks_like_pytest_temp_path(p)
+            ]
+        )
     )
 
     # Build ProgramArguments array, including --profile when using a named profile
