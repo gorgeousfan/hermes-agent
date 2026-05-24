@@ -231,12 +231,20 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
 
     saved: dict = {}
 
-    def _fake_save(path, value):
+    def _fake_save_detailed(path, value):
         saved[path] = value
-        return True
+        return True, None
 
+    # Issue #27660 reworked the gateway to call ``save_config_value_detailed``
+    # (which surfaces the failure reason) instead of the bool-only
+    # ``save_config_value``.  Patch the new symbol so this test still
+    # exercises the post-fix code path; keep the bool-only alias patched
+    # too for any indirect callers.
     import cli as cli_mod
-    monkeypatch.setattr(cli_mod, "save_config_value", _fake_save)
+    monkeypatch.setattr(cli_mod, "save_config_value_detailed", _fake_save_detailed)
+    monkeypatch.setattr(
+        cli_mod, "save_config_value", lambda p, v: _fake_save_detailed(p, v)[0]
+    )
 
     execute = AsyncMock(return_value="✨ fresh")
 
@@ -259,3 +267,156 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     assert resolved is not None
     assert "✨ fresh" in resolved
     assert "config.yaml" in resolved
+
+
+# ---------------------------------------------------------------------------
+# Issue #27660 -- "Always Approve" silent-failure regression guard.
+#
+# Before the fix, gateway/run.py's destructive-slash _on_confirm
+# unconditionally logged "User opted out..." and appended the
+# "Future /clear, /new, /reset, /undo will run without confirmation"
+# note even when save_config_value silently failed (e.g. ruamel.yaml
+# missing from venv).  Users could click "Always Approve" indefinitely
+# with no effect.  These tests pin the post-fix behaviour:
+#
+#   1. When persistence fails, the reply tells the user it failed AND
+#      includes the underlying reason.
+#   2. When persistence fails, the misleading "future runs no
+#      confirmation" note must NOT appear.
+#   3. When persistence succeeds, the reply still contains the success
+#      note (existing behaviour preserved).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_always_surfaces_persist_failure_to_user(monkeypatch):
+    """Save failure -> user sees ⚠️ message with the failure reason."""
+    from tools import slash_confirm as _slash_confirm_mod
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    # Simulate ruamel.yaml missing -- the exact #27660 scenario.
+    def _failing_save(path, value):
+        return False, (
+            "ruamel.yaml is required to update user config files atomically. "
+            "Re-install with: pip install ruamel.yaml==0.18.17. "
+            "Underlying ImportError: No module named 'ruamel'"
+        )
+
+    import cli as cli_mod
+    monkeypatch.setattr(cli_mod, "save_config_value_detailed", _failing_save)
+
+    execute = AsyncMock(return_value="✨ fresh")
+
+    await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+    resolved = await _slash_confirm_mod.resolve(
+        session_key, pending["confirm_id"], "always",
+    )
+
+    execute.assert_awaited_once()
+    assert resolved is not None
+    # The user-facing reply must:
+    assert "✨ fresh" in resolved, "the actual command output should still surface"
+    assert "Could not save the opt-out preference" in resolved, (
+        "user must be told the opt-out wasn't saved"
+    )
+    assert "ruamel.yaml" in resolved, "the failure reason must be included"
+    # The pre-fix "future runs will skip the prompt" note must NOT
+    # appear when the save failed -- that was the original bug.
+    assert "without confirmation" not in resolved, (
+        "must not falsely claim future runs will skip the prompt"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_always_no_warning_when_persist_succeeds(monkeypatch):
+    """Save success -> existing success note appears, no ⚠️."""
+    from tools import slash_confirm as _slash_confirm_mod
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    def _ok_save(path, value):
+        return True, None
+
+    import cli as cli_mod
+    monkeypatch.setattr(cli_mod, "save_config_value_detailed", _ok_save)
+
+    execute = AsyncMock(return_value="✨ fresh")
+
+    await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+    resolved = await _slash_confirm_mod.resolve(
+        session_key, pending["confirm_id"], "always",
+    )
+
+    execute.assert_awaited_once()
+    assert resolved is not None
+    assert "✨ fresh" in resolved
+    # Existing success branch preserved.
+    assert "without confirmation" in resolved
+    # No misleading warning when the save actually worked.
+    assert "Could not save" not in resolved
+
+
+@pytest.mark.asyncio
+async def test_resolve_always_handles_unexpected_exception(monkeypatch):
+    """If save_config_value_detailed raises (not just returns False), the
+    user still gets a coherent error reply rather than a stack trace
+    bubbling out of the handler."""
+    from tools import slash_confirm as _slash_confirm_mod
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    def _exploding_save(path, value):
+        raise RuntimeError("disk caught fire")
+
+    import cli as cli_mod
+    monkeypatch.setattr(cli_mod, "save_config_value_detailed", _exploding_save)
+
+    execute = AsyncMock(return_value="✨ fresh")
+    await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    pending = _slash_confirm_mod.get_pending(session_key)
+    resolved = await _slash_confirm_mod.resolve(
+        session_key, pending["confirm_id"], "always",
+    )
+
+    execute.assert_awaited_once()
+    assert resolved is not None
+    assert "✨ fresh" in resolved
+    assert "Could not save" in resolved
+    assert "RuntimeError" in resolved
+    assert "disk caught fire" in resolved
+    assert "without confirmation" not in resolved

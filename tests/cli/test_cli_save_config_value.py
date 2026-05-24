@@ -132,3 +132,127 @@ class TestSaveConfigValueAtomic:
 
         assert result is False
         assert config_env.read_text() == original_content
+
+
+# ---------------------------------------------------------------------------
+# save_config_value_detailed -- structured success/failure for callers that
+# must surface the failure reason to the user (issue #27660).
+# ---------------------------------------------------------------------------
+
+
+class TestSaveConfigValueDetailed:
+    """Pin the tuple-return contract of the detailed variant."""
+
+    @pytest.fixture
+    def config_env(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.dump({"display": {"skin": "default"}}))
+        monkeypatch.setattr("cli._hermes_home", hermes_home)
+        return config_path
+
+    def test_success_returns_true_none(self, config_env):
+        from cli import save_config_value_detailed
+        ok, err = save_config_value_detailed("display.skin", "mono")
+        assert ok is True
+        assert err is None
+
+    def test_ruamel_missing_returns_actionable_error(self, config_env, monkeypatch):
+        """When ruamel.yaml import fails, the error string must include the
+        pip-install hint so users hit by #27660 can self-heal without
+        reading source.
+        """
+        from utils import MissingYamlRoundtripDependency
+
+        def exploding_import(*_args, **_kwargs):
+            raise MissingYamlRoundtripDependency(
+                ImportError("No module named 'ruamel'")
+            )
+
+        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", exploding_import)
+
+        from cli import save_config_value_detailed
+        ok, err = save_config_value_detailed("approvals.destructive_slash_confirm", False)
+        assert ok is False
+        assert err is not None
+        assert "ruamel.yaml" in err
+        assert "pip install ruamel.yaml" in err
+        assert "No module named 'ruamel'" in err
+
+    def test_generic_oserror_returns_typed_message(self, config_env, monkeypatch):
+        """Non-dependency errors still produce a useful string."""
+        def exploding(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", exploding)
+
+        from cli import save_config_value_detailed
+        ok, err = save_config_value_detailed("display.skin", "x")
+        assert ok is False
+        assert err is not None
+        assert "OSError" in err
+        assert "disk full" in err
+
+    def test_bool_alias_still_returns_bool_only(self, config_env, monkeypatch):
+        """The bool-only ``save_config_value`` alias must remain
+        backward-compatible -- existing callers reading the return value
+        as a plain ``bool`` keep working."""
+        from utils import MissingYamlRoundtripDependency
+
+        def exploding(*_a, **_k):
+            raise MissingYamlRoundtripDependency(ImportError("missing"))
+
+        monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", exploding)
+
+        from cli import save_config_value
+        assert save_config_value("display.skin", "x") is False
+
+
+# ---------------------------------------------------------------------------
+# Direct tests for utils.atomic_roundtrip_yaml_update's new exception class.
+# ---------------------------------------------------------------------------
+
+
+class TestMissingYamlRoundtripDependency:
+    def test_subclass_of_import_error(self):
+        from utils import MissingYamlRoundtripDependency
+        assert issubclass(MissingYamlRoundtripDependency, ImportError)
+
+    def test_message_includes_install_hint(self):
+        from utils import MissingYamlRoundtripDependency
+        exc = MissingYamlRoundtripDependency(ImportError("No module named 'ruamel'"))
+        assert "ruamel.yaml" in str(exc)
+        assert "pip install ruamel.yaml" in str(exc)
+
+    def test_preserves_original_import_error(self):
+        from utils import MissingYamlRoundtripDependency
+        original = ImportError("No module named 'ruamel'")
+        exc = MissingYamlRoundtripDependency(original)
+        assert exc.original is original
+
+    def test_raised_when_ruamel_unimportable(self, monkeypatch, tmp_path):
+        """End-to-end: simulate ruamel.yaml absent at import time and
+        confirm atomic_roundtrip_yaml_update raises the typed wrapper."""
+        import sys
+        import importlib
+
+        # Pretend the import fails by inserting a sentinel that raises.
+        class _Blocker:
+            def __getattr__(self, _name):
+                raise ImportError("No module named 'ruamel'")
+
+        # Drop any cached real module so the function-local import re-runs.
+        for mod in list(sys.modules):
+            if mod == "ruamel" or mod.startswith("ruamel."):
+                monkeypatch.delitem(sys.modules, mod, raising=False)
+        monkeypatch.setitem(sys.modules, "ruamel", _Blocker())
+
+        from utils import atomic_roundtrip_yaml_update, MissingYamlRoundtripDependency
+
+        with pytest.raises(MissingYamlRoundtripDependency) as excinfo:
+            atomic_roundtrip_yaml_update(tmp_path / "x.yaml", "a.b", 1)
+
+        assert "ruamel.yaml" in str(excinfo.value)
+        assert "pip install ruamel.yaml" in str(excinfo.value)
