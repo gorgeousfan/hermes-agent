@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
-    is_nous_free_tier, partition_nous_models_by_tier,
+    provider_model_ids, is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
     union_with_portal_free_recommendations,
     union_with_portal_paid_recommendations,
@@ -44,7 +44,41 @@ class TestModelIds:
         assert len(ids) == len(set(ids)), "Duplicate model IDs found"
 
 
+class TestOpenAIProviderModels:
+    def test_realtime_models_are_curated_static_options(self):
+        ids = provider_model_ids("openai")
 
+        assert "gpt-realtime-2" in ids
+        assert "gpt-realtime-translate" in ids
+        assert "gpt-realtime-whisper" in ids
+
+    def test_live_openai_catalog_merges_missing_realtime_models(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["gpt-4.1", "gpt-4o"],
+        ):
+            ids = provider_model_ids("openai", force_refresh=True)
+
+        assert ids[:2] == ["gpt-4.1", "gpt-4o"]
+        assert "gpt-realtime-2" in ids
+        assert "gpt-realtime-translate" in ids
+        assert "gpt-realtime-whisper" in ids
+
+    def test_live_openai_catalog_dedupes_curated_realtime_models_case_insensitively(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["GPT-REALTIME-2", "gpt-4o"],
+        ):
+            ids = provider_model_ids("openai", force_refresh=True)
+
+        assert ids.count("GPT-REALTIME-2") == 1
+        assert "gpt-realtime-2" not in ids
+        assert "gpt-realtime-translate" in ids
+        assert "gpt-realtime-whisper" in ids
 
 
 class TestOpenRouterModels:

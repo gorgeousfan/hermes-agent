@@ -196,6 +196,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-5.3-codex",
         "gpt-5.2-codex",
         "gpt-4.1",
+        "gpt-realtime-2",
+        "gpt-realtime-translate",
+        "gpt-realtime-whisper",
         "gpt-4o",
         "gpt-4o-mini",
     ],
@@ -2237,7 +2240,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             try:
                 live = fetch_api_models(api_key, base)
                 if live:
-                    return live
+                    # OpenAI's /v1/models catalog can omit endpoint-specialized
+                    # audio/realtime model IDs. Keep curated fallback entries
+                    # selectable even when live discovery succeeds.
+                    curated = _PROVIDER_MODELS.get("openai", [])
+                    seen_lower = {str(mid).lower() for mid in live}
+                    return list(live) + [
+                        mid for mid in curated if str(mid).lower() not in seen_lower
+                    ]
             except Exception:
                 pass
     if normalized == "gmi":
