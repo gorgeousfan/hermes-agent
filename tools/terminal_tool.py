@@ -1247,10 +1247,26 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             timeout=timeout,
         )
 
+    elif env_type == "railway":
+        from tools.environments.railway import (
+            RailwayEnvironment as _RailwayEnvironment,
+            RAILWAY_VOLUME_DEFAULT_MOUNT as _RAILWAY_DEFAULT_MOUNT,
+        )
+        rc = (cc.get("railway") or {}) if isinstance(cc, dict) else {}
+        return _RailwayEnvironment(
+            project_id=rc.get("project_id", ""),
+            service_id=rc.get("service_id", ""),
+            environment_id=rc.get("environment_id", ""),
+            deployment_instance_id=rc.get("deployment_instance_id", ""),
+            identity_file=rc.get("identity_file", ""),
+            cwd=cwd or _RAILWAY_DEFAULT_MOUNT,
+            timeout=timeout,
+        )
+
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'ssh', or 'railway'"
         )
 
 

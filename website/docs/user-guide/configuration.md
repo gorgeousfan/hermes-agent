@@ -83,11 +83,11 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Singularity/Apptainer container, or a deployed Railway service via `railway ssh`.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity | railway
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -109,6 +109,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **railway** | Deployed Railway service via `railway ssh` | Network boundary (Railway service container) | Production gateways that need to shell into their own deploy |
 
 ### Local Backend
 
@@ -274,6 +275,44 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 **Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. You can spawn, poll, wait, view logs, and kill processes through the normal process tool while the sandbox is alive. Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
+
+### Railway Backend
+
+Runs commands inside a deployed [Railway](https://railway.com) service container via `railway ssh`. Useful when the Hermes Gateway itself runs inside the same Railway service (the gateway can shell into its own deploy or any other service in the same workspace).
+
+```yaml
+terminal:
+  backend: railway
+  cwd: /data           # Defaults to the Railway volume mount path (/data)
+  railway:
+    project_id: ""             # Required (or RAILWAY_PROJECT_ID)
+    service_id: ""             # Required (or RAILWAY_SERVICE_ID)
+    environment_id: ""         # Required (or RAILWAY_ENVIRONMENT_ID)
+    deployment_instance_id: "" # Optional — pin to a specific instance
+    identity_file: ""          # Optional — forwarded to ssh as -i
+```
+
+**Requirements:** `railway` CLI on `$PATH` and an SSH key registered with your Railway account (`railway ssh keys add`). Workspace SSH key management requires `RAILWAY_API_TOKEN`; project tokens (`RAILWAY_TOKEN`) cannot manage SSH keys per [Railway docs](https://docs.railway.com/cli/ssh).
+
+**How it works:** Each `execute()` spawns a fresh `railway ssh --project ... --service ... --environment ... -- bash -c <wrapped-cmd>` process. CWD persists via the same in-band stdout marker the SSH backend uses; file uploads stream via `tee`, downloads via `cat`, both routed through the single `_run_railway_ssh` boundary so cancellation and structured failures are uniform.
+
+**Failure causes:** the backend raises a typed `RailwayFailure(category=...)` from the closed set `{auth, network, deploy_missing, volume_missing, cli_missing, invalid_config, cancelled}`. Only `network` retries (jittered exponential backoff, max 4 attempts, total wait ≤ 4s). Tokens (`RAILWAY_TOKEN`, `RAILWAY_API_TOKEN`) are never logged at any level.
+
+### Multi-profile gateway routing
+
+Gateway adapters can route different containers (Discord categories, Slack workspaces, Matrix spaces, Telegram supergroups, Mattermost teams, etc.) to different Hermes profiles via the same `profile_router` boundary. Two configuration surfaces are supported:
+
+```bash
+# Per-container env var (works for every adapter):
+DISCORD_PROFILE_111111111111111111=alpha
+SLACK_PROFILE_T0AAAAAAA=beta
+
+# Comma-separated category list (Discord today, generalized to any adapter
+# with a category-style container concept):
+DISCORD_PROFILE_CATEGORIES="111111111111111111:alpha,222222222222222222:beta"
+```
+
+When no mapping is configured, the router returns `None` and the adapter behaves identically to today's single-profile install — multi-profile routing is fully opt-in.
 
 ### Singularity/Apptainer Backend
 

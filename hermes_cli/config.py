@@ -127,6 +127,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_DEPLOYMENT_INSTANCE_ID", "RAILWAY_IDENTITY_FILE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -667,6 +669,18 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # Railway terminal backend — Hermes runs `railway ssh` against the
+        # configured project/service/environment. project_id, service_id,
+        # and environment_id are required; deployment_instance_id and
+        # identity_file are optional (CLI defaults apply otherwise).  Each
+        # key is also overridable via the matching RAILWAY_* env var.
+        "railway": {
+            "project_id": "",
+            "service_id": "",
+            "environment_id": "",
+            "deployment_instance_id": "",
+            "identity_file": "",
+        },
     },
 
     "web": {
@@ -3324,6 +3338,21 @@ class ConfigIssue:
     severity: str  # "error", "warning"
     message: str
     hint: str
+
+
+def validate_terminal_railway(config: Dict[str, Any]) -> None:
+    """Raise ValueError when terminal.backend=railway lacks required keys."""
+    terminal = (config or {}).get("terminal") or {}
+    if terminal.get("backend") != "railway":
+        return
+    rc = terminal.get("railway") or {}
+    missing = [k for k in ("project_id", "service_id", "environment_id")
+               if not rc.get(k) and not os.environ.get(f"RAILWAY_{k.upper()}")]
+    if missing:
+        raise ValueError(
+            "terminal.backend=railway requires "
+            + ", ".join(f"terminal.railway.{k}" for k in missing)
+        )
 
 
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:

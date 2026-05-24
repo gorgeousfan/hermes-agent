@@ -1388,6 +1388,14 @@ def setup_tts(config: dict):
 # Section 2: Terminal Backend Configuration
 # =============================================================================
 
+# Module-level inventory of terminal backends offered by the wizard.
+# Tests in tests/hermes_cli/test_setup_railway_backend.py read this tuple
+# to confirm `railway` is a first-class option.
+TERMINAL_BACKEND_CHOICES: tuple = (
+    "local", "docker", "modal", "ssh", "daytona",
+    "vercel_sandbox", "railway", "singularity",
+)
+
 
 def setup_terminal_backend(config: dict):
     """Configure the terminal execution backend."""
@@ -1409,11 +1417,12 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "Railway - run inside a deployed Railway service via railway ssh",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox", 6: "railway"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5, "railway": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
