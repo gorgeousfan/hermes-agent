@@ -592,13 +592,31 @@ def _resolve_api_key_provider_secret(
         return "", ""
 
     from hermes_cli.config import get_env_value
+
+    # Priority 1: config.yaml providers.<id>.api_key — lets users store keys
+    # in their config file without requiring an environment variable.  This
+    # mirrors the behaviour of user-defined ("providers:") entries and fixes
+    # built-in providers like DeepSeek that previously ignored this field.
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        providers_cfg = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+        if isinstance(providers_cfg, dict):
+            entry_cfg = providers_cfg.get(provider_id, {})
+            if isinstance(entry_cfg, dict):
+                cfg_api_key = str(entry_cfg.get("api_key", "") or "").strip()
+                if has_usable_secret(cfg_api_key):
+                    return cfg_api_key, f"config.yaml:providers.{provider_id}.api_key"
+    except Exception:
+        pass
+
+    # Priority 2: environment variables (os.environ + ~/.hermes/.env)
     for env_var in pconfig.api_key_env_vars:
-        # Check both os.environ and ~/.hermes/.env file
         val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
 
-    # Fallback: try credential pool (e.g. zai key stored via auth.json)
+    # Priority 3: credential pool (e.g. zai key stored via auth.json)
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider_id)
