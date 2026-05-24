@@ -134,6 +134,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # Rate limiting: per-route timestamps in a fixed window.
         self._rate_counts: Dict[str, List[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
+        self._direct_delivery_inflight: Dict[str, int] = {}
 
         # Body size limit (auth-before-body pattern)
         self._max_body_bytes: int = int(
@@ -533,8 +534,117 @@ class WebhookAdapter(BasePlatformAdapter):
                 len(prompt),
                 delivery_id,
             )
+            timeout_raw = route_config.get("direct_delivery_timeout_seconds")
+            timeout: Optional[float] = None
+            if timeout_raw is not None:
+                try:
+                    timeout = max(0.0, float(timeout_raw))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[webhook] Invalid direct_delivery_timeout_seconds=%r for route=%s",
+                        timeout_raw,
+                        route_name,
+                    )
+            max_inflight_raw = route_config.get("direct_delivery_max_inflight")
+            max_inflight: Optional[int] = None
+            if max_inflight_raw is not None:
+                try:
+                    parsed_max_inflight = int(max_inflight_raw)
+                    if parsed_max_inflight > 0:
+                        max_inflight = parsed_max_inflight
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[webhook] Invalid direct_delivery_max_inflight=%r for route=%s",
+                        max_inflight_raw,
+                        route_name,
+                    )
+
+            inflight = self._direct_delivery_inflight.get(route_name, 0)
+            if max_inflight is not None and inflight >= max_inflight:
+                logger.warning(
+                    "[webhook] direct-deliver busy route=%s target=%s inflight=%d max=%d delivery=%s",
+                    route_name,
+                    delivery["deliver"],
+                    inflight,
+                    max_inflight,
+                    delivery_id,
+                )
+                return web.json_response(
+                    {
+                        "status": "busy",
+                        "error": "Direct delivery busy",
+                        "route": route_name,
+                        "target": delivery["deliver"],
+                        "delivery_id": delivery_id,
+                    },
+                    status=429,
+                )
+
+            counted_inflight = False
+
+            def _increment_direct_delivery_inflight() -> None:
+                nonlocal counted_inflight
+                if max_inflight is None:
+                    return
+                self._direct_delivery_inflight[route_name] = (
+                    self._direct_delivery_inflight.get(route_name, 0) + 1
+                )
+                counted_inflight = True
+
+            def _release_direct_delivery_inflight() -> None:
+                nonlocal counted_inflight
+                if not counted_inflight:
+                    return
+                counted_inflight = False
+                current = self._direct_delivery_inflight.get(route_name, 0)
+                if current <= 1:
+                    self._direct_delivery_inflight.pop(route_name, None)
+                else:
+                    self._direct_delivery_inflight[route_name] = current - 1
+
             try:
-                result = await self._direct_deliver(prompt, delivery)
+                if timeout is None or timeout <= 0:
+                    _increment_direct_delivery_inflight()
+                    try:
+                        result = await self._direct_deliver(prompt, delivery)
+                    finally:
+                        _release_direct_delivery_inflight()
+                else:
+                    _increment_direct_delivery_inflight()
+                    task = asyncio.create_task(self._direct_deliver(prompt, delivery))
+                    task.add_done_callback(lambda _task: _release_direct_delivery_inflight())
+                    done, _pending = await asyncio.wait({task}, timeout=timeout)
+                    if not done:
+                        self._background_tasks.add(task)
+                        task.add_done_callback(self._background_tasks.discard)
+
+                        def _log_background_direct_delivery_failure(done_task: asyncio.Task) -> None:
+                            if done_task.cancelled():
+                                return
+                            exc = done_task.exception()
+                            if exc is None:
+                                return
+                            logger.error(
+                                "[webhook] background direct-deliver failed route=%s delivery=%s",
+                                route_name,
+                                delivery_id,
+                                exc_info=(type(exc), exc, exc.__traceback__),
+                            )
+
+                        task.add_done_callback(_log_background_direct_delivery_failure)
+                        return web.json_response(
+                            {
+                                "status": "accepted",
+                                "route": route_name,
+                                "target": delivery["deliver"],
+                                "delivery_id": delivery_id,
+                            },
+                            status=202,
+                        )
+                    try:
+                        result = task.result()
+                    finally:
+                        _release_direct_delivery_inflight()
             except Exception:
                 logger.exception(
                     "[webhook] direct-deliver failed route=%s delivery=%s",

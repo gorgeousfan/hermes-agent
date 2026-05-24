@@ -368,6 +368,7 @@ class TestWeixinChunkDelivery:
         adapter._session = object()
         adapter._send_session = adapter._session
         adapter._token = "test-token"
+        adapter._running = True
         adapter._base_url = "https://weixin.example.com"
         adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
         return adapter
@@ -410,6 +411,20 @@ class TestWeixinChunkDelivery:
         retry = send_message_mock.await_args_list[2].kwargs
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_rate_limit_does_not_sleep_after_disconnect(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter._running = False
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "rate limited"}
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert "not connected" in (result.error or "").lower()
+        send_message_mock.assert_not_awaited()
+        sleep_mock.assert_not_awaited()
 
 
 class TestWeixinOutboundMedia:
