@@ -314,6 +314,38 @@ class TestDeliverOnlyStatusCodes:
             assert "exploded" not in json.dumps(data)
 
     @pytest.mark.asyncio
+    async def test_delivery_exception_can_ack_to_webhook_sender(self):
+        """ack_on_failure also accepts webhook calls when adapter.send() raises."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_ack_on_failure": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(side_effect=RuntimeError("tg exploded"))
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-exc-ack-1"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["delivery_status"] == "target_failed"
+            assert data["route"] == "r"
+            assert data["target"] == "telegram"
+            assert "exploded" not in json.dumps(data)
+
+    @pytest.mark.asyncio
     async def test_slow_delivery_returns_202_and_continues_in_background(self):
         """Slow target sends should not block the webhook sender."""
         routes = {
