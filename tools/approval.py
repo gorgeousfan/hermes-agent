@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Callable, Optional
 from hermes_cli.config import cfg_get
 
 from utils import env_var_enabled, is_truthy_value
@@ -153,6 +153,26 @@ _SENSITIVE_WRITE_TARGET = (
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+
+# Shell-binary alternation, shared by every pattern that needs to recognise
+# "a shell was invoked" so the set cannot drift between patterns. A word
+# boundary before this fragment already covers absolute-path forms
+# (/bin/sh) and the busybox multi-word form (busybox sh), since the boundary
+# fires after the `/` or the space.
+_SHELL_BINARY_NAMES = r'(?:bash|sh|zsh|ksh|dash|ash)'
+# World-writable / transient directories: a script executed out of one of
+# these is the script-file-indirection bypass (the dangerous content lives
+# in the file, invisible to the command string the gate sees).
+_TRANSIENT_SCRIPT_DIR = r'(?:/tmp/|/dev/shm/|/var/tmp/|\$\{?TMPDIR\}?/)'
+# Command wrappers that can sit between a pipe and the shell binary they
+# launch (`... | sudo bash`, `... | timeout 5 sh`, `... | stdbuf -oL sh`).
+# Each may carry flag (-x), VAR=val, or bare-numeric args. Deliberately a
+# CLOSED list -- `echo` and other non-wrapper commands are absent, so
+# `... | echo bash` stays a non-match.
+_PIPE_SHELL_WRAPPERS = (
+    r'(?:(?:exec|command|builtin|nohup|setsid|sudo|doas|env|time|timeout'
+    r'|nice|stdbuf|ionice)\s+(?:-\S+\s+|\w+=\S*\s+|\d+\s+)*)*'
+)
 
 # =========================================================================
 # Hardline (unconditional) blocklist
@@ -317,8 +337,8 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
+    (r'\bchmod\s+(-[^\s]*\s+)*(0?777|0?666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
+    (r'\bchmod\s+--recursive\b.*(0?777|0?666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
@@ -342,10 +362,45 @@ DANGEROUS_PATTERNS = [
     (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
-    (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
+    # The \b before the binary name already covers absolute-path forms
+    # (/bin/sh -c) and the busybox multi-word form (busybox sh -c), since a
+    # word boundary fires after the `/` or the space; the alternation only
+    # needs the bare binary names (dash and ash included via the shared set).
+    (rf'\b{_SHELL_BINARY_NAMES}\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    # base64-decode piped into a shell: the decode-and-execute idiom. A
+    # lookahead asserts a decode flag exists before the pipe -- this is one
+    # O(n) scan rather than a per-`-d`-token retry, so a long input cannot
+    # blow up scan time (the `.*`-spans form was quadratic). The decode flag
+    # must be present (plain `base64 file | ...` only encodes);
+    # `-(?:[diw]*d[diw]*|-decode)` matches `-d`, `--decode`, and bundled short
+    # flags like `-di` / `-id` while staying within base64's own flag letters
+    # so it does not match an unrelated `-d...` flag of another command. The
+    # `[^|]*` span then walks to the pipe without crossing it. After the
+    # pipe, an optional exec/env/command/nohup/builtin wrapper is consumed so
+    # `... | exec sh` is caught; the shell binary is still anchored close to
+    # the pipe so `... | echo bash` is not a false positive. The post-pipe
+    # wrapper set (_PIPE_SHELL_WRAPPERS) covers sudo/timeout/nice/stdbuf/env/
+    # exec/... so `... | sudo bash` and `... | timeout 5 sh` are caught.
+    # Decoding to a file (no pipe to a shell) is benign and not matched.
+    (rf'\bbase64\b(?=[^|]*\s-(?:[diw]*d[diw]*|-decode)\b)[^|]*\|\s*'
+     rf'{_PIPE_SHELL_WRAPPERS}(?:\S*/)?{_SHELL_BINARY_NAMES}\b',
+     "decode base64 and pipe to shell"),
+    # Script-file indirection: a shell run against a script PATH ARGUMENT in
+    # a world-writable / transient directory. The dangerous content is in the
+    # file, invisible to the command string -- the transient-path heuristic is
+    # the only signal. Anchored to a command-start position (_CMDPOS) so a
+    # shell binary name appearing as a non-command token (`echo bash /tmp/x`)
+    # is not a false positive -- this matters because shell.exec gates on this
+    # pattern with no approval path. `(?:\S*/)?` covers absolute-path shells
+    # (/bin/bash). In-project paths (bash ./build.sh) and absolute paths
+    # outside the transient dirs are deliberately not matched. Disjoint from
+    # the process-substitution entry above, which requires `<(`. Known gap:
+    # `cd /tmp && bash x.sh` and `~/`-relative scripts are not covered.
+    (rf'{_CMDPOS}(?:\S*/)?{_SHELL_BINARY_NAMES}\s+(?:-[^\s]*\s+)*["\']?{_TRANSIENT_SCRIPT_DIR}',
+     "execute script from world-writable path"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),
@@ -363,8 +418,8 @@ DANGEROUS_PATTERNS = [
     (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway in background outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (r'\bnohup\b.*gateway\s+run\b', "start gateway via nohup outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
     # Self-termination via kill + command substitution (pgrep/pidof).
@@ -449,12 +504,220 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
-def _normalize_command_for_detection(command: str) -> str:
-    """Normalize a command string before dangerous-pattern matching.
+# -------------------------------------------------------------------------
+# Prong A: shell-idiom de-obfuscation
+# -------------------------------------------------------------------------
+# A command can hide an otherwise-matched dangerous token behind shell idioms
+# the pattern tables do not model: ${IFS} expansion, ANSI-C quoting, empty-
+# quote splits, eval/command/builtin wrappers. These all decode, in bash, to
+# a command the existing tables already match. Normalizing them away before
+# pattern matching exposes the underlying command.
+#
+# Discipline (load-bearing):
+#   * Monotonic. De-obfuscation may only make a string MORE likely to match a
+#     dangerous pattern, never less. Malformed obfuscation (unterminated
+#     quote, truncated ${IF) is left untouched, never "repaired" -- a best-
+#     effort decode of malformed input risks consuming a trailing rm -rf /.
+#   * Bounded. Some rules are not idempotent (an ANSI-C decode can emit a
+#     fresh $'), so the rules run in a fixed-point loop. A small iteration cap
+#     stops pathological nested input from looping unbounded.
 
-    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
-    null bytes, and normalizes Unicode fullwidth characters so that
-    obfuscation techniques cannot bypass the pattern-based detection.
+# ${IFS} and its modifier forms (${IFS%?}, ${IFS:0:1}, ...) plus the unbraced
+# $IFS form all expand to whitespace in bash; replacing them with a space
+# exposes rm${IFS}-rf${IFS}/ as `rm -rf /`. IFS is always uppercase in bash,
+# so this is intentionally case-sensitive. An unterminated ${IF (no closing
+# brace) does not match and is left untouched (monotonic rule).
+_DEOBFUSCATE_IFS_RE = re.compile(r'\$\{IFS[^}]*\}|\$IFS\b')
+# Complete empty quote pairs ("" '') that bash collapses to nothing: ""r""m,
+# r''m, ""r""m all run `rm`. A lone unpaired quote is left in place (monotonic
+# rule -- malformed input is not repaired).
+_DEOBFUSCATE_EMPTY_QUOTE_RE = re.compile(r'""|\'\'')
+
+# ANSI-C quoting: $'...' lets bash express a token through escape sequences,
+# so $'\x72\x6d' is `rm`. The body runs to the first unescaped ' (the
+# (?:[^'\\]|\\.) body lets \' stay inside); an unterminated $' does not match
+# and is left untouched (monotonic rule). A single decode is not idempotent --
+# $'$\x27\x72\x6d\x27' decodes to a fresh $'rm' -- so the fixed-point loop
+# re-runs it.
+_ANSI_C_QUOTE_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.DOTALL)
+# One ANSI-C escape sequence: hex \xHH, octal \NNN, unicode \uHHHH / \UHHHHHHHH,
+# or a named C escape. Anything not matched (e.g. a bare \z) is left literal.
+_ANSI_C_ESCAPE_RE = re.compile(
+    r'\\(?:'
+    r'x([0-9A-Fa-f]{1,2})'        # \xHH  hex
+    r'|([0-7]{1,3})'              # \NNN  octal
+    r'|u([0-9A-Fa-f]{1,4})'      # \uHHHH  unicode
+    r'|U([0-9A-Fa-f]{1,8})'      # \UHHHHHHHH  unicode
+    r'|([abefnrtv\\\'"?])'       # named C escapes
+    r')'
+)
+_ANSI_C_NAMED = {
+    'a': '\a', 'b': '\b', 'e': '\x1b', 'f': '\f', 'n': '\n',
+    'r': '\r', 't': '\t', 'v': '\v', '\\': '\\', "'": "'", '"': '"', '?': '?',
+}
+
+# eval / command / builtin run their argument as a command. Stripping the
+# wrapper keyword (and one optional opening quote of the payload) at a
+# command-start position re-exposes the inner command to the existing
+# pattern tables. For dangerous-tier patterns the wrapper never actually
+# hid the inner token from a substring search; the load-bearing case is the
+# hardline tier, whose shutdown/reboot patterns are anchored to a command-
+# start position via _CMDPOS -- eval "shutdown" only reaches them once the
+# eval prefix and opening quote are gone. A wrapped command that IS
+# dangerous (command git push --force) is flagged exactly as its un-wrapped
+# form would be; that consistency is intended, not a false positive. Only
+# the opening quote is stripped: a word boundary handles the trailing quote,
+# so there is no need to find and strip the matching close quote. One
+# wrapper is removed per loop iteration, so eval eval rm unwinds over two
+# iterations of the fixed-point loop.
+#
+# Known characteristic: because the unwrapped inner token lands at a
+# command-start position, the _CMDPOS-anchored hardline patterns then see it
+# the same way they already see `; reboot-helper` (their `\b` matches
+# `reboot-helper`). So `command reboot-helper` hardline-blocks just as
+# `; reboot-helper` already does today. This is a consistent extension of
+# pre-existing hardline-pattern behavior, not a defect introduced here;
+# tightening the hardline anchors to fix it is deliberately out of scope (it
+# touches the unconditional-block tier and risks dropping true positives).
+_WRAPPER_PREFIX_RE = re.compile(
+    r'(?:^|(?<=[;&|\n`])|(?<=\$\())'   # command-start position (zero-width)
+    r'\s*'                              # optional leading whitespace
+    r'(?:eval|command|builtin)\s+'      # the wrapper keyword + whitespace
+    r'["\']?'                           # optional opening quote of the payload
+)
+
+# With per-rule draining (see _deobfuscate), single-rule nesting of any depth
+# collapses within ONE outer iteration, so the cap cannot be out-nested by
+# stacking the same idiom. The outer loop only iterates for cross-rule
+# cascades, which are shallow in practice (~2-3); the cap is generous headroom
+# plus a worst-case cost bound for adversarially nested input. Hitting it
+# without converging is treated as suspicious, not as a clean decode.
+_DEOBFUSCATE_MAX_ITERATIONS = 16
+
+# Flagged when de-obfuscation does not converge within the iteration cap: the
+# input was nested beyond what normalization can unwind in bounded time, so
+# detect_dangerous_command surfaces it for approval rather than trusting the
+# partial decode. Routed to the DANGEROUS (approval-prompt) tier, never
+# HARDLINE -- and that is deliberate, not a downgrade. When normalization
+# does not converge the underlying command is *unidentified* (still
+# obfuscated): we cannot know whether it is hardline-class or merely
+# dangerous-class. Routing an unidentified-but-suspicious input to "ask the
+# human" is the honest and conservative choice; routing it to HARDLINE would
+# mean unconditionally blocking inputs we cannot even classify. Note this is
+# still a strict improvement over the pre-normalization baseline, where a
+# deeply-nested obfuscation of any command slipped through entirely.
+_NESTED_OBFUSCATION_DESC = (
+    "deeply nested shell obfuscation (de-obfuscation did not converge)"
+)
+
+
+def _decode_ansi_c_escapes(body: str) -> str:
+    """Decode the escape sequences inside one $'...' body to literal chars.
+
+    Produces a detection string, not a faithful shell value -- it is fed back
+    into pattern matching, so an out-of-range or malformed escape is left as
+    its literal text rather than raising.
+    """
+    def _sub(match: re.Match[str]) -> str:
+        hex_digits, octal_digits, u_digits, big_u_digits, named = match.groups()
+        try:
+            if hex_digits is not None:
+                return chr(int(hex_digits, 16))
+            if octal_digits is not None:
+                return chr(int(octal_digits, 8) & 0xFF)
+            if u_digits is not None:
+                return chr(int(u_digits, 16))
+            if big_u_digits is not None:
+                code_point = int(big_u_digits, 16)
+                return chr(code_point) if code_point <= 0x10FFFF else match.group(0)
+            if named is not None:
+                return _ANSI_C_NAMED[named]
+        except (ValueError, OverflowError):
+            return match.group(0)
+        return match.group(0)
+
+    return _ANSI_C_ESCAPE_RE.sub(_sub, body)
+
+
+def _decode_ansi_c_quotes(command: str) -> str:
+    """Replace every complete $'...' span with its decoded literal text."""
+    return _ANSI_C_QUOTE_RE.sub(
+        lambda m: _decode_ansi_c_escapes(m.group(1)), command
+    )
+
+
+def _strip_wrappers(command: str) -> str:
+    """Strip one layer of eval/command/builtin wrapper prefixes."""
+    return _WRAPPER_PREFIX_RE.sub('', command)
+
+
+def _drain(rule: Callable[[str], str], command: str) -> str:
+    """Apply a single str->str de-obfuscation rule until it stops changing the
+    string.
+
+    Every rule shrinks-or-noops the string, so this always terminates; the cap
+    is a cost backstop, not the termination guarantee. Draining a non-
+    idempotent rule (wrapper-strip, ANSI-C decode -- each pass peels one layer)
+    here means any single-rule nesting depth is fully unwound within one
+    _deobfuscate iteration, so the iteration cap cannot be defeated by simply
+    stacking the same idiom N deep.
+    """
+    for _ in range(_DEOBFUSCATE_MAX_ITERATIONS):
+        previous = command
+        command = rule(command)
+        if command == previous:
+            break
+    return command
+
+
+def _deobfuscate(command: str) -> tuple[str, bool]:
+    """De-obfuscate shell idioms; return (normalized, converged).
+
+    Runs the de-obfuscation rules in a bounded fixed-point loop. Within each
+    iteration:
+      * wrapper-strip and ANSI-C decode are non-idempotent (each pass peels one
+        layer -- a stripped wrapper or decoded $'...' body can expose a fresh
+        one), so each is DRAINED to a local fixed point via _drain. This
+        collapses any single-rule nesting depth in one iteration, so the cap
+        cannot be out-nested by stacking the same idiom.
+      * ${IFS} expansion and empty-quote stripping are idempotent per pass (one
+        global sub removes every occurrence), so they run once.
+    The outer loop then only iterates for cross-rule cascades (one rule's
+    output enabling another). Every rule shrinks-or-noops the string, so the
+    loop is guaranteed to terminate; the cap bounds worst-case cost.
+
+    converged is False when the loop exhausted the cap while the string was
+    still changing -- the input was nested beyond what de-obfuscation can
+    unwind in bounded time. The caller must treat that as suspicious rather
+    than a trustworthy clean decode (see detect_dangerous_command).
+    """
+    converged = False
+    for _ in range(_DEOBFUSCATE_MAX_ITERATIONS):
+        previous = command
+        command = _drain(_strip_wrappers, command)
+        command = _drain(_decode_ansi_c_quotes, command)
+        command = _DEOBFUSCATE_IFS_RE.sub(' ', command)
+        command = _DEOBFUSCATE_EMPTY_QUOTE_RE.sub('', command)
+        if command == previous:
+            converged = True
+            break
+    if not converged:
+        logger.debug(
+            "_deobfuscate: iteration cap (%d) hit without converging; "
+            "treating as suspicious. partial decode: %.120r",
+            _DEOBFUSCATE_MAX_ITERATIONS, command,
+        )
+    return command, converged
+
+
+def _normalize_command_traced(command: str) -> tuple[str, bool]:
+    """Normalize a command and report whether de-obfuscation converged.
+
+    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip), null
+    bytes, and normalizes Unicode fullwidth characters, then runs the Prong A
+    shell-idiom de-obfuscation loop. A False converged flag means the input was
+    nested beyond the iteration cap; detect_dangerous_command treats that as
+    dangerous rather than trusting the partial decode.
     """
     from tools.ansi_strip import strip_ansi
 
@@ -464,7 +727,19 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
-    return command
+    # De-obfuscate shell idioms (${IFS}, empty-quote splits, ...). Runs after
+    # NFKC so a fullwidth-obfuscated ${IFS} is also caught.
+    return _deobfuscate(command)
+
+
+def _normalize_command_for_detection(command: str) -> str:
+    """Normalize a command string before dangerous-pattern matching.
+
+    Returns the normalized string only. Callers that need to know whether
+    de-obfuscation converged (detect_dangerous_command) use
+    _normalize_command_traced directly.
+    """
+    return _normalize_command_traced(command)[0]
 
 
 def detect_dangerous_command(command: str) -> tuple:
@@ -473,11 +748,18 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
+    normalized, converged = _normalize_command_traced(command)
+    command_lower = normalized.lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
+    # Fail-safe: if de-obfuscation did not converge, the input was nested
+    # beyond what normalization can unwind in bounded time. A still-obfuscated
+    # string is not a trustworthy clean no-match, so surface it for approval
+    # rather than letting it through.
+    if not converged:
+        return (True, _NESTED_OBFUSCATION_DESC, _NESTED_OBFUSCATION_DESC)
     return (False, None, None)
 
 
@@ -1151,7 +1433,16 @@ def check_all_command_guards(command: str, env_type: str,
     # (openai/codex#13860).
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
-        verdict = _smart_approve(command, combined_desc_for_llm)
+        # Hand the LLM the de-obfuscated command, not the raw string. The
+        # regex layer matches on the normalized form, so an obfuscated
+        # dangerous command (rm${IFS}-rf${IFS}/, $'\x72\x6d' ...) is flagged
+        # here -- but if the LLM is shown the raw obfuscated text it is far
+        # more likely to wave it through, and an APPROVE verdict
+        # session-allowlists the pattern key. Normalizing first keeps the
+        # LLM's view consistent with what was actually flagged.
+        verdict = _smart_approve(
+            _normalize_command_for_detection(command), combined_desc_for_llm
+        )
         if verdict == "approve":
             # Auto-approve and grant session-level approval for these patterns
             for key, _, _ in warnings:
