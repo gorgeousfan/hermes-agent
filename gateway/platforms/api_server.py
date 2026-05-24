@@ -312,6 +312,262 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
     )
 
 
+# ---------------------------------------------------------------------------
+# Vision routing for OpenAI-compatible clients (Open WebUI, LobeChat, …)
+# ---------------------------------------------------------------------------
+#
+# The TUI gateway (gateway/run.py) reads ``auxiliary.vision.provider`` /
+# ``agent.image_input_mode`` and, when the active main model can't (or
+# shouldn't) consume pixels directly, runs ``vision_analyze`` up-front and
+# prepends the description to the user turn — see ``_decide_image_input_mode``
+# and ``_enrich_message_with_vision`` in gateway/run.py.
+#
+# The OpenAI-compatible API server skipped that step entirely: image_url
+# parts were passed verbatim to the agent, the main provider rejected them,
+# and ``run_agent`` fell back to text-only mode after stripping the images
+# (#27232). Open WebUI users then saw "no photo seen" responses even though
+# their auxiliary vision backend was configured correctly.
+#
+# The helpers below mirror the TUI gateway's image-routing pipeline so any
+# OpenAI-API consumer benefits from the same auxiliary-vision pre-analysis.
+
+_VISION_ROUTE_TEXT_PROMPT = (
+    "Describe everything visible in this image in thorough detail. "
+    "Include any text, code, data, objects, people, layout, colors, "
+    "and any other notable visual information."
+)
+
+
+def _decide_api_server_image_mode() -> str:
+    """Return ``"native"`` or ``"text"`` for the current API request.
+
+    Reads ``auxiliary.vision`` and ``agent.image_input_mode`` from config.yaml
+    plus the active main model's capabilities — same inputs as the TUI gateway
+    (``gateway.run.AIAgentRunner._decide_image_input_mode``) so behaviour is
+    consistent across both surfaces.
+
+    Failures fall back to ``"native"`` so callers preserve today's behaviour
+    (image parts forwarded as-is) on misconfigured installs.
+    """
+    try:
+        from agent.image_routing import decide_image_input_mode
+        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        provider = _read_main_provider()
+        model = _read_main_model()
+        return decide_image_input_mode(provider, model, cfg)
+    except Exception as exc:
+        logger.debug(
+            "api_server image_routing: decision failed, defaulting to native — %s", exc
+        )
+        return "native"
+
+
+def _extract_text_and_image_parts(content: Any) -> "tuple[str, list[Dict[str, Any]]]":
+    """Split a multimodal content list into ``(joined_text, image_parts)``.
+
+    Strings pass straight through with no image parts.  Lists are walked
+    once: ``text``/``input_text`` parts are concatenated (preserving order),
+    ``image_url``/``input_image`` parts are collected for vision pre-analysis.
+    Other shapes are returned unchanged via the empty-image-list path so the
+    caller's fallback (pass content through unmodified) runs.
+    """
+    if isinstance(content, str):
+        return content, []
+    if not isinstance(content, list):
+        return "", []
+    text_chunks: List[str] = []
+    images: List[Dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in _TEXT_PART_TYPES:
+            text = part.get("text") or ""
+            if isinstance(text, str) and text:
+                text_chunks.append(text)
+        elif ptype in _IMAGE_PART_TYPES:
+            images.append(part)
+    return "\n".join(text_chunks), images
+
+
+def _image_url_from_part(part: Dict[str, Any]) -> Optional[str]:
+    """Pull the URL string out of an ``image_url`` / ``input_image`` part."""
+    ref = part.get("image_url")
+    if isinstance(ref, dict):
+        url = ref.get("url")
+    else:
+        url = ref
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    return url or None
+
+
+def _materialize_image_for_vision(url: str) -> "tuple[Optional[str], bool]":
+    """Resolve an image URL to something ``vision_analyze_tool`` accepts.
+
+    Returns ``(path_or_url, is_temp_file)``:
+      * ``http(s)://`` URLs pass through unchanged — the vision tool will
+        download them itself.
+      * ``data:image/...,<b64>`` URLs are decoded to a temp file under
+        ``$HERMES_HOME/cache/api_server_vision/`` so the vision tool can
+        treat them as local images.  The caller is responsible for
+        unlinking the temp file once analysis completes.
+      * Anything else (including malformed data URLs) returns ``(None, False)``
+        so the caller can skip it with a clear log line instead of raising.
+    """
+    if not url:
+        return None, False
+    lowered = url.lower()
+    if lowered.startswith(("http://", "https://")):
+        return url, False
+    if not lowered.startswith("data:image/"):
+        return None, False
+    header, _, payload = url.partition(",")
+    if not payload:
+        return None, False
+    mime = header[len("data:"):].split(";", 1)[0].strip() or "image/jpeg"
+    suffix_map = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+        "image/gif": ".gif", "image/webp": ".webp", "image/bmp": ".bmp",
+        "image/heic": ".heic", "image/heif": ".heif",
+    }
+    suffix = suffix_map.get(mime.lower(), ".img")
+
+    import base64
+    import tempfile
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception as exc:
+        logger.debug("api_server vision: data URL decode failed — %s", exc)
+        return None, False
+
+    try:
+        from hermes_cli.config import get_hermes_home
+        cache_dir = get_hermes_home() / "cache" / "api_server_vision"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir_str: Optional[str] = str(cache_dir)
+    except Exception:
+        cache_dir_str = None
+
+    try:
+        fd, path = tempfile.mkstemp(prefix="apiv_", suffix=suffix, dir=cache_dir_str)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+    except OSError as exc:
+        logger.debug("api_server vision: temp file write failed — %s", exc)
+        return None, False
+    return path, True
+
+
+async def _describe_image_via_vision(url: str) -> Optional[str]:
+    """Run ``vision_analyze_tool`` on a single image URL and return the description.
+
+    Returns ``None`` on any failure path so the caller can decide whether to
+    fall back to a generic "couldn't see the image" placeholder.
+    """
+    materialized, is_temp = _materialize_image_for_vision(url)
+    if materialized is None:
+        return None
+    try:
+        from tools.vision_tools import vision_analyze_tool
+
+        raw = await vision_analyze_tool(
+            image_url=materialized,
+            user_prompt=_VISION_ROUTE_TEXT_PROMPT,
+        )
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception as exc:
+        logger.warning("api_server vision: analyze failed for %s — %s", url[:80], exc)
+        payload = None
+    finally:
+        if is_temp:
+            try:
+                os.unlink(materialized)
+            except OSError:
+                pass
+
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    analysis = payload.get("analysis")
+    if not isinstance(analysis, str) or not analysis.strip():
+        return None
+    return analysis.strip()
+
+
+async def _route_content_for_text_mode(content: Any) -> Any:
+    """Replace inline image parts with auxiliary-vision text descriptions.
+
+    Mirrors ``AIAgentRunner._enrich_message_with_vision`` from gateway/run.py:
+    each successfully described image is rendered as a ``[The user sent an
+    image~ ...]`` block prepended to the user's text. Images that can't be
+    described (decode error, vision provider down, etc.) get a neutral
+    "couldn't see it" placeholder so the main model is at least aware that
+    pixels were attached — never silently dropped.
+
+    String content is returned unchanged, as is any list without image parts.
+    Pure-image turns get a neutral default caption so the placeholder still
+    reads naturally.
+    """
+    user_text, image_parts = _extract_text_and_image_parts(content)
+    if not image_parts:
+        return content
+
+    enriched_parts: List[str] = []
+    for part in image_parts:
+        url = _image_url_from_part(part)
+        if not url:
+            continue
+        description = await _describe_image_via_vision(url)
+        if description:
+            enriched_parts.append(
+                f"[The user sent an image~ Here's what I can see:\n{description}]"
+            )
+        else:
+            enriched_parts.append(
+                "[The user sent an image but I couldn't quite see it this time "
+                "(>_<). Try `vision_analyze` directly if you need to look closer.]"
+            )
+
+    if not enriched_parts:
+        return content
+
+    prefix = "\n\n".join(enriched_parts)
+    if user_text:
+        return f"{prefix}\n\n{user_text}"
+    return prefix
+
+
+async def apply_vision_routing(content: Any) -> Any:
+    """Apply auxiliary-vision routing to a single message's content.
+
+    Returns the content unchanged in ``native`` mode, when there are no
+    image parts, or when content is already a plain string. In ``text``
+    mode with image parts present, returns a flat string with the vision
+    descriptions prepended — see ``_route_content_for_text_mode``.
+
+    This is the public entry point the API server calls before passing
+    user / history messages to the agent.  Wrapped in a guard so any
+    failure inside the pipeline degrades to the legacy behaviour
+    (pass-through) instead of dropping the user turn.
+    """
+    try:
+        _user_text, image_parts = _extract_text_and_image_parts(content)
+        if not image_parts:
+            return content
+        if _decide_api_server_image_mode() != "text":
+            return content
+        return await _route_content_for_text_mode(content)
+    except Exception as exc:
+        logger.warning(
+            "api_server vision routing failed — passing content through unchanged: %s", exc
+        )
+        return content
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -2755,6 +3011,26 @@ class APIServerAdapter(BasePlatformAdapter):
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
         """
+        # ── Auxiliary-vision routing (#27232) ────────────────────────────
+        # When the user configured an auxiliary vision provider (or the
+        # main model can't take pixels), pre-analyse inline image parts via
+        # vision_analyze and replace them with text descriptions before
+        # handing the turn to the agent. Without this step, OpenAI-API
+        # clients (Open WebUI, LobeChat, …) saw their images silently
+        # stripped by run_agent's "server rejected image content" retry.
+        # Mirrors gateway/run.py's _decide_image_input_mode + _enrich_with_vision
+        # pipeline so behaviour is consistent across both gateways.
+        user_message = await apply_vision_routing(user_message)
+        if conversation_history:
+            routed_history: List[Dict[str, Any]] = []
+            for entry in conversation_history:
+                if isinstance(entry, dict) and "content" in entry:
+                    routed_content = await apply_vision_routing(entry["content"])
+                    if routed_content is not entry["content"]:
+                        entry = {**entry, "content": routed_content}
+                routed_history.append(entry)
+            conversation_history = routed_history
+
         loop = asyncio.get_running_loop()
 
         def _run():
