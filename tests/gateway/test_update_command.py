@@ -605,8 +605,8 @@ class TestSendUpdateNotification:
         assert not exit_code_path.exists()
 
     @pytest.mark.asyncio
-    async def test_cleans_up_on_error(self, tmp_path):
-        """Files are cleaned up even if notification fails."""
+    async def test_preserves_files_on_send_error(self, tmp_path):
+        """Files are preserved if notification delivery fails."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -626,12 +626,13 @@ class TestSendUpdateNotification:
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
-            await runner._send_update_notification()
+            result = await runner._send_update_notification()
 
-        # Files should still be cleaned up (finally block)
-        assert not pending_path.exists()
-        assert not output_path.exists()
-        assert not exit_code_path.exists()
+        assert result is False
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
 
     @pytest.mark.asyncio
     async def test_handles_corrupt_pending_file(self, tmp_path):
@@ -674,9 +675,10 @@ class TestSendUpdateNotification:
 
         # send should not have been called (wrong platform)
         mock_adapter.send.assert_not_called()
-        # Files should still be cleaned up
-        assert not pending_path.exists()
-        assert not exit_code_path.exists()
+        # Files should be kept so a later adapter reconnect/startup can retry.
+        assert pending_path.exists()
+        assert exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
 
 
 # ---------------------------------------------------------------------------

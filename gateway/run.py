@@ -13849,8 +13849,8 @@ class GatewayRunner:
             # Fall back to old behavior: wait for exit code and send final notification
             while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
                 if exit_code_path.exists():
-                    await self._send_update_notification()
-                    return
+                    if await self._send_update_notification():
+                        return
                 await asyncio.sleep(poll_interval)
             if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
                 exit_code_path.write_text("124")
@@ -13914,6 +13914,8 @@ class GatewayRunner:
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
+                    await asyncio.sleep(poll_interval)
+                    continue
 
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
@@ -13988,19 +13990,33 @@ class GatewayRunner:
 
             await asyncio.sleep(poll_interval)
 
+        if exit_code_path.exists():
+            logger.warning(
+                "Update watcher stopped before final notification was delivered; "
+                "leaving update marker files for the next gateway startup"
+            )
+            return
+
         # Timeout
         if not exit_code_path.exists():
             logger.warning("Update watcher timed out after %.0fs", timeout)
             exit_code_path.write_text("124")
             await _flush_buffer()
+            timeout_notified = False
             try:
                 await adapter.send(
                     chat_id,
                     "❌ Hermes update timed out after 30 minutes.",
                     metadata=metadata,
                 )
-            except Exception:
-                pass
+                timeout_notified = True
+            except Exception as e:
+                logger.warning("Update timeout notification failed: %s", e)
+            if not timeout_notified:
+                logger.warning(
+                    "Preserving timed-out update marker files so notification can retry"
+                )
+                return
             for p in (pending_path, claimed_path, output_path,
                       exit_code_path, prompt_path):
                 p.unlink(missing_ok=True)
@@ -14010,8 +14026,10 @@ class GatewayRunner:
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
 
-        Returns False when the update is still running so a caller can retry
-        later. Returns True after a definitive send/skip decision.
+        Returns False when the update is still running or the completion
+        notification could not be delivered yet. Marker files are preserved
+        in that case so a later gateway startup can retry.
+        Returns True after a definitive send/skip decision.
 
         This is the legacy notification path used when the streaming watcher
         cannot resolve the adapter (e.g. after a gateway restart where the
@@ -14026,7 +14044,6 @@ class GatewayRunner:
             return False
 
         cleanup = True
-        active_pending_path = claimed_path
         try:
             if pending_path.exists():
                 try:
@@ -14037,7 +14054,12 @@ class GatewayRunner:
             elif not claimed_path.exists():
                 return True
 
-            pending = json.loads(claimed_path.read_text())
+            try:
+                pending = json.loads(claimed_path.read_text())
+            except Exception as e:
+                logger.warning("Post-update notification marker is invalid: %s", e)
+                return True
+
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             thread_id = pending.get("thread_id")
@@ -14045,8 +14067,6 @@ class GatewayRunner:
             if not exit_code_path.exists():
                 logger.info("Update notification deferred: update still running")
                 cleanup = False
-                active_pending_path = pending_path
-                claimed_path.replace(pending_path)
                 return False
 
             exit_code_raw = exit_code_path.read_text().strip() or "1"
@@ -14061,36 +14081,50 @@ class GatewayRunner:
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
 
-            if adapter and chat_id:
-                metadata = {"thread_id": thread_id} if thread_id else None
-                # Strip ANSI escape codes for clean display
-                output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
-                if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
-                    if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
-                    else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
-                elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
-                else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(chat_id, msg, metadata=metadata)
+            if not adapter or not chat_id:
                 logger.info(
-                    "Sent post-update notification to %s:%s (exit=%s)",
+                    "Update notification deferred: %s adapter/chat not ready",
                     platform_str,
-                    chat_id,
-                    exit_code,
                 )
+                cleanup = False
+                return False
+
+            metadata = {"thread_id": thread_id} if thread_id else None
+            # Strip ANSI escape codes for clean display
+            output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+            if output:
+                if len(output) > 3500:
+                    output = "…" + output[-3500:]
+                if exit_code == 0:
+                    msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                else:
+                    msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+            elif exit_code == 0:
+                msg = "✅ Hermes update finished successfully."
+            else:
+                msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+            await adapter.send(chat_id, msg, metadata=metadata)
+            logger.info(
+                "Sent post-update notification to %s:%s (exit=%s)",
+                platform_str,
+                chat_id,
+                exit_code,
+            )
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
+            cleanup = False
+            return False
         finally:
             if cleanup:
-                active_pending_path.unlink(missing_ok=True)
+                pending_path.unlink(missing_ok=True)
                 claimed_path.unlink(missing_ok=True)
                 output_path.unlink(missing_ok=True)
                 exit_code_path.unlink(missing_ok=True)
+            elif claimed_path.exists():
+                try:
+                    claimed_path.replace(pending_path)
+                except OSError as e:
+                    logger.warning("Could not restore update pending marker for retry: %s", e)
 
         return True
 
@@ -14100,8 +14134,14 @@ class GatewayRunner:
         if not notify_path.exists():
             return None
 
+        cleanup = True
         try:
-            data = json.loads(notify_path.read_text())
+            try:
+                data = json.loads(notify_path.read_text())
+            except Exception as e:
+                logger.warning("Restart notification marker is invalid: %s", e)
+                return None
+
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
@@ -14113,9 +14153,10 @@ class GatewayRunner:
             adapter = self.adapters.get(platform)
             if not adapter:
                 logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
+                    "Restart notification deferred: %s adapter not connected",
                     platform_str,
                 )
+                cleanup = False
                 return None
 
             platform_cfg = self.config.platforms.get(platform)
@@ -14143,6 +14184,7 @@ class GatewayRunner:
                     chat_id,
                     getattr(result, "error", "send returned success=False"),
                 )
+                cleanup = False
                 return None
 
             logger.info(
@@ -14153,9 +14195,11 @@ class GatewayRunner:
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
+            cleanup = False
             return None
         finally:
-            notify_path.unlink(missing_ok=True)
+            if cleanup:
+                notify_path.unlink(missing_ok=True)
 
     async def _send_home_channel_startup_notifications(
         self,

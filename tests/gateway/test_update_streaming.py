@@ -414,6 +414,38 @@ class TestWatchUpdateProgress:
         assert not exit_code_path.exists()
 
     @pytest.mark.asyncio
+    async def test_preserves_markers_when_final_notification_fails(self, tmp_path):
+        """Final delivery failures leave marker files for a later retry."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_text("done\n")
+        exit_code_path.write_text("0")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send.side_effect = RuntimeError("network error")
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.05,
+                stream_interval=0.05,
+                timeout=0.15,
+            )
+
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        assert not (hermes_home / ".update_pending.claimed.json").exists()
+
+    @pytest.mark.asyncio
     async def test_failure_exit_code(self, tmp_path):
         """Non-zero exit code sends failure message."""
         runner = _make_runner()
