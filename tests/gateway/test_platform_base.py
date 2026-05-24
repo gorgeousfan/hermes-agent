@@ -1,19 +1,71 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
 from unittest.mock import patch
 
 import pytest
 
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
+    SendResult,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource, build_session_key
+
+
+class _ErrorReportingAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="fake-token"), Platform.TELEGRAM)
+        self.sent = []
+        self.processing_hooks = []
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=str(len(self.sent)))
+
+    async def get_chat_info(self, chat_id: str):
+        return {"id": chat_id}
+
+    async def on_processing_complete(
+        self,
+        event: MessageEvent,
+        outcome: ProcessingOutcome,
+    ) -> None:
+        self.processing_hooks.append((event.message_id, outcome))
+
+
+def _make_error_event(message_id: str = "msg-1") -> MessageEvent:
+    return MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+        ),
+        message_id=message_id,
+    )
 
 
 class TestSecretCaptureGuidance:
@@ -46,6 +98,82 @@ class TestSafeUrlForLog:
         assert safe_url_for_log(url, max_len=3) == "..."
         assert safe_url_for_log(url, max_len=2) == ".."
         assert safe_url_for_log(url, max_len=0) == ""
+
+
+class TestGatewayErrorReporting:
+    @staticmethod
+    async def _quiet_typing(_chat_id, interval=2.0, metadata=None):
+        await asyncio.Event().wait()
+
+    @pytest.mark.asyncio
+    async def test_connection_error_gets_sanitized_notice(self):
+        adapter = _ErrorReportingAdapter()
+        adapter._keep_typing = self._quiet_typing
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            raise ConnectionRefusedError("connection refused at 10.0.0.1:8080")
+
+        adapter.set_message_handler(handler)
+        event = _make_error_event()
+
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert len(adapter.sent) == 1
+        content = adapter.sent[0]["content"]
+        assert content == (
+            "The AI backend is temporarily unavailable. "
+            "I'll resume automatically when it comes back; no action needed."
+        )
+        assert "ConnectionRefusedError" not in content
+        assert "10.0.0.1" not in content
+        assert adapter.processing_hooks == [
+            ("msg-1", ProcessingOutcome.FAILURE),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_repeated_connection_error_is_suppressed_during_cooldown(self):
+        adapter = _ErrorReportingAdapter()
+        adapter._keep_typing = self._quiet_typing
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            raise ConnectionRefusedError("connection refused")
+
+        adapter.set_message_handler(handler)
+        first = _make_error_event("msg-1")
+        second = _make_error_event("msg-2")
+
+        await adapter._process_message_background(first, build_session_key(first.source))
+        await adapter._process_message_background(second, build_session_key(second.source))
+
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["content"].startswith("The AI backend is temporarily unavailable.")
+        assert adapter.processing_hooks == [
+            ("msg-1", ProcessingOutcome.FAILURE),
+            ("msg-2", ProcessingOutcome.FAILURE),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_non_connection_error_keeps_detailed_notice(self):
+        adapter = _ErrorReportingAdapter()
+        adapter._keep_typing = self._quiet_typing
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            raise RuntimeError("boom")
+
+        adapter.set_message_handler(handler)
+        event = _make_error_event()
+
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0]["content"] == (
+            "Sorry, I encountered an error (RuntimeError).\n"
+            "boom\n"
+            "Try again or use /reset to start a fresh session."
+        )
 
 
 # ---------------------------------------------------------------------------

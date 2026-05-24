@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import time
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
@@ -1275,6 +1276,27 @@ _RETRYABLE_ERROR_PATTERNS = (
     "eoferror",
 )
 
+_LLM_CONNECTION_ERROR_NAMES = frozenset({
+    "ConnectionError",
+    "ConnectionRefusedError",
+    "ConnectionResetError",
+    "ConnectTimeoutError",
+    "ReadTimeout",
+    "ServerDisconnectedError",
+    "ClientConnectorError",
+    "OSError",
+    "TimeoutError",
+})
+_LLM_CONNECTION_ERROR_COOLDOWN_SECONDS = 300.0
+
+
+def _is_llm_connection_error(exc: BaseException) -> bool:
+    """Return True for transient backend connectivity failures."""
+    return (
+        type(exc).__name__ in _LLM_CONNECTION_ERROR_NAMES
+        or isinstance(exc, (ConnectionError, OSError, TimeoutError))
+    )
+
 
 # Type for message handlers.  Handlers may return a plain string (normal
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
@@ -1428,6 +1450,8 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Last user-visible backend connection notice per session.
+        self._llm_error_last_posted: dict[str, tuple[str, float]] = {}
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -3547,20 +3571,48 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            # Send the error to the user so they aren't left with radio silence
+            # Send the error to the user so they aren't left with radio silence.
+            # Backend connection failures get a sanitized notice with a short
+            # per-session cooldown so an outage does not spam the channel.
             try:
                 error_type = type(e).__name__
-                error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-                await self.send(
-                    chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
-                    ),
-                    metadata=_thread_metadata,
-                )
+                if _is_llm_connection_error(e):
+                    now = time.monotonic()
+                    previous = self._llm_error_last_posted.get(session_key)
+                    if previous is not None:
+                        previous_type, previous_ts = previous
+                        if (
+                            previous_type == error_type
+                            and now - previous_ts < _LLM_CONNECTION_ERROR_COOLDOWN_SECONDS
+                        ):
+                            logger.info(
+                                "[%s] Suppressing duplicate LLM connection error (%s) for session %s",
+                                self.name,
+                                error_type,
+                                session_key,
+                            )
+                            return
+                    self._llm_error_last_posted[session_key] = (error_type, now)
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            "The AI backend is temporarily unavailable. "
+                            "I'll resume automatically when it comes back; no action needed."
+                        ),
+                        metadata=_thread_metadata,
+                    )
+                else:
+                    error_detail = str(e)[:300] if str(e) else "no details available"
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            f"Sorry, I encountered an error ({error_type}).\n"
+                            f"{error_detail}\n"
+                            "Try again or use /reset to start a fresh session."
+                        ),
+                        metadata=_thread_metadata,
+                    )
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
