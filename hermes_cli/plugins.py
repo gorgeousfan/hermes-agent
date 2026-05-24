@@ -125,6 +125,8 @@ _install_plugin_debug_handler()
 # Constants
 # ---------------------------------------------------------------------------
 
+OBSERVER_SCHEMA_VERSION = "hermes.observer.v1"
+
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
@@ -138,10 +140,12 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
+    "api_request_error",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
@@ -1548,6 +1552,8 @@ def get_pre_tool_call_block_message(
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
+    turn_id: str = "",
+    api_request_id: str = "",
 ) -> Optional[str]:
     """Check ``pre_tool_call`` hooks for a blocking directive.
 
@@ -1572,6 +1578,9 @@ def get_pre_tool_call_block_message(
         task_id=task_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
+        turn_id=turn_id,
+        api_request_id=api_request_id,
+        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
     )
 
     for result in hook_results:
