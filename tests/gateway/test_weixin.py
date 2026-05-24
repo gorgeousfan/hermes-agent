@@ -883,3 +883,41 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+    def test_repeated_slash_command_is_not_dropped_by_content_dedup(self):
+        """Regression for #29779 — `/approve` and other slash commands must
+        bypass content-fingerprint dedup; users re-issue them intentionally
+        (once per pending approval) and the 5-min TTL would otherwise drop
+        every repeat after the first.
+        """
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        base_msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "/approve"}}],
+        }
+
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-1"}))
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-2"}))
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-3"}))
+
+        assert adapter.handle_message.await_count == 3
+
+    def test_slash_command_with_leading_whitespace_is_not_dropped(self):
+        """Slash detection tolerates leading whitespace from clients that
+        trim differently."""
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        base_msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "  /approve"}}],
+        }
+
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-1"}))
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-2"}))
+
+        assert adapter.handle_message.await_count == 2

@@ -1388,10 +1388,13 @@ class WeixinAdapter(BasePlatformAdapter):
         if message_id and self._dedup.is_duplicate(message_id):
             return
 
-        # Secondary content-fingerprint dedup for text messages
+        # Secondary content-fingerprint dedup for text messages.
+        # Slash commands are exempt: users intentionally re-issue them
+        # (e.g. /approve once per pending approval) and the 5-minute TTL
+        # would otherwise silently drop every repeat (#29779).
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
-        if text:
+        if text and not text.lstrip().startswith("/"):
             content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
             if self._dedup.is_duplicate(content_key):
                 logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
