@@ -223,6 +223,36 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+_VOICE_TRANSCRIPT_PREFIX_MARKERS = (
+    "🎙️ You said:",
+    "🎙️ You said: ",
+)
+
+
+def _format_voice_transcript_echo(transcripts: List[str]) -> str:
+    """Build the user-visible Telegram voice transcript audit block."""
+    clean = [str(t or "").strip() for t in transcripts if str(t or "").strip()]
+    if not clean:
+        return ""
+    transcript = "\n\n".join(clean)
+    if "\n" in transcript or len(transcript) > 180:
+        return f'🎙️ You said:\n"{transcript}"'
+    return f'🎙️ You said: "{transcript}"'
+
+
+def _prefix_voice_transcript_echo(response: str, transcripts: List[str]) -> str:
+    """Prefix a final reply with the Telegram voice transcript, without duplicates."""
+    if not response:
+        return response
+    body = str(response).lstrip()
+    if body.startswith(_VOICE_TRANSCRIPT_PREFIX_MARKERS):
+        return response
+    prefix = _format_voice_transcript_echo(transcripts)
+    if not prefix:
+        return response
+    return f"{prefix}\n\n{response}"
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
@@ -1621,6 +1651,7 @@ class GatewayRunner:
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        self._voice_transcript_echo_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -7661,6 +7692,9 @@ class GatewayRunner:
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
+        voice_transcript_cache = getattr(self, "_voice_transcript_echo_by_session", None)
+        if voice_transcript_cache is not None:
+            voice_transcript_cache.pop(session_key, None)
 
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
@@ -7723,10 +7757,22 @@ class GatewayRunner:
                     )
 
             if audio_paths:
-                message_text = await self._enrich_message_with_transcription(
+                _enriched_voice = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    return_transcripts=True,
                 )
+                message_text, voice_transcripts = _enriched_voice
+                if (
+                    source.platform == Platform.TELEGRAM
+                    and event.message_type == MessageType.VOICE
+                    and voice_transcripts
+                ):
+                    transcript_cache = getattr(self, "_voice_transcript_echo_by_session", None)
+                    if transcript_cache is None:
+                        transcript_cache = {}
+                        self._voice_transcript_echo_by_session = transcript_cache
+                    transcript_cache[session_key] = list(voice_transcripts)
                 _stt_fail_markers = (
                     "No STT provider",
                     "STT is disabled",
@@ -8852,6 +8898,16 @@ class GatewayRunner:
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
+
+            if (
+                response
+                and not _already_sent
+                and source.platform == Platform.TELEGRAM
+                and event.message_type == MessageType.VOICE
+            ):
+                transcript_cache = getattr(self, "_voice_transcript_echo_by_session", {}) or {}
+                voice_transcripts = transcript_cache.pop(session_key, [])
+                response = _prefix_voice_transcript_echo(response, voice_transcripts)
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -14348,7 +14404,9 @@ class GatewayRunner:
         self,
         user_text: str,
         audio_paths: List[str],
-    ) -> str:
+        *,
+        return_transcripts: bool = False,
+    ):
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
         and prepend the transcript to the message text.
@@ -14360,6 +14418,13 @@ class GatewayRunner:
         Returns:
             The enriched message string with transcriptions prepended.
         """
+        captured_transcripts: List[str] = []
+
+        def _finish(text: str):
+            if return_transcripts:
+                return text, captured_transcripts
+            return text
+
         if not getattr(self.config, "stt_enabled", True):
             notes = []
             for path in audio_paths:
@@ -14372,14 +14437,14 @@ class GatewayRunner:
                 else:
                     notes.append(f"[The user sent a voice message: {abs_path}]")
             if not notes:
-                return user_text
+                return _finish(user_text)
             prefix = "\n\n".join(notes)
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
+                return _finish(prefix)
             if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
+                return _finish(f"{prefix}\n\n{user_text}")
+            return _finish(prefix)
 
         from tools.transcription_tools import transcribe_audio
 
@@ -14390,6 +14455,7 @@ class GatewayRunner:
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
+                    captured_transcripts.append(transcript)
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
@@ -14432,11 +14498,11 @@ class GatewayRunner:
             # when we successfully transcribed the audio — it's redundant.
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
+                return _finish(prefix)
             if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
-        return user_text
+                return _finish(f"{prefix}\n\n{user_text}")
+            return _finish(prefix)
+        return _finish(user_text)
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
