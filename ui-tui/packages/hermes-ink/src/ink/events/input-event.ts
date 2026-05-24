@@ -95,6 +95,26 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = ''
   }
 
+  // Also catch 2-field fragments without the [< prefix. When the same
+  // flush-split occurs at a different boundary (e.g., flushing at the
+  // second semicolon: ESC[<0;35;46M → flushed ESC[<0; → text "35;46M"),
+  // the prefix is consumed by the earlier sequence token and the text
+  // fragment lacks both the ESC and the [<. The 3-field regex above
+  // cannot match a 2-field fragment, so these leak as literal text
+  // like "35;46M" or "5;46M" in the input box. See #39379.
+  if (!keypress.name && /^\d+;\d+[Mm]$/.test(input)) {
+    input = ''
+  }
+
+  // Catch 1-field fragments (e.g., "46M" or "40M") from a deeper split
+  // at the last semicolon: ESC[<0;35; → text "46M". Same mechanism as
+  // the 2-field guard above; the !keypress.name gate prevents accidental
+  // suppression of intentional input like typing "35M" (which has a
+  // recognized key name like 'number' or 'm').
+  if (!keypress.name && /^\d+[Mm]$/.test(input)) {
+    input = ''
+  }
+
   // Strip meta if it's still remaining after `parseKeypress`
   // TODO(vadimdemedes): remove this in the next major version.
   if (input.startsWith('\u001B')) {
