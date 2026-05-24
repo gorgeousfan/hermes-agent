@@ -148,11 +148,20 @@ class TestRunJobScript:
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
 
-        # Use a very short timeout
+        # This test exercises timeout handling, not real process cleanup. Mock
+        # subprocess.run so it stays hermetic under the live-system guard.
         monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 1)
 
         script = cron_env / "scripts" / "slow.py"
         script.write_text("import time; time.sleep(30)\n")
+
+        def fake_run(argv, **kwargs):
+            assert argv == [sys.executable, str(script)]
+            assert kwargs["timeout"] == 1
+            raise sched_mod.subprocess.TimeoutExpired(cmd=argv, timeout=1)
+
+        monkeypatch.setattr(sched_mod, "executable_for_role", lambda **kwargs: sys.executable)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
 
         success, output = _run_job_script(str(script))
         assert success is False
@@ -173,6 +182,38 @@ class TestRunJobScript:
         assert success is True
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
+
+    def test_python_script_uses_macos_identity_executable(self, cron_env, monkeypatch):
+        """Cron Python scripts use the role-specific executable on macOS."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "identity.py"
+        script.write_text('print("identity")\n')
+        calls = []
+
+        def fake_executable_for_role(**kwargs):
+            calls.append(kwargs)
+            return "/tmp/Hermes Cron.app/Contents/MacOS/Hermes Cron"
+
+        def fake_run(argv, **kwargs):
+            assert argv == ["/tmp/Hermes Cron.app/Contents/MacOS/Hermes Cron", str(script)]
+            return type("Result", (), {"returncode": 0, "stdout": "identity\n", "stderr": ""})()
+
+        monkeypatch.setattr(sched_mod, "executable_for_role", fake_executable_for_role)
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert output == "identity"
+        assert calls == [
+            {
+                "role": "cron",
+                "hermes_home": cron_env,
+                "python_path": sys.executable,
+            }
+        ]
 
 
 class TestBuildJobPromptWithScript:

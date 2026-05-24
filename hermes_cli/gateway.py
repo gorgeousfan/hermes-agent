@@ -38,6 +38,7 @@ from hermes_cli.setup import (
     prompt, prompt_choice, prompt_yes_no,
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli.macos_identity import executable_for_role
 
 logger = logging.getLogger(__name__)
 
@@ -2783,10 +2784,18 @@ def _launchd_domain() -> str:
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    hermes_home = str(get_hermes_home().resolve())
+    hermes_home_path = get_hermes_home().resolve()
+    hermes_home = str(hermes_home_path)
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
+    profile = _profile_suffix() or None
+    gateway_executable = executable_for_role(
+        role="gateway",
+        hermes_home=hermes_home_path,
+        python_path=python_path,
+        profile=profile,
+    )
     profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
@@ -2809,7 +2818,7 @@ def generate_launchd_plist() -> str:
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
-        f"<string>{python_path}</string>",
+        f"<string>{gateway_executable}</string>",
         "<string>-m</string>",
         "<string>hermes_cli.main</string>",
     ]

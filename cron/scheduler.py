@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
+from hermes_cli.macos_identity import executable_for_role
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -877,7 +878,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             )
         argv = [_bash, str(path)]
     else:
-        argv = [sys.executable, str(path)]
+        argv = [
+            executable_for_role(role="cron", hermes_home=_get_hermes_home(), python_path=sys.executable),
+            str(path),
+        ]
 
     run_env = os.environ.copy()
     run_env["HERMES_HOME"] = str(_get_hermes_home())
