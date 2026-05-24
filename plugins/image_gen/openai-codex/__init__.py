@@ -14,13 +14,21 @@ Selection precedence for the tier (first hit wins):
 3. ``image_gen.model`` in ``config.yaml`` (when it's one of our tier IDs)
 4. :data:`DEFAULT_MODEL` — ``gpt-image-2-medium``
 
-Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
+Output is saved as PNG under ``$HERMES_HOME/cache/images/``.  When the
+``image_generate`` tool supplies ``input_images`` (local paths, data URLs, or
+HTTP(S) URLs), they are attached to the Codex Responses message as
+``input_image`` items so GPT Image can use the full reference/crop context
+without requiring an OpenAI API key.
 """
 
 from __future__ import annotations
 
 import logging
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
@@ -78,6 +86,7 @@ _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
     "using the image_generation tool when provided."
 )
+_VALID_BACKGROUNDS = {"transparent", "opaque", "auto"}
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +170,82 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _normalize_input_images(input_images: Any) -> List[str]:
+    """Normalize user/tool supplied image references into a list of strings."""
+    if input_images is None:
+        return []
+    if isinstance(input_images, str):
+        raw_items = [input_images]
+    elif isinstance(input_images, (list, tuple)):
+        raw_items = list(input_images)
+    else:
+        raise ValueError("input_images must be a string or a list of strings")
+
+    normalized: List[str] = []
+    for item in raw_items:
+        if not isinstance(item, str):
+            raise ValueError("input_images entries must be strings")
+        ref = item.strip()
+        if ref:
+            normalized.append(ref)
+    return normalized
+
+
+def _resolve_background(background: Any) -> str:
+    """Return a valid image_generation background mode."""
+    if background is None:
+        return "opaque"
+    value = str(background).strip().lower()
+    if value not in _VALID_BACKGROUNDS:
+        allowed = ", ".join(sorted(_VALID_BACKGROUNDS))
+        raise ValueError(f"background must be one of: {allowed}")
+    return value
+
+
+def _is_remote_or_data_image_ref(ref: str) -> bool:
+    if ref.startswith("data:image/"):
+        return True
+    parsed = urlparse(ref)
+    return parsed.scheme in {"http", "https"}
+
+
+def _local_image_to_data_url(ref: str) -> str:
+    path = Path(ref).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"input image not found: {ref}")
+    mime_type = mimetypes.guess_type(str(path))[0] or "image/png"
+    if not mime_type.startswith("image/"):
+        raise ValueError(f"input image must have an image MIME type: {ref}")
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _input_image_ref_to_image_url(ref: str) -> str:
+    if _is_remote_or_data_image_ref(ref):
+        return ref
+    return _local_image_to_data_url(ref)
+
+
+def _build_response_content(prompt: str, input_images: Any = None) -> List[Dict[str, str]]:
+    """Build Responses API message content with text plus optional images."""
+    content: List[Dict[str, str]] = [{"type": "input_text", "text": prompt}]
+    for ref in _normalize_input_images(input_images):
+        content.append({"type": "input_image", "image_url": _input_image_ref_to_image_url(ref)})
+    return content
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    input_images: Any = None,
+    background: Any = "opaque",
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+    resolved_background = _resolve_background(background)
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
@@ -172,7 +254,7 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": _build_response_content(prompt, input_images),
         }],
         tools=[{
             "type": "image_generation",
@@ -180,7 +262,7 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
             "size": size,
             "quality": quality,
             "output_format": "png",
-            "background": "opaque",
+            "background": resolved_background,
             "partial_images": 1,
         }],
         tool_choice={
@@ -306,6 +388,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
 
         tier_id, meta = _resolve_model()
         size = _SIZES.get(aspect, _SIZES["square"])
+        input_images = _normalize_input_images(kwargs.get("input_images"))
+        background = _resolve_background(kwargs.get("background"))
 
         client = _build_codex_client()
         if client is None:
@@ -324,6 +408,8 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                input_images=input_images,
+                background=background,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -364,7 +450,12 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={
+                "size": size,
+                "quality": meta["quality"],
+                "background": background,
+                "input_images_count": len(input_images),
+            },
         )
 
 

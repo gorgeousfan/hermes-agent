@@ -550,18 +550,21 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    input_images: Optional[list[str]] = None,
+    background: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None,
     output_format: Optional[str] = None,
     seed: Optional[int] = None,
 ) -> str:
-    """Generate an image from a text prompt using the configured FAL model.
+    """Generate an image using the configured image backend.
 
-    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
-    remaining kwargs are overrides for direct Python callers and are filtered
-    per-model via the ``supports`` whitelist (unsupported overrides are
-    silently dropped so legacy callers don't break when switching models).
+    The agent-facing schema exposes ``prompt``, ``aspect_ratio``, optional
+    ``input_images`` references, and an optional ``background`` preference.
+    Plugin providers receive those richer inputs when selected. The legacy
+    in-tree FAL path remains text-to-image only and fails loudly instead of
+    silently ignoring reference images.
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
@@ -573,6 +576,8 @@ def image_generate_tool(
         "parameters": {
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
+            "input_images": input_images,
+            "background": background,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
             "num_images": num_images,
@@ -590,6 +595,19 @@ def image_generate_tool(
     try:
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
+
+        if input_images:
+            raise ValueError(
+                "The built-in FAL image generation path does not support "
+                "reference input images. Set image_gen.provider to a backend "
+                "that supports input_images (for example openai-codex)."
+            )
+        if background is not None:
+            raise ValueError(
+                "The built-in FAL image generation path does not support the "
+                "background override. Use an image-gen plugin provider such as "
+                "openai-codex for transparent-background asset extraction."
+            )
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             raise ValueError(_build_no_backend_setup_message())
@@ -823,7 +841,9 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
+        "Generate high-quality images from text prompts, optionally using "
+        "reference input images when the configured backend supports them. "
+        "The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
         "path in the `image` field; display it with markdown "
@@ -841,6 +861,23 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "input_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional local image paths, data URLs, or HTTP(S) image URLs "
+                    "to use as visual references. Only backends that support image "
+                    "inputs will honor this parameter."
+                ),
+            },
+            "background": {
+                "type": "string",
+                "enum": ["transparent", "opaque", "auto"],
+                "description": (
+                    "Optional output background preference for compatible GPT image "
+                    "backends. Use 'transparent' for isolated PNG assets."
+                ),
             },
         },
         "required": ["prompt"],
@@ -887,7 +924,13 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(
+    prompt: str,
+    aspect_ratio: str,
+    *,
+    input_images: Optional[list[str]] = None,
+    background: Optional[str] = None,
+):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -941,9 +984,13 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        if input_images is not None:
+            kwargs["input_images"] = input_images
+        if background is not None:
+            kwargs["background"] = background
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -971,16 +1018,25 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    input_images = args.get("input_images")
+    background = args.get("background")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        input_images=input_images,
+        background=background,
+    )
     if dispatched is not None:
         return dispatched
 
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        input_images=input_images,
+        background=background,
     )
 
 

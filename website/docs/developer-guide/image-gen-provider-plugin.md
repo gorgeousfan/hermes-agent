@@ -130,6 +130,11 @@ class MyBackendImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
+        # Optional schema kwargs you may support:
+        # - input_images: local paths, data URLs, or HTTP(S) reference images
+        # - background: "transparent" | "opaque" | "auto"
+        # Ignore unknown kwargs so providers stay forward-compatible.
+
         # Model selection precedence: env var → config → default. The helper
         # _resolve_model() in the built-in openai plugin is a good reference.
         model_id = kwargs.get("model") or self.default_model() or "my-model-fast"
@@ -205,7 +210,19 @@ Full contract in `agent/image_gen_provider.py`. The methods you'll typically ove
 | `list_models()` | — | `[]` | Catalog for `hermes tools` model picker |
 | `default_model()` | — | first from `list_models()` | Fallback when no model is configured |
 | `get_setup_schema()` | — | minimal | Picker metadata + env-var prompts |
-| `generate(prompt, aspect_ratio, **kwargs)` | ✅ | — | The call |
+| `generate(prompt, aspect_ratio, **kwargs)` | ✅ | — | The call; optional kwargs currently include `input_images` and `background` |
+
+### Optional reference-image inputs
+
+The `image_generate` tool may pass:
+
+- `input_images`: a list of local file paths, `data:image/...` URLs, or HTTP(S) image URLs.
+- `background`: `transparent`, `opaque`, or `auto`.
+
+Providers that support image-conditioned generation should attach those images
+to the backend request. Providers that do not support them should either ignore
+unknown kwargs or return a clear unsupported-parameter error rather than silently
+pretending the reference was used.
 
 ## Response format
 
