@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict
+from typing import Any, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.platforms.base import ProcessingOutcome
@@ -229,6 +229,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
 
             class _Loop:
                 def run_in_executor(self, *_args, **_kwargs):
+                    adapter._mark_websocket_ready()
                     return future
 
                 def is_closed(self):
@@ -313,6 +314,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     self.calls += 1
                     if self.calls == 1:
                         raise OSError("temporary websocket failure")
+                    adapter._mark_websocket_ready()
                     return future
 
                 def is_closed(self):
@@ -328,6 +330,41 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertTrue(connected)
         self.assertEqual(sleeps, [1])
         self.assertEqual(fake_loop.calls, 2)
+
+    def test_wait_for_websocket_ready_times_out(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        with self.assertRaises(TimeoutError):
+            asyncio.run(adapter._wait_for_websocket_ready(timeout=0.01))
+
+    def test_connect_websocket_waits_for_sdk_ready_signal(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        async def _run() -> tuple[AsyncMock, Any]:
+            adapter._loop = asyncio.get_running_loop()
+            with (
+                patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
+                patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO"))),
+                patch("gateway.platforms.feishu.FeishuWSClient", return_value=SimpleNamespace()) as ws_client_cls,
+                patch("gateway.platforms.feishu._run_official_feishu_ws_client", lambda *_args: None),
+                patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
+                patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+                patch.object(adapter, "_build_event_handler", return_value=object()),
+                patch.object(adapter, "_wait_for_websocket_ready", new=AsyncMock()) as wait_ready,
+            ):
+                await adapter._connect_websocket()
+                return wait_ready, ws_client_cls
+
+        wait_ready, ws_client_cls = asyncio.run(_run())
+
+        wait_ready.assert_awaited_once()
+        ws_client_cls.assert_called_once()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
@@ -1513,6 +1550,30 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_message_event(data)
 
         self.assertTrue(submit.called)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_stale_pre_connect_message_is_dropped(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = time.time()
+        adapter._admit = Mock(return_value=None)
+        adapter._process_inbound_message = AsyncMock()
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        message = SimpleNamespace(
+            message_id="om_stale",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            create_time=str(int((adapter._connect_time - 5) * 1000)),
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        asyncio.run(adapter._handle_message_event_data(data))
+
+        adapter._process_inbound_message.assert_not_awaited()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_request_uses_same_message_dispatch_path(self):
