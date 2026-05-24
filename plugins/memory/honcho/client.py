@@ -252,6 +252,11 @@ class HonchoClientConfig:
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
+    # map of WhatsApp LID -> Honcho peer name.
+    # Populated from honcho.json root or host block as "peerByLid".
+    # Used by Cleo to route Andressa's messages to peer=andressa instead
+    # of stamping every inbound WhatsApp message under the default peer.
+    peer_by_lid: dict = field(default_factory=dict)
     # When True, ``peer_name`` wins over any gateway-supplied runtime
     # identity (Telegram UID, Discord ID, …) when resolving the user peer.
     # This keeps memory unified across platforms for single-user deployments
@@ -453,6 +458,8 @@ class HonchoClientConfig:
             timeout=timeout,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
+            # 
+            peer_by_lid=(host_block.get("peerByLid") or raw.get("peerByLid") or {}),
             pin_peer_name=_resolve_bool(
                 host_block.get("pinPeerName"),
                 raw.get("pinPeerName"),

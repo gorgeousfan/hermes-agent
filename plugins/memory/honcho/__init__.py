@@ -297,6 +297,35 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
+            # Cleo-specific routing.
+            # peerByLid routes multi-tenant WhatsApp chats (Andressa vs
+            # Lufe) to the correct Honcho peer. We scan the gateway
+            # user_id (the sender's LID, e.g. "64858485739600@lid") for
+            # any known LID and override the configured peer_name when a
+            # match is found. The map lives in honcho.json, e.g.
+            #   {"129364566008012": "lufe", "64858485739600": "andressa"}
+            # This override wins over both the default peer_name and the
+            # upstream runtime_user_peer_name path because routing
+            # identity is per-message, not per-deployment. Load-bearing
+            # for auto-renamed sessions where the LID is no longer
+            # present in the session key.
+            #
+            # We also rewrite kwargs["user_id"] so the upstream
+            # runtime_user_peer_name plumbing (passed into the session
+            # manager below) sees the resolved peer instead of the raw
+            # LID. Defense in depth alongside the session.py patch.
+            _gw_user_id = kwargs.get("user_id")
+            if _gw_user_id and getattr(cfg, "peer_by_lid", None):
+                for _lid, _peer in cfg.peer_by_lid.items():
+                    if _lid and str(_lid) in str(_gw_user_id):
+                        cfg.peer_name = _peer
+                        kwargs["user_id"] = _peer
+                        logger.info(
+                            "peerByLid routed user_id=%s -> peer=%s",
+                            _gw_user_id, _peer,
+                        )
+                        break
+
             self._config = cfg
 
             # ----- B1: recall_mode from config -----
