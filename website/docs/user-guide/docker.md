@@ -58,6 +58,8 @@ docker run -d \
 
 Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
 
+For multi-tenant SaaS frontends that manage their own session storage, also set `API_SERVER_STATELESS=true` to disable server-side SessionDB persistence. See [Stateless Mode](./features/api-server.md#stateless-mode-for-saas-frontends).
+
 ## Running the dashboard
 
 The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` and expose port `9119` alongside the gateway's `8642`:
