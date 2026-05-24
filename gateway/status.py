@@ -227,7 +227,12 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
         return None
     try:
         raw = path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # OSError: permission denied, file deleted between exists() and read.
+        # UnicodeDecodeError: file corrupted with non-UTF-8 bytes (e.g. stray
+        # TLS record data accidentally appended to gateway_state.json).
+        # Both are treated as "file unreadable" so the caller falls back to a
+        # fresh record rather than propagating an unexpected exception.
         return None
     if not raw:
         return None
