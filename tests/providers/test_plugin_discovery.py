@@ -58,7 +58,7 @@ def test_all_34_profiles_register():
     # Spot-check representative providers from different categories
     for required in (
         "openrouter", "anthropic", "custom", "bedrock", "openai-codex",
-        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan",
+        "minimax-oauth", "gmi", "xiaomi", "alibaba-coding-plan", "novita",
     ):
         assert required in names, f"Missing profile: {required}"
 
