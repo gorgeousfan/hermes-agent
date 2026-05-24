@@ -1,0 +1,5 @@
+name: saladcloud-provider
+kind: model-provider
+version: 1.0.0
+description: Salad AI Gateway
+author: Salad Technologies
