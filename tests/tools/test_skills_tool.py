@@ -357,6 +357,63 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_display_text_groups_by_category_and_lists_all(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="devops")
+            _make_skill(tmp_path, "beta", category="mlops")
+            _make_skill(tmp_path, "gamma")  # uncategorized
+            raw = skills_list()
+        result = json.loads(raw)
+        display = result["display_text"]
+        # All names appear — no truncation
+        assert "alpha" in display
+        assert "beta" in display
+        assert "gamma" in display
+        # Grouped by category header (convention: bare "uncategorized", no parens —
+        # matches hermes_cli/skills_config.py).
+        assert "## devops" in display
+        assert "## mlops" in display
+        assert "## uncategorized" in display
+        # Each skill rendered with description
+        assert "Description for alpha" in display
+        # Header reports total count
+        assert "Available skills (3 total)" in display
+        # Hint redirects model away from truncating
+        assert "do not truncate" in result["hint"].lower()
+
+    def test_display_text_empty_when_filter_empty(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="devops")
+            raw = skills_list(category="nonexistent")
+        result = json.loads(raw)
+        assert result["count"] == 0
+        assert result["display_text"] == "No skills to show."
+
+    def test_display_text_collapses_multiline_description(self, tmp_path):
+        # Descriptions with embedded newlines must render on one bullet line —
+        # otherwise the markdown list breaks visibly in WeChat/Telegram.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "weird"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: weird\ndescription: |\n  line one\n  line two\n---\n\nBody.\n"
+            )
+            raw = skills_list()
+        result = json.loads(raw)
+        display = result["display_text"]
+        assert "line one line two" in display
+        # Must not appear as two separate lines (which would break the bullet).
+        assert "line one\nline two" not in display
+
+    def test_early_return_branches_include_display_text(self, tmp_path):
+        # Empty skills dir branch — display_text + hint must be present so the
+        # gateway response shape is stable.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            raw = skills_list()
+        result = json.loads(raw)
+        assert "display_text" in result
+        assert "hint" in result
+
 
 # ---------------------------------------------------------------------------
 # skill_view

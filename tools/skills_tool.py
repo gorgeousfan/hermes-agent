@@ -672,6 +672,43 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
         return None
 
 
+_DISPLAY_HINT = (
+    "Show display_text verbatim when the user asks to see or list skills "
+    "— do not truncate or summarize. "
+    "Use skill_view(name) to load full content of a specific skill."
+)
+
+
+def _format_skills_display(skills: List[Dict[str, Any]]) -> str:
+    """Render the skill list as markdown grouped by category.
+
+    The model can echo this verbatim instead of summarizing/truncating the
+    raw ``skills`` array when the user asks to see all installed skills.
+    """
+    if not skills:
+        return "No skills to show."
+
+    by_category: Dict[str, List[Dict[str, Any]]] = {}
+    for s in skills:
+        cat = s.get("category") or "uncategorized"
+        by_category.setdefault(cat, []).append(s)
+
+    lines: List[str] = [f"Available skills ({len(skills)} total):", ""]
+    for cat in sorted(by_category):
+        lines.append(f"## {cat}")
+        for s in by_category[cat]:
+            # Collapse any internal whitespace (incl. newlines) so multi-line
+            # YAML descriptions don't break the markdown bullet rendering.
+            desc = " ".join((s.get("description") or "").split())
+            if desc:
+                lines.append(f"- **{s['name']}** — {desc}")
+            else:
+                lines.append(f"- **{s['name']}**")
+        lines.append("")
+    lines.append("Use `skill_view(name)` to load full content of a specific skill.")
+    return "\n".join(lines)
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
@@ -694,6 +731,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                     "success": True,
                     "skills": [],
                     "categories": [],
+                    "display_text": "No skills to show.",
+                    "hint": _DISPLAY_HINT,
                     "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
                 },
                 ensure_ascii=False,
@@ -708,6 +747,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                     "success": True,
                     "skills": [],
                     "categories": [],
+                    "display_text": "No skills to show.",
+                    "hint": _DISPLAY_HINT,
                     "message": "No skills found in skills/ directory.",
                 },
                 ensure_ascii=False,
@@ -731,7 +772,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "skills": all_skills,
                 "categories": categories,
                 "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "display_text": _format_skills_display(all_skills),
+                "hint": _DISPLAY_HINT,
             },
             ensure_ascii=False,
         )
@@ -1490,7 +1532,12 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": (
+        "List available skills. The response includes display_text — a pre-formatted "
+        "markdown listing grouped by category — that you should echo verbatim when the "
+        "user asks to see or list skills, instead of summarizing or truncating. "
+        "Use skill_view(name) to load full content of a specific skill."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
