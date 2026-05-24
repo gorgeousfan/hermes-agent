@@ -622,14 +622,25 @@ class WebhookAdapter(BasePlatformAdapter):
                             if done_task.cancelled():
                                 return
                             exc = done_task.exception()
-                            if exc is None:
+                            if exc is not None:
+                                logger.error(
+                                    "[webhook] background direct-deliver failed route=%s delivery=%s",
+                                    route_name,
+                                    delivery_id,
+                                    exc_info=(type(exc), exc, exc.__traceback__),
+                                )
                                 return
-                            logger.error(
-                                "[webhook] background direct-deliver failed route=%s delivery=%s",
-                                route_name,
-                                delivery_id,
-                                exc_info=(type(exc), exc, exc.__traceback__),
-                            )
+                            try:
+                                bg_result = done_task.result()
+                            except Exception:
+                                return
+                            if isinstance(bg_result, SendResult) and not bg_result.success:
+                                logger.warning(
+                                    "[webhook] direct-deliver target rejected route=%s target=%s delivery=%s",
+                                    route_name,
+                                    delivery["deliver"],
+                                    delivery_id,
+                                )
 
                         task.add_done_callback(_log_background_direct_delivery_failure)
                         return web.json_response(

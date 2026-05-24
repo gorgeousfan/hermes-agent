@@ -384,6 +384,47 @@ class TestDeliverOnlyStatusCodes:
         mock_target.send.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_background_delivery_failure_is_logged(self, caplog):
+        """If a timed-out background send later fails, log the target rejection."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_timeout_seconds": 0.01,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+
+        async def slow_send(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            return SendResult(success=False, error="rate limited by tg")
+
+        mock_target.send = AsyncMock(side_effect=slow_send)
+
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING", logger="gateway.platforms.webhook"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/r",
+                    json={},
+                    headers={"X-GitHub-Delivery": "d-slow-fail-1"},
+                )
+                assert resp.status == 202
+
+            await asyncio.sleep(0.08)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "direct-deliver target rejected route=r target=telegram" in message
+            for message in messages
+        )
+        assert not any("rate limited by tg" in message for message in messages)
+
+    @pytest.mark.asyncio
     async def test_slow_delivery_inflight_limit_rejects_overflow(self):
         """Bounded background sends prevent slow targets from piling up."""
         routes = {
