@@ -197,6 +197,10 @@ MATRIX_ALLOWED_USERS=@alice:matrix.example.org
 
 # Multiple allowed users (comma-separated)
 # MATRIX_ALLOWED_USERS=@alice:matrix.example.org,@bob:matrix.example.org
+
+# Optional TLS escape hatch for known private/self-signed homeservers only.
+# Default is true; leave this unset for public or CA-trusted homeservers.
+# MATRIX_SSL_VERIFY=false
 ```
 
 **Using password login:**
@@ -414,6 +418,18 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 ```
 
 If this returns your user info, the token is valid. If it returns an error, generate a new token.
+
+### TLS certificate verification fails for a private homeserver
+
+**Cause**: The homeserver uses a self-signed certificate or a private CA that Python's TLS stack does not trust.
+
+**Fix**: Prefer installing the private CA certificate into the system trust store. If this is a known private homeserver and you intentionally accept the risk, set the Matrix-scoped escape hatch and restart Hermes:
+
+```bash
+MATRIX_SSL_VERIFY=false
+```
+
+This disables TLS certificate verification only for Matrix homeserver requests. Hermes logs a warning when the escape hatch is active. Do not use it for public or untrusted homeservers.
 
 ### "mautrix not installed" error
 

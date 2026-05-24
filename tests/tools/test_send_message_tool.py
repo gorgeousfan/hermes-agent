@@ -1096,16 +1096,16 @@ class TestParseTargetRefMatrix:
         """Session-derived Matrix thread targets round-trip as room + event id."""
         chat_id, thread_id, is_explicit = _parse_target_ref(
             "matrix",
-            "!HLOQwxYGgFPMPJUSNR:matrix.org:$thread123:matrix.org",
+            "!roomid:example.org:$thread123:matrix.org",
         )
-        assert chat_id == "!HLOQwxYGgFPMPJUSNR:matrix.org"
+        assert chat_id == "!roomid:example.org"
         assert thread_id == "$thread123:matrix.org"
         assert is_explicit is True
 
     def test_matrix_room_id_is_explicit(self):
         """Matrix room IDs (!) are recognized as explicit targets."""
-        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "!HLOQwxYGgFPMPJUSNR:matrix.org")
-        assert chat_id == "!HLOQwxYGgFPMPJUSNR:matrix.org"
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "!roomid:example.org")
+        assert chat_id == "!roomid:example.org"
         assert thread_id is None
         assert is_explicit is True
 
@@ -1529,7 +1529,7 @@ class TestSendMatrixUrlEncoding:
                 _send_matrix(
                     "test_token",
                     {"homeserver": "https://matrix.example.org"},
-                    "!HLOQwxYGgFPMPJUSNR:matrix.org",
+                    "!roomid:example.org",
                     "hello",
                 )
             )
@@ -1537,8 +1537,41 @@ class TestSendMatrixUrlEncoding:
         assert result["success"] is True
         # Verify the URL was called with percent-encoded room ID
         put_url = mock_session.put.call_args[0][0]
-        assert "%21HLOQwxYGgFPMPJUSNR%3Amatrix.org" in put_url
-        assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url
+        assert "%21roomid%3Aexample.org" in put_url
+        assert "!roomid:example.org" not in put_url
+
+
+    def test_matrix_ssl_verify_false_disables_aiohttp_ssl(self, monkeypatch):
+        """MATRIX_SSL_VERIFY=false should be honored by lightweight Matrix sends."""
+        import aiohttp
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"event_id": "$evt123"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.put = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        monkeypatch.setenv("MATRIX_SSL_VERIFY", "false")
+        with patch("aiohttp.ClientSession", return_value=mock_session) as session_cls:
+            from tools.send_message_tool import _send_matrix
+            result = asyncio.get_event_loop().run_until_complete(
+                _send_matrix(
+                    "test_token",
+                    {"homeserver": "https://matrix.example.org"},
+                    "!roomid:example.org",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        connector = session_cls.call_args.kwargs["connector"]
+        assert isinstance(connector, aiohttp.TCPConnector)
+        assert connector._ssl is False
 
 
 # ---------------------------------------------------------------------------

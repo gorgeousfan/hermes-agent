@@ -131,7 +131,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
-    "MATRIX_RECOVERY_KEY",
+    "MATRIX_SSL_VERIFY", "MATRIX_RECOVERY_KEY",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
     # observability/langfuse`); credentials gate the plugin at runtime.
@@ -2562,6 +2562,14 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": True,
         "category": "messaging",
+    },
+    "MATRIX_SSL_VERIFY": {
+        "description": "Verify Matrix homeserver TLS certificates (default: true). Set false only for known private/self-signed homeservers.",
+        "prompt": "Verify Matrix TLS certificates (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "MATRIX_USER_ID": {
         "description": "Matrix user ID (e.g. @hermes:example.org)",

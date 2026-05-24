@@ -7,6 +7,7 @@ when installed with ``pip install "mautrix[encryption]"``.
 Environment variables:
     MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
     MATRIX_ACCESS_TOKEN         Access token (preferred auth method)
+    MATRIX_SSL_VERIFY           Set "false" only for known private/self-signed homeservers
     MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
     MATRIX_PASSWORD             Password (alternative to access token)
     MATRIX_ENCRYPTION           Set "true" to enable E2EE
@@ -155,6 +156,16 @@ _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
 })
 
 
+def _matrix_ssl_verify_enabled() -> bool:
+    """Return whether Matrix HTTPS certificate verification should be enabled."""
+    return os.getenv("MATRIX_SSL_VERIFY", "true").strip().lower() not in {
+        "false",
+        "0",
+        "no",
+        "off",
+    }
+
+
 def _looks_like_matrix_image_filename(text: str) -> bool:
     """Return True when Matrix image body text is probably just a transport filename.
 
@@ -189,18 +200,34 @@ def _create_matrix_session(proxy_url: str | None):
     we use ``aiohttp_socks.ProxyConnector`` (connector-level).
     When no proxy is configured we enable ``trust_env`` so standard env vars
     (``HTTP_PROXY`` / ``HTTPS_PROXY``) are honoured automatically.
+
+    ``MATRIX_SSL_VERIFY=false`` is a scoped escape hatch for known private
+    homeservers with self-signed or private-CA TLS chains.
     """
     import aiohttp
 
+    ssl_verify = _matrix_ssl_verify_enabled()
+    connector = None
+    if not ssl_verify:
+        logger.warning(
+            "Matrix: MATRIX_SSL_VERIFY=false — TLS certificate verification disabled "
+            "for Matrix homeserver requests"
+        )
+        connector = aiohttp.TCPConnector(ssl=False)
+
     if not proxy_url:
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=True, connector=connector)
 
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
             from aiohttp_socks import ProxyConnector
 
             return aiohttp.ClientSession(
-                connector=ProxyConnector.from_url(proxy_url, rdns=True),
+                connector=ProxyConnector.from_url(
+                    proxy_url,
+                    rdns=True,
+                    ssl=None if ssl_verify else False,
+                ),
             )
         except ImportError:
             logger.warning(
@@ -208,9 +235,9 @@ def _create_matrix_session(proxy_url: str | None):
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
-            return aiohttp.ClientSession(trust_env=True)
+            return aiohttp.ClientSession(trust_env=True, connector=connector)
 
-    return aiohttp.ClientSession(proxy=proxy_url)
+    return aiohttp.ClientSession(proxy=proxy_url, connector=connector)
 
 
 def _check_e2ee_deps() -> bool:

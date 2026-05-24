@@ -2561,22 +2561,26 @@ class TestCreateMatrixSession:
     """Verify _create_matrix_session applies proxy at the session level."""
 
     @pytest.mark.asyncio
-    async def test_no_proxy_returns_trust_env_session(self):
+    async def test_no_proxy_returns_trust_env_session(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_SSL_VERIFY", raising=False)
         with patch.dict("sys.modules", _make_fake_mautrix()):
             from gateway.platforms.matrix import _create_matrix_session
             session = _create_matrix_session(None)
             try:
                 assert session.trust_env is True
+                assert getattr(session.connector, "_ssl") is not False
             finally:
                 await session.close()
 
     @pytest.mark.asyncio
-    async def test_http_proxy_sets_default_proxy(self):
+    async def test_http_proxy_sets_default_proxy(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_SSL_VERIFY", raising=False)
         with patch.dict("sys.modules", _make_fake_mautrix()):
             from gateway.platforms.matrix import _create_matrix_session
             session = _create_matrix_session("http://proxy:8080")
             try:
                 assert str(session._default_proxy) == "http://proxy:8080"
+                assert getattr(session.connector, "_ssl") is not False
             finally:
                 await session.close()
 
@@ -2595,5 +2599,51 @@ class TestCreateMatrixSession:
                 session = _create_matrix_session("socks5://proxy:1080")
                 try:
                     assert session.connector is fake_connector
+                finally:
+                    await session.close()
+
+    @pytest.mark.asyncio
+    async def test_ssl_verify_false_disables_connector_ssl(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_SSL_VERIFY", "false")
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session(None)
+            try:
+                assert getattr(session.connector, "_ssl") is False
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_http_proxy_preserves_ssl_verify_false(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_SSL_VERIFY", "false")
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session("http://proxy:8080")
+            try:
+                assert str(session._default_proxy) == "http://proxy:8080"
+                assert getattr(session.connector, "_ssl") is False
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_socks_proxy_passes_ssl_false_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_SSL_VERIFY", "false")
+        fake_connector = MagicMock()
+        from_url = MagicMock(return_value=fake_connector)
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            with patch.dict("sys.modules", {
+                "aiohttp_socks": MagicMock(
+                    ProxyConnector=MagicMock(from_url=from_url)
+                ),
+            }):
+                from gateway.platforms.matrix import _create_matrix_session
+                session = _create_matrix_session("socks5://proxy:1080")
+                try:
+                    assert session.connector is fake_connector
+                    from_url.assert_called_once_with(
+                        "socks5://proxy:1080",
+                        rdns=True,
+                        ssl=False,
+                    )
                 finally:
                     await session.close()

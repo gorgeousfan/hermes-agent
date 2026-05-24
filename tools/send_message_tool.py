@@ -13,7 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -70,6 +70,16 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _matrix_ssl_verify_enabled() -> bool:
+    """Return whether Matrix HTTPS certificate verification should be enabled."""
+    return os.getenv("MATRIX_SSL_VERIFY", "true").strip().lower() not in {
+        "false",
+        "0",
+        "no",
+        "off",
+    }
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -1415,7 +1425,15 @@ async def _send_matrix(token, extra, chat_id, message):
         except ImportError:
             pass
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        session_kwargs: dict[str, Any] = {"timeout": aiohttp.ClientTimeout(total=30)}
+        if not _matrix_ssl_verify_enabled():
+            logger.warning(
+                "Matrix: MATRIX_SSL_VERIFY=false — TLS certificate verification disabled "
+                "for lightweight send"
+            )
+            session_kwargs["connector"] = aiohttp.TCPConnector(ssl=False)
+
+        async with aiohttp.ClientSession(**session_kwargs) as session:
             async with session.put(url, headers=headers, json=payload) as resp:
                 if resp.status not in {200, 201}:
                     body = await resp.text()
