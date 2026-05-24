@@ -1316,3 +1316,155 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestOllamaProbeGate:
+    """Step 5e of ``get_model_context_length`` runs the Ollama
+    ``/api/show`` probe.  On a cold cache that probe blocks ~1.7s on
+    OpenRouter and similar non-Ollama hosts (full SSL handshake + server
+    round-trip to confirm a 404).  Skip it for any provider that is
+    known not to speak the Ollama protocol — only run when the resolved
+    provider is unknown, ``ollama``, or ``ollama-cloud``.  Refs #31555."""
+
+    def _patch_skip_other_branches(self):
+        """Force the resolver down to step 5e by neutralising every
+        higher-precedence branch.  Returns the patch context managers as
+        a list the caller can stack with ``contextlib.ExitStack``."""
+        return [
+            patch("agent.model_metadata.get_cached_context_length", return_value=None),
+            patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+            patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}),
+            patch("agent.model_metadata._query_anthropic_context_length", return_value=None),
+            patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None),
+            patch("agent.models_dev.lookup_models_dev_context", return_value=None),
+            patch("agent.models_dev.fetch_models_dev", return_value={}),
+        ]
+
+    @pytest.mark.parametrize("provider,base_url", [
+        ("openai", "https://api.openai.com/v1"),
+        ("anthropic", "https://api.anthropic.com"),
+        ("openrouter", "https://openrouter.ai/api/v1"),
+        ("gemini", "https://generativelanguage.googleapis.com"),
+        ("deepseek", "https://api.deepseek.com"),
+        ("xai", "https://api.x.ai/v1"),
+        ("zai", "https://api.z.ai"),
+        ("fireworks", "https://api.fireworks.ai"),
+    ])
+    def test_known_non_ollama_provider_skips_probe(self, provider, base_url):
+        """The probe must not run for known non-Ollama providers — the
+        latency cost on a cold cache is real (~1.7s for OpenRouter)."""
+        import contextlib
+        from agent.model_metadata import get_model_context_length
+
+        with contextlib.ExitStack() as stack:
+            for ctx_mgr in self._patch_skip_other_branches():
+                stack.enter_context(ctx_mgr)
+            mock_probe = stack.enter_context(
+                patch("agent.model_metadata._query_ollama_api_show")
+            )
+
+            get_model_context_length(
+                "some-unknown-model-not-in-defaults",
+                provider=provider,
+                base_url=base_url,
+            )
+
+            assert mock_probe.call_count == 0, (
+                f"_query_ollama_api_show ran for known-non-Ollama provider "
+                f"{provider!r}; this re-introduces the #31555 startup-latency bug"
+            )
+
+    @pytest.mark.parametrize("provider", ["ollama", "ollama-cloud"])
+    def test_ollama_class_provider_still_probes(self, provider):
+        """Real Ollama users must keep getting the authoritative
+        ``/api/show`` context length."""
+        import contextlib
+        from agent.model_metadata import get_model_context_length
+
+        with contextlib.ExitStack() as stack:
+            for ctx_mgr in self._patch_skip_other_branches():
+                stack.enter_context(ctx_mgr)
+            mock_probe = stack.enter_context(
+                patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+            )
+            # Block the local-server fallback step 9 — only step 5e should
+            # ever see this call.
+            stack.enter_context(
+                patch("agent.model_metadata._query_local_context_length", return_value=None)
+            )
+            stack.enter_context(
+                patch("agent.model_metadata.save_context_length")
+            )
+
+            ctx = get_model_context_length(
+                "qwen3-coder",
+                provider=provider,
+                base_url="https://ollama.example.com/v1",
+            )
+
+            assert mock_probe.call_count >= 1, (
+                f"_query_ollama_api_show was skipped for {provider!r}; "
+                "Ollama users would silently lose context detection"
+            )
+            assert ctx == 131072
+
+    def test_empty_provider_still_probes(self):
+        """When provider is unknown, the probe is the only signal we
+        have for context length — must still run."""
+        import contextlib
+        from agent.model_metadata import get_model_context_length
+
+        with contextlib.ExitStack() as stack:
+            for ctx_mgr in self._patch_skip_other_branches():
+                stack.enter_context(ctx_mgr)
+            # Step 2b also runs the probe for unknown-custom endpoints.
+            # We use a base_url that is a known-provider host so step 2b
+            # doesn't fire, but we leave ``provider`` empty so step 5
+            # can't infer it via URL match (we'd hit ``openai`` and skip
+            # the probe).  Use a synthetic non-mapped host instead.
+            mock_probe = stack.enter_context(
+                patch("agent.model_metadata._query_ollama_api_show", return_value=None)
+            )
+            stack.enter_context(
+                patch("agent.model_metadata._is_custom_endpoint", return_value=False)
+            )
+            stack.enter_context(
+                patch("agent.model_metadata._infer_provider_from_url", return_value=None)
+            )
+
+            get_model_context_length(
+                "completely-novel-model-name",
+                provider="",
+                base_url="https://internal.example.com/v1",
+            )
+
+            assert mock_probe.call_count >= 1, (
+                "Unknown-provider path skipped the Ollama probe — the "
+                "fallback would never reach authoritative context length"
+            )
+
+    def test_known_provider_via_url_inference_skips_probe(self):
+        """Even when provider is empty, an inferred known provider
+        (via ``_infer_provider_from_url``) must skip the probe.  This is
+        the OpenRouter-via-``provider: custom`` case from #31555."""
+        import contextlib
+        from agent.model_metadata import get_model_context_length
+
+        with contextlib.ExitStack() as stack:
+            for ctx_mgr in self._patch_skip_other_branches():
+                stack.enter_context(ctx_mgr)
+            mock_probe = stack.enter_context(
+                patch("agent.model_metadata._query_ollama_api_show")
+            )
+
+            # provider="openrouter" is in the {"openrouter","custom"}
+            # set that triggers inference at step 5; the URL maps back
+            # to "openrouter" so effective_provider becomes "openrouter"
+            # — known non-Ollama, probe must skip.
+            get_model_context_length(
+                "novel-model-no-default",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+
+            assert mock_probe.call_count == 0
