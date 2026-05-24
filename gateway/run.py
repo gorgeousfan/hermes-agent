@@ -2183,6 +2183,38 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _sync_telegram_topic_binding(
+        self,
+        source: SessionSource,
+        session_entry,
+        *,
+        reason: str,
+    ) -> None:
+        """Keep topic-mode Telegram bindings aligned with session rotations.
+
+        Compression rotates the underlying Hermes session_id while the
+        Telegram topic thread_id stays the same. If the topic binding is left
+        pointing at the pre-compression session, the next message in that topic
+        gets rebound to the oversized parent transcript and can compact again.
+        """
+        if not self._is_telegram_topic_lane(source):
+            return
+        try:
+            self._record_telegram_topic_binding(source, session_entry)
+            logger.info(
+                "telegram topic binding synced after %s: chat=%s thread=%s session=%s",
+                reason,
+                source.chat_id,
+                source.thread_id,
+                session_entry.session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to sync Telegram topic binding after %s",
+                reason,
+                exc_info=True,
+            )
+
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
@@ -2194,8 +2226,11 @@ class GatewayRunner:
         and ``_build_message_event`` strips the thread_id on plain replies
         (#3206 — needed for non-topic users). Both route the user to the
         wrong session. When topic mode is on, rewrite the thread_id to the
-        user's most-recent binding if the inbound id is missing/General or
-        not a known topic for this chat. Returns None to leave it alone.
+        user's most-recent binding only when the inbound id is missing or
+        General/root. Explicit non-General topic ids are authoritative even
+        when not yet bound; otherwise the first message in a newly opened topic
+        gets forced back into the user's previous topic. Returns None to leave
+        it alone.
         """
         if (
             source.platform != Platform.TELEGRAM
@@ -2219,8 +2254,12 @@ class GatewayRunner:
             return None
         inbound = str(source.thread_id or "")
         is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
-        known = {str(b.get("thread_id") or "") for b in bindings}
-        if not is_lobby and inbound in known:
+        if not is_lobby:
+            # Trust explicit non-General Telegram DM-topic ids.  Rewriting every
+            # unknown topic to the user's last-active binding makes newly opened
+            # topics unusable: all messages get forced back into an older topic.
+            # Recovery is only safe when Telegram stripped the topic id or sent
+            # the root/General lane.
             return None
         user_id = str(source.user_id)
         for b in bindings:  # newest-first
@@ -8334,6 +8373,11 @@ class GatewayRunner:
                                     if _hyg_new_sid != session_entry.session_id:
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
+                                        self._sync_telegram_topic_binding(
+                                            source,
+                                            session_entry,
+                                            reason="hygiene-compression",
+                                        )
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -8595,9 +8639,16 @@ class GatewayRunner:
             response = _sanitize_gateway_final_response(source.platform, response)
 
             # If the agent's session_id changed during compression, update
-            # session_entry so transcript writes below go to the right session.
+            # session_entry so transcript writes below go to the right session,
+            # and keep Telegram topic-mode's thread_id -> session_id binding
+            # from snapping the next turn back to the oversized parent session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
+                self._sync_telegram_topic_binding(
+                    source,
+                    session_entry,
+                    reason="agent-compression",
+                )
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
