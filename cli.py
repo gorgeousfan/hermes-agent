@@ -1776,6 +1776,46 @@ def _accent_hex() -> str:
         return "#FFBF00"
 
 
+def _notify_input_needed(body: str = "Hermes needs your input") -> None:
+    """Emit OSC 9 to the terminal so notification-aware emulators ring.
+
+    Fires when Hermes blocks on an interactive prompt (clarify, command
+    approval, sudo, secret) so terminal multiplexers and emulators that
+    parse OSC 9 (cmux, iTerm2, Ghostty, Kitty, WezTerm, …) can flash the
+    pane/tab and play a system notification. Silently ignored by every
+    other terminal — OSC sequences that aren't recognised are simply
+    discarded by the terminal's parser.
+
+    Two implementation details that look surprising:
+
+    1. **Writes to /dev/tty, not sys.stdout.** While prompt_toolkit's
+       Application is active (which it always is when these callbacks
+       fire — the prompt panel is being rendered), sys.stdout is wrapped
+       by prompt_toolkit's renderer and raw escape sequences get
+       stripped/buffered by its diff-redraw loop. /dev/tty bypasses that
+       wrapping and lands the bytes on the underlying TTY where the
+       terminal's OSC parser can see them.
+
+    2. **BEL terminator (\\x07), not ST (\\x1b\\\\).** Both are valid per
+       the OSC spec; BEL is the iTerm-canonical form and is what every
+       terminal in the support matrix above accepts.
+
+    Disable via ``display.input_alert: false`` in config.yaml. Off
+    automatically when stdout is not a TTY (so redirected logs don't
+    accumulate stray escape sequences).
+    """
+    try:
+        cfg = CLI_CONFIG.get("display", {}) if isinstance(CLI_CONFIG, dict) else {}
+        if not cfg.get("input_alert", True):
+            return
+        if not sys.stdout.isatty():
+            return
+        with open("/dev/tty", "w", buffering=1, encoding="utf-8") as tty:
+            tty.write(f"\x1b]9;{body}\x07")
+    except Exception:
+        pass
+
+
 def _rich_text_from_ansi(text: str) -> _RichText:
     """Safely render assistant/tool output that may contain ANSI escapes.
 
@@ -10807,6 +10847,7 @@ class HermesCLI:
 
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
+        _notify_input_needed("Hermes: clarify question")
 
         # Poll for the user's response.  The countdown in the hint line
         # updates on each invalidate — but frequent repaints cause visible
@@ -10867,6 +10908,7 @@ class HermesCLI:
         self._sudo_deadline = _time.monotonic() + timeout
 
         self._invalidate()
+        _notify_input_needed("Hermes: sudo password")
 
         while True:
             try:
@@ -10924,6 +10966,7 @@ class HermesCLI:
             self._approval_deadline = _time.monotonic() + timeout
 
             self._invalidate()
+            _notify_input_needed("Hermes: command approval")
 
             _last_countdown_refresh = _time.monotonic()
             while True:
@@ -11167,6 +11210,7 @@ class HermesCLI:
         return lines
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
+        _notify_input_needed(f"Hermes: secret needed ({var_name})")
         return prompt_for_secret(self, var_name, prompt, metadata)
 
     def _capture_modal_input_snapshot(self) -> None:

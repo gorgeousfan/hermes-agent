@@ -968,6 +968,19 @@ display:
   #   false: Silent (default)
   bell_on_complete: false
 
+  # Emit an OSC 9 terminal notification whenever the agent blocks on an
+  # interactive prompt (clarify question, command approval, sudo password,
+  # secret capture). Notification-aware terminals — cmux, iTerm2, Ghostty,
+  # Kitty, WezTerm — flash the pane/tab and play a system notification.
+  # Terminals that don't recognise OSC 9 silently discard the sequence.
+  # Useful for long-running tasks where you've Cmd-Tab'd away — the moment
+  # Hermes needs you, the pane lights up. The sequence is written directly
+  # to /dev/tty so prompt_toolkit's renderer can't strip it. Off
+  # automatically when stdout is not a TTY.
+  #   true:  Notify on input prompts (default)
+  #   false: Silent
+  input_alert: true
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

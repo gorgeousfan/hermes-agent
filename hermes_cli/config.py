@@ -1015,6 +1015,13 @@ DEFAULT_CONFIG = {
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
         "bell_on_complete": False,
+        # When true (default), the CLI emits an OSC 9 terminal notification
+        # whenever Hermes blocks on an interactive prompt (clarify, command
+        # approval, sudo password, secret capture). Notification-aware
+        # terminals — cmux, iTerm2, Ghostty, Kitty, WezTerm — flash the
+        # pane/tab and play a system notification. Other terminals discard
+        # the sequence silently. Set false to disable.
+        "input_alert": True,
         "show_reasoning": False,
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
