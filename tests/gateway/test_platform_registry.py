@@ -582,6 +582,115 @@ class TestApplyYamlConfigFnDispatch:
             _reg.unregister("mybadplat")
             _reg.unregister("mygoodplat")
 
+    def test_plugin_env_auto_enable_respects_explicit_disabled_platform(
+        self, tmp_path, monkeypatch
+    ):
+        """config.yaml platforms.<name>.enabled=false suppresses plugin auto-enable."""
+        reg = self._register_hook("mydisabledplat", lambda *_: None)
+        try:
+            home = self._write_config(
+                tmp_path,
+                "platforms:\n"
+                "  mydisabledplat:\n"
+                "    enabled: false\n",
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+
+            cfg = load_gateway_config()
+            plat = Platform("mydisabledplat")
+            assert plat in cfg.platforms
+            assert cfg.platforms[plat].enabled is False
+        finally:
+            reg.unregister("mydisabledplat")
+
+    def test_plugin_dependency_check_alone_does_not_auto_enable(
+        self, tmp_path, monkeypatch
+    ):
+        """Installed plugin deps alone should not start an unconfigured adapter."""
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myunconfiguredplat",
+            label="MyUnconfigured",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+            is_connected=lambda cfg: False,
+        ))
+        try:
+            home = self._write_config(tmp_path, "{}\n")
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+
+            cfg = load_gateway_config()
+            plat = Platform("myunconfiguredplat")
+            assert plat in cfg.platforms
+            assert cfg.platforms[plat].enabled is False
+        finally:
+            _reg.unregister("myunconfiguredplat")
+
+    def test_plugin_auto_enable_uses_connection_check_when_configured(
+        self, tmp_path, monkeypatch
+    ):
+        """Configured plugin platforms still auto-enable from env/readiness checks."""
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myconfiguredplat",
+            label="MyConfigured",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+            env_enablement_fn=lambda: {"ready": True},
+            is_connected=lambda cfg: cfg.enabled and cfg.extra.get("ready") is True,
+        ))
+        try:
+            home = self._write_config(tmp_path, "{}\n")
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+
+            cfg = load_gateway_config()
+            plat = Platform("myconfiguredplat")
+            assert plat in cfg.platforms
+            assert cfg.platforms[plat].enabled is True
+            assert cfg.platforms[plat].extra["ready"] is True
+        finally:
+            _reg.unregister("myconfiguredplat")
+
+    def test_plugin_auto_enable_prefers_validate_config_over_connected_state(
+        self, tmp_path, monkeypatch
+    ):
+        """Auto-enable readiness uses validate_config when plugins expose both hooks."""
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myvalidateplat",
+            label="MyValidate",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            source="plugin",
+            env_enablement_fn=lambda: {"ready": True},
+            validate_config=lambda cfg: cfg.extra.get("ready") is True,
+            is_connected=lambda cfg: False,
+        ))
+        try:
+            home = self._write_config(tmp_path, "{}\n")
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config
+
+            cfg = load_gateway_config()
+            plat = Platform("myvalidateplat")
+            assert plat in cfg.platforms
+            assert cfg.platforms[plat].enabled is True
+            assert cfg.platforms[plat].extra["ready"] is True
+        finally:
+            _reg.unregister("myvalidateplat")
+
     def test_hook_skipped_when_platform_section_missing(
         self, tmp_path, monkeypatch
     ):

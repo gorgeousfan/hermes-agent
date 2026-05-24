@@ -424,7 +424,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
     Platform.API_SERVER: lambda cfg: True,
     Platform.WEBHOOK: lambda cfg: True,
-    Platform.MSGRAPH_WEBHOOK: lambda cfg: True,
+    Platform.MSGRAPH_WEBHOOK: lambda cfg: bool(
+        str(cfg.extra.get("client_state") or "").strip()
+    ),
     Platform.FEISHU: lambda cfg: bool(cfg.extra.get("app_id")),
     Platform.WECOM: lambda cfg: bool(cfg.extra.get("bot_id")),
     Platform.WECOM_CALLBACK: lambda cfg: bool(
@@ -1805,27 +1807,35 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above; plugins expose check_fn() which is the single source of
-    # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.  Plugins that
-    # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
-    # project_id / subscription_name) can supply ``env_enablement_fn`` on
-    # their PlatformEntry — called here BEFORE adapter construction.
+    # blocks above.  For plugins, ``check_fn`` means "dependencies installed";
+    # it is not necessarily proof that account credentials/config are present.
+    # Seed env-derived extras first, then use ``is_connected`` / ``validate_config``
+    # when available so missing credentials do not start a broken reconnect loop.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             try:
-                if not entry.check_fn():
-                    continue
+                deps_available = bool(entry.check_fn())
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
+            if not deps_available:
+                continue
+
             platform = Platform(entry.name)
-            if platform not in config.platforms:
-                config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+            platform_cfg = config.platforms.get(platform)
+            if platform_cfg is not None and platform_cfg.enabled is False:
+                logger.debug(
+                    "Plugin platform %s has config enabled=false; skipping env auto-enable",
+                    entry.name,
+                )
+                continue
+            if platform_cfg is None:
+                platform_cfg = PlatformConfig()
+                config.platforms[platform] = platform_cfg
+
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:
@@ -1840,9 +1850,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     # up as a proper HomeChannel dataclass.  Everything else is
                     # merged into ``extra``.
                     home = seed.pop("home_channel", None)
-                    config.platforms[platform].extra.update(seed)
+                    platform_cfg.extra.update(seed)
                     if isinstance(home, dict) and home.get("chat_id"):
-                        config.platforms[platform].home_channel = HomeChannel(
+                        platform_cfg.home_channel = HomeChannel(
                             platform=platform,
                             chat_id=str(home["chat_id"]),
                             name=str(home.get("name") or "Home"),
@@ -1852,5 +1862,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                                 else None
                             ),
                         )
+
+            configured = True
+            if entry.validate_config is not None:
+                configured = bool(entry.validate_config(platform_cfg))
+            elif entry.is_connected is not None:
+                # ``is_connected`` is also used by get_connected_platforms(), so
+                # plugin implementations commonly include ``config.enabled`` in
+                # that predicate.  Env auto-enable is evaluating whether the
+                # platform *can* be enabled, so run the readiness check against a
+                # temporary enabled candidate without permanently enabling it
+                # unless the rest of the predicate passes.
+                previous_enabled = platform_cfg.enabled
+                platform_cfg.enabled = True
+                try:
+                    configured = bool(entry.is_connected(platform_cfg))
+                finally:
+                    platform_cfg.enabled = previous_enabled
+            if configured:
+                platform_cfg.enabled = True
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

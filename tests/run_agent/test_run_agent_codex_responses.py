@@ -1595,6 +1595,31 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_uses_atomic_json_write(monkeypatch, tmp_path):
+    """Request debug dumps should use the shared atomic JSON writer."""
+    import agent.agent_runtime_helpers as helpers
+
+    agent = _build_agent(monkeypatch)
+    agent.base_url = "http://127.0.0.1:9208/v1"
+    agent.logs_dir = tmp_path
+    calls = []
+
+    def fake_atomic_json_write(path, payload, **kwargs):
+        calls.append((path, payload, kwargs))
+        path.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(helpers, "atomic_json_write", fake_atomic_json_write)
+
+    dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
+
+    assert dump_file is not None
+    assert calls
+    path, payload, kwargs = calls[0]
+    assert path == dump_file
+    assert payload["reason"] == "preflight"
+    assert kwargs == {"default": str}
+
+
 # --- Reasoning-only response tests (fix for empty content retry loop) ---
 
 

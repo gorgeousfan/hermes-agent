@@ -1,10 +1,15 @@
 .DS_Store
 /venv/
 /_pycache/
-*.pyc*
-__pycache__/
 .venv/
 .vscode/
+*.pyc*
+__pycache__/
+hermes_agent.egg-info/
+.pytest_cache/
+.pytest-cache/
+test_durations.json
+
 .env
 .env.local
 .env.development.local
@@ -13,13 +18,10 @@ __pycache__/
 .env.development
 .env.test
 export*
-__pycache__/model_tools.cpython-310.pyc
-__pycache__/web_tools.cpython-310.pyc
+
 logs/
 data/
-.pytest_cache/
-test_durations.json
-.pytest-cache/
+data/*
 tmp/
 temp_vision_images/
 hermes-*/*
@@ -30,18 +32,16 @@ run_datagen_kimik2-thinking.sh
 run_datagen_megascience_glm4-6.sh
 run_datagen_sonnet.sh
 source-data/*
-run_datagen_megascience_glm4-6.sh
-data/*
 node_modules/
 browser-use/
 agent-browser/
+
 # Private keys
 *.ppk
 *.pem
 privvy*
+
 images/
-__pycache__/
-hermes_agent.egg-info/
 wandb/
 testlogs
 
