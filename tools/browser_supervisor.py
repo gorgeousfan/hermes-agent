@@ -28,8 +28,41 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import websockets
-from websockets.asyncio.client import ClientConnection
+# ``websockets`` is a transitive dependency of hermes-agent (via fal_client and
+# firecrawl-py) but not a declared one, so packagers that build a slim venv
+# (notably the Homebrew bottle, see issue #31005) can omit it. Guard the
+# import so tool discovery — which imports ``browser_dialog_tool`` ->
+# ``browser_supervisor`` at startup — does not crash with
+# ``ModuleNotFoundError: No module named 'websockets'``. Mirrors the pattern
+# in ``tools/browser_cdp_tool.py``. The supervisor itself requires
+# websockets to function; ``_assert_websockets`` raises a clear ImportError
+# the first time anything actually tries to start a supervisor.
+try:
+    import websockets
+    from websockets.asyncio.client import ClientConnection
+
+    _WS_AVAILABLE = True
+except ImportError:
+    websockets = None  # type: ignore[assignment]
+    ClientConnection = Any  # type: ignore[assignment,misc]
+    _WS_AVAILABLE = False
+
+
+def _assert_websockets() -> None:
+    """Raise a clear ImportError when the optional ``websockets`` dep is missing.
+
+    Called from ``CDPSupervisor.start`` so callers that never spin up a
+    supervisor (which is most of them on a fresh install — the CDP path is
+    only reached when the user wires up a browser) do not pay an import-time
+    cost. Without this guard, missing ``websockets`` would surface as a
+    confusing ``NameError`` deep inside the supervisor's background thread.
+    """
+    if not _WS_AVAILABLE:
+        raise ImportError(
+            "The 'websockets' Python package is required to run the browser "
+            "CDP supervisor but is not installed. Install it with: "
+            "pip install websockets"
+        )
 
 logger = logging.getLogger(__name__)
 
@@ -328,6 +361,7 @@ class CDPSupervisor:
         supervisor is fully wired up — pending-dialog events will be captured
         as of the moment ``start()`` returns.
         """
+        _assert_websockets()
         if self._thread and self._thread.is_alive():
             return
         self._ready_event.clear()
