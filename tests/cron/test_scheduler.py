@@ -837,6 +837,216 @@ class TestDeliverResultWrapping:
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
 
+class TestDeliverResultCronMetadata:
+    """Live adapter sends should receive structured cron context in metadata.
+
+    Without this, plugin adapters have to regex-parse the "Cronjob Response: ..."
+    envelope to recover job_id/job_name, which is brittle and breaks entirely
+    when cron.wrap_response=false. The structured side-channel under
+    metadata["cron"] makes job_id/job_name/schedule/deliver/origin available
+    via the existing metadata kwarg, alongside thread_id.
+    """
+
+    def _build_adapter_send_mock(self):
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        return adapter, loop, fake_run_coro
+
+    def test_live_adapter_send_receives_cron_metadata(self):
+        from gateway.config import Platform
+
+        adapter, loop, fake_run_coro = self._build_adapter_send_mock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "abc123",
+            "name": "daily-summary",
+            "schedule": "0 9 * * *",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "999"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "hello",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter.send.assert_called_once()
+        metadata = adapter.send.call_args.kwargs.get("metadata")
+        assert metadata is not None, "send_metadata should be populated with cron context"
+        assert "cron" in metadata, f"cron context missing: {metadata!r}"
+        cron_ctx = metadata["cron"]
+        assert cron_ctx["job_id"] == "abc123"
+        assert cron_ctx["job_name"] == "daily-summary"
+        assert cron_ctx["schedule"] == "0 9 * * *"
+        assert cron_ctx["deliver"] == "origin"
+        assert cron_ctx["origin"] == {"platform": "telegram", "chat_id": "999"}
+
+    def test_cron_metadata_falls_back_to_job_id_when_name_missing(self):
+        from gateway.config import Platform
+
+        adapter, loop, fake_run_coro = self._build_adapter_send_mock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "noname-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "5"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "hi",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        cron_ctx = adapter.send.call_args.kwargs["metadata"]["cron"]
+        assert cron_ctx["job_name"] == "noname-job"
+
+    def test_cron_metadata_coexists_with_thread_id(self):
+        from gateway.config import Platform
+
+        adapter, loop, fake_run_coro = self._build_adapter_send_mock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "topic-job",
+            "name": "topic-job",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "17585",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "hi",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        metadata = adapter.send.call_args.kwargs["metadata"]
+        assert metadata["thread_id"] == "17585"
+        assert metadata["cron"]["job_id"] == "topic-job"
+
+    def test_cron_metadata_omits_empty_fields(self):
+        """Optional fields (schedule, deliver) absent on the job should be omitted."""
+        from gateway.config import Platform
+
+        adapter, loop, fake_run_coro = self._build_adapter_send_mock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "min-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "5"},
+        }  # no name, no schedule
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "hi",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        cron_ctx = adapter.send.call_args.kwargs["metadata"]["cron"]
+        assert "schedule" not in cron_ctx
+        # job_id is present (required), job_name falls back to it,
+        # deliver and origin are present.
+        # status defaults to "ok"; ran_at is always set (ISO timestamp).
+        ran_at = cron_ctx.pop("ran_at", None)
+        assert isinstance(ran_at, str) and "T" in ran_at
+        assert cron_ctx == {
+            "job_id": "min-job",
+            "job_name": "min-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "5"},
+            "status": "ok",
+        }
+
+    def test_cron_metadata_attached_on_failed_run_with_wrap_disabled(self):
+        """Failed run + wrap_response=false must still surface status=error and full context.
+
+        Regression guard for #26004 step 2: without this, adapters that rely on
+        `metadata["cron"]["status"]` to distinguish success from failure (e.g.
+        for routing failure summaries to a different chat) would always see
+        the default "ok" even when the agent raised.
+        """
+        from gateway.config import Platform
+
+        adapter, loop, fake_run_coro = self._build_adapter_send_mock()
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "fail-job",
+            "name": "nightly-report",
+            "schedule": "0 3 * * *",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "999"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Job hit an exception",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+                status_hint="error",
+            )
+
+        cron_ctx = adapter.send.call_args.kwargs["metadata"]["cron"]
+        assert cron_ctx["status"] == "error"
+        assert cron_ctx["job_id"] == "fail-job"
+        assert cron_ctx["job_name"] == "nightly-report"
+        assert cron_ctx["schedule"] == "0 3 * * *"
+        assert "ran_at" in cron_ctx and "T" in cron_ctx["ran_at"]
+
+
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
 
@@ -2477,11 +2687,15 @@ class TestDeliverResultTimeoutCancelsFuture:
             "configured thread_id 7072 for telegram:226252250 was not found; "
             "delivered without thread_id"
         )
-        adapter.send.assert_called_once_with(
-            "226252250",
-            "Hello world",
-            metadata={"thread_id": "7072"},
-        )
+        assert adapter.send.call_count == 1
+        args, kwargs = adapter.send.call_args
+        assert args == ("226252250", "Hello world")
+        metadata = kwargs["metadata"]
+        # thread_id is the load-bearing field for this test — it must survive
+        # alongside the structured cron context added in #26004.
+        assert metadata["thread_id"] == "7072"
+        assert metadata["cron"]["job_id"] == "thread-fallback-job"
+        assert metadata["cron"]["deliver"] == "telegram:226252250:7072"
 
 
 class TestSendMediaTimeoutCancelsFuture:

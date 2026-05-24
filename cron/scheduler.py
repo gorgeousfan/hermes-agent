@@ -568,7 +568,13 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    status_hint: str = "ok",
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -627,13 +633,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    # Structured side-channel so plugin adapters can recover cron context
+    # without regex-parsing the envelope text. Invariant across targets, so
+    # built once before the loop; only thread_id varies per target.
+    # Filter on `is not None` rather than truthiness so falsy-but-meaningful
+    # values (e.g. an explicitly empty schedule) reach adapters.
+    origin = _resolve_origin(job) or {}
+    cron_meta_full = {
+        "job_id": job.get("id", ""),
+        "job_name": job.get("name") or job.get("id", ""),
+        "schedule": job.get("schedule"),
+        "deliver": job.get("deliver"),
+        "origin": origin or None,
+        "status": status_hint,
+        "ran_at": _hermes_now().isoformat(),
+    }
+    cron_meta = {k: v for k, v in cron_meta_full.items() if v is not None}
+
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
-        origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
             logger.warning(
@@ -664,12 +686,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        send_metadata: Optional[dict] = None
+        if thread_id:
+            send_metadata = {"thread_id": thread_id}
+        if cron_meta:
+            send_metadata = {**(send_metadata or {}), "cron": cron_meta}
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -1885,7 +1912,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                            status_hint="ok" if success else "error",
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
