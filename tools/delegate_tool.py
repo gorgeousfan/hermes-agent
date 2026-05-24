@@ -22,8 +22,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import re
 import threading
 import time
+from datetime import datetime, timezone
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
@@ -522,6 +524,165 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+_DELEGATION_EVENT_LOCK = threading.Lock()
+
+
+def _redact_event_text(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[A-Za-z0-9._\-]+", r"\1[REDACTED]", value)
+    value = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+", r"\1[REDACTED]", value)
+    key_pattern = r"(?i)(api[_-]?key|token|password|secret|authorization)(\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"
+    value = re.sub(key_pattern, r"\1\2[REDACTED]", value)
+    value = re.sub(r"(?i)(\"(?:api[_-]?key|token|password|secret|authorization)\"\s*:\s*)(?:\"[^\"]*\"|[^\s,;}]+)", r"\1\"[REDACTED]\"", value)
+    return value
+
+
+def _delegation_runtime_resolution(status: str, exit_reason: Optional[str]) -> str:
+    normalized_status = str(status or "unknown").lower()
+    normalized_exit = str(exit_reason or "").lower()
+    explicit_timeout = normalized_status in {"timeout", "timed_out"} or normalized_exit in {
+        "timeout",
+        "timed_out",
+        "timed out",
+    }
+    if explicit_timeout:
+        return "delegation_timeout"
+    if normalized_status in {"completed", "success", "succeeded"}:
+        return "delegation_completed"
+    if normalized_status in {"failed", "error"} or normalized_exit == "error":
+        return "delegation_failed"
+    if normalized_status in {"interrupted", "cancelled", "canceled"}:
+        return "delegation_interrupted"
+    return f"delegation_{normalized_status}"
+
+
+_DELEGATION_RUNTIME_FAILURE_RESOLUTIONS = frozenset(
+    {"delegation_failed", "delegation_timeout", "delegation_interrupted"}
+)
+
+
+def _delegation_runtime_failure_kind(resolution: str) -> str:
+    if resolution in _DELEGATION_RUNTIME_FAILURE_RESOLUTIONS:
+        return resolution
+    return "none"
+
+
+def _write_delegation_runtime_event(
+    *,
+    status: str,
+    engine: str,
+    provider: Optional[str],
+    model: Optional[str],
+    task_type: str,
+    session_id: Optional[str],
+    subagent_id: Optional[str],
+    role: Optional[str],
+    accepted: bool,
+    duration_seconds: Optional[float],
+    exit_reason: Optional[str],
+    error: Optional[str],
+) -> None:
+    """Append delegation lifecycle data to the Phase 5.75 runtime telemetry log."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        logs_dir = get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        resolution = _delegation_runtime_resolution(status, exit_reason)
+        event: Dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "event_type": "delegation.runtime",
+            "engine": engine,
+            "provider": provider or "unknown",
+            "model": model or "unknown",
+            "task_type": task_type,
+            "status": status,
+            "accepted": accepted,
+            "role": role or "delegate",
+            "failure_kind": _delegation_runtime_failure_kind(resolution),
+            "resolution": resolution,
+        }
+        if session_id:
+            event["session_id"] = str(session_id)
+        if subagent_id:
+            event["subagent_id"] = str(subagent_id)
+        if duration_seconds is not None:
+            event["latency_seconds"] = round(float(duration_seconds), 3)
+            event["duration_seconds"] = round(float(duration_seconds), 3)
+        if exit_reason:
+            event["exit_reason"] = str(exit_reason)
+        if error:
+            event["error"] = _redact_event_text(str(error))[:500]
+        with _DELEGATION_EVENT_LOCK:
+            with (logs_dir / "provider-failover-events.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except Exception as exc:
+        logger.debug("delegation runtime event log failed: %s", exc)
+
+
+def _write_delegation_event(
+    *,
+    status: str,
+    engine: str = "native_delegate_task",
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    task_type: str = "delegate_task",
+    session_id: Optional[str] = None,
+    subagent_id: Optional[str] = None,
+    role: Optional[str] = None,
+    accepted: bool = False,
+    duration_seconds: Optional[float] = None,
+    exit_reason: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Append a redacted unified delegation event for audit/telemetry."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        logs_dir = get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        # "accepted" is parent acceptance, not child success; delegation results
+        # remain unaccepted until the Hermes parent performs final review.
+        event: Dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "engine": engine,
+            "provider": provider,
+            "model": model,
+            "task_type": task_type,
+            "status": status,
+            "accepted": accepted,
+        }
+        if session_id:
+            event["session_id"] = session_id
+        if subagent_id:
+            event["subagent_id"] = subagent_id
+        if role:
+            event["role"] = role
+        if duration_seconds is not None:
+            event["duration_seconds"] = duration_seconds
+        if exit_reason:
+            event["exit_reason"] = exit_reason
+        if error:
+            event["error"] = _redact_event_text(str(error))[:500]
+        with _DELEGATION_EVENT_LOCK:
+            with (logs_dir / "delegation-events.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except Exception as exc:
+        logger.debug("delegation event log failed: %s", exc)
+    _write_delegation_runtime_event(
+        status=status,
+        engine=engine,
+        provider=provider,
+        model=model,
+        task_type=task_type,
+        session_id=session_id,
+        subagent_id=subagent_id,
+        role=role,
+        accepted=accepted,
+        duration_seconds=duration_seconds,
+        exit_reason=exit_reason,
+        error=error,
+    )
 
 
 # ---------------------------------------------------------------------------

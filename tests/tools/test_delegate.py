@@ -12,9 +12,11 @@ Run with:  python -m pytest tests/test_delegate.py -v
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -23,12 +25,15 @@ from tools.delegate_tool import (
     DelegateEvent,
     _get_max_concurrent_children,
     _LEGACY_EVENT_MAP,
+    _delegation_runtime_failure_kind,
+    _delegation_runtime_resolution,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _write_delegation_event,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -56,6 +61,125 @@ def _make_mock_parent(depth=0):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     return parent
+
+
+class TestDelegationRuntimeTelemetry(unittest.TestCase):
+    def _read_events(self, home, filename):
+        path = home / "logs" / filename
+        self.assertTrue(path.exists(), f"missing telemetry file: {path}")
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_delegation_event_mirrors_runtime_telemetry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+                _write_delegation_event(
+                    status="completed",
+                    provider="openrouter",
+                    model="test/model",
+                    session_id="parent-session",
+                    subagent_id="child-subagent",
+                    role="leaf",
+                    accepted=False,
+                    duration_seconds=1.23456,
+                    exit_reason="completed",
+                )
+
+            legacy_event = self._read_events(home, "delegation-events.jsonl")[-1]
+            self.assertEqual(legacy_event["status"], "completed")
+
+            runtime_event = self._read_events(home, "provider-failover-events.jsonl")[-1]
+            self.assertEqual(runtime_event["event_type"], "delegation.runtime")
+            self.assertEqual(runtime_event["status"], "completed")
+            self.assertEqual(runtime_event["provider"], "openrouter")
+            self.assertEqual(runtime_event["model"], "test/model")
+            self.assertEqual(runtime_event["role"], "leaf")
+            self.assertEqual(runtime_event["session_id"], "parent-session")
+            self.assertEqual(runtime_event["subagent_id"], "child-subagent")
+            self.assertEqual(runtime_event["latency_seconds"], 1.235)
+            self.assertEqual(runtime_event["failure_kind"], "none")
+            self.assertEqual(runtime_event["resolution"], "delegation_completed")
+            self.assertFalse(runtime_event["accepted"])
+
+    def test_failed_delegation_runtime_telemetry_redacts_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+                _write_delegation_event(
+                    status="failed",
+                    provider="opencode-go",
+                    model="kimi-k2.6",
+                    session_id="parent-session",
+                    subagent_id="child-subagent",
+                    role="leaf",
+                    accepted=False,
+                    duration_seconds=2,
+                    exit_reason="error",
+                    error="provider failed with token=redactme123 and bearer redactedtoken456",
+                )
+
+            payload = json.dumps(self._read_events(home, "provider-failover-events.jsonl")[-1])
+            event = json.loads(payload)
+            self.assertEqual(event["event_type"], "delegation.runtime")
+            self.assertEqual(event["status"], "failed")
+            self.assertEqual(event["failure_kind"], "delegation_failed")
+            self.assertEqual(event["resolution"], "delegation_failed")
+            self.assertIn("[REDACTED]", event["error"])
+            self.assertNotIn("redactme123", payload)
+            self.assertNotIn("redactedtoken456", payload)
+
+    def test_runtime_resolution_timeout_is_explicit_not_substring(self):
+        self.assertEqual(
+            _delegation_runtime_resolution("completed", "timeout"),
+            "delegation_timeout",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("completed", "no timeout"),
+            "delegation_completed",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("failed", "timed out"),
+            "delegation_timeout",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("failed", None),
+            "delegation_failed",
+        )
+        self.assertEqual(
+            _delegation_runtime_resolution("", None),
+            "delegation_unknown",
+        )
+
+    def test_runtime_failure_kind_marks_terminal_failures(self):
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_failed"), "delegation_failed")
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_timeout"), "delegation_timeout")
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_interrupted"), "delegation_interrupted")
+        self.assertEqual(_delegation_runtime_failure_kind("delegation_completed"), "none")
+
+    def test_runtime_event_failure_kind_matches_resolution(self):
+        cases = [
+            ("completed", "completed", "delegation_completed", "none"),
+            ("failed", "error", "delegation_failed", "delegation_failed"),
+            ("failed", "timeout", "delegation_timeout", "delegation_timeout"),
+            ("interrupted", "interrupted", "delegation_interrupted", "delegation_interrupted"),
+            ("queued", None, "delegation_queued", "none"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.dict(os.environ, {"HERMES_HOME": str(home)}, clear=False):
+                for status, exit_reason, expected_resolution, expected_failure_kind in cases:
+                    with self.subTest(status=status, exit_reason=exit_reason):
+                        _write_delegation_event(
+                            status=status,
+                            provider="openrouter",
+                            model="test/model",
+                            accepted=False,
+                            duration_seconds=1,
+                            exit_reason=exit_reason,
+                        )
+                        event = self._read_events(home, "provider-failover-events.jsonl")[-1]
+                        self.assertEqual(event["resolution"], expected_resolution)
+                        self.assertEqual(event["failure_kind"], expected_failure_kind)
 
 
 class TestDelegateRequirements(unittest.TestCase):
