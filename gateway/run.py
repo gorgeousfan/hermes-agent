@@ -5223,6 +5223,19 @@ class GatewayRunner:
             )
             stale_timeout_seconds = 0
 
+        # Read retry_model_escalation -- model upgrade ladder for retries.
+        raw_escalation = kanban_cfg.get("retry_model_escalation", {})
+        if isinstance(raw_escalation, dict):
+            model_escalation = {str(k): str(v) for k, v in raw_escalation.items() if k and v}
+        else:
+            logger.warning(
+                "kanban dispatcher: invalid kanban.retry_model_escalation=%r; ignoring",
+                raw_escalation,
+            )
+            model_escalation = {}
+        if model_escalation:
+            logger.info("kanban dispatcher: model_escalation=%r", model_escalation)
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -5292,6 +5305,7 @@ class GatewayRunner:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
+                    model_escalation=model_escalation,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

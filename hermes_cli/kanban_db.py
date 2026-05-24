@@ -2261,6 +2261,34 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
+            # Crash-loop stickiness fix (#30417): a parentless task that
+            # was blocked by the circuit breaker (``gave_up`` event) must
+            # NOT be auto-promoted every tick. Without parents, the
+            # ``all([]) == True`` vacuous condition would re-promote it
+            # immediately, causing an infinite blocked->promoted->crashed
+            # cycle. Tasks WITH parents are intentionally auto-recovered
+            # when their parents complete -- only the parentless case is
+            # broken.
+            if not parents and cur_status == "blocked":
+                last_gave_up = conn.execute(
+                    "SELECT id FROM task_events "
+                    "WHERE task_id = ? AND kind = 'gave_up' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                last_unblocked = conn.execute(
+                    "SELECT id FROM task_events "
+                    "WHERE task_id = ? AND kind = 'unblocked' "
+                    "ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if last_gave_up and (
+                    not last_unblocked
+                    or last_unblocked["id"] < last_gave_up["id"]
+                ):
+                    # Circuit-breaker blocked, no operator unblock since.
+                    # Stay blocked — the task needs explicit intervention.
+                    continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 # Blocked tasks also get their failure counters reset —
                 # this is effectively an auto-unblock (circuit-breaker
@@ -5001,6 +5029,7 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    model_escalation: Optional[dict] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -5183,6 +5212,23 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        # Model escalation: when the task has consecutive failures,
+        # upgrade model_override per the retry_model_escalation map.
+        # This lets the dispatcher promote a struggling task to a more
+        # capable (or different) model without operator intervention.
+        # The current model_override (or None = profile default) is the
+        # lookup key; if the map has a target, we persist the escalated
+        # model on the task so every subsequent retry uses it.
+        if model_escalation and claimed.consecutive_failures > 0:
+            current_model = claimed.model_override or ""
+            escalated = model_escalation.get(current_model)
+            if escalated and escalated != current_model:
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET model_override = ? WHERE id = ?",
+                        (escalated, claimed.id),
+                    )
+                claimed.model_override = escalated
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
