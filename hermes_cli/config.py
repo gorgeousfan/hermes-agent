@@ -1748,6 +1748,29 @@ DEFAULT_CONFIG = {
     },
 
     # =========================================================================
+    # Tinfoil.sh — HPKE end-to-end encrypted AI inference
+    # =========================================================================
+    # Tinfoil.sh provides secure, end-to-end encrypted connections to AI models
+    # using HPKE (RFC 9180) secure enclaves. Configuration options for the
+    # Tinfoil.sh provider plugin.
+    "tinfoil": {
+        # Master switch. When false, the Tinfoil provider is not offered
+        # as an available model provider.
+        "enabled": True,
+        # Encryption protocol — currently only "HPKE" (RFC 9180) is supported.
+        "encryption_protocol": "HPKE",
+        # Model-to-endpoint mapping. Each key is a model name (e.g.
+        # "kimi-k2-6") and each value is the endpoint path on the
+        # Tinfoil.sh gateway. When empty, the built-in fallback mappings
+        # in the provider plugin are used.
+        "endpoints": {},
+        # Connection timeout in seconds for the HPKE handshake.
+        "handshake_timeout": 30,
+        # Connection health check interval in seconds.
+        "health_check_interval": 300,
+    },
+
+    # =========================================================================
     # External secret sources
     # =========================================================================
     # Pull credentials from external secret managers at process startup
@@ -2460,6 +2483,13 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
         "advanced": True,
+    },
+    "TINFOIL_API_KEY": {
+        "description": "Tinfoil.sh API key for HPKE encrypted inference",
+        "prompt": "Tinfoil.sh API key",
+        "url": "https://tinfoil.sh",
+        "password": True,
+        "category": "provider",
     },
 
     # ── Messaging platforms ──

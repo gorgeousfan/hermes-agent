@@ -1204,6 +1204,42 @@ def anthropic_prompt_cache_policy(
     return False, False
 
 
+def _build_tinfoil_client(agent, client_kwargs: dict) -> Any:
+    """Build an OpenAI client with Tinfoil EHBP secure transport.
+
+    Delegates to ``TinfoilTransport.build_secure_openai_client()``, which
+    handles attestation verification, TLS pinning, and HPKE encryption.
+    Falls back to plain TLS if the SDK is not installed.
+    """
+    from agent.transports import get_transport
+
+    transport = get_transport("tinfoil_ehbp")
+    if transport is None:
+        client_kwargs = dict(client_kwargs)
+        if "http_client" not in client_kwargs:
+            keepalive_http = agent._build_keepalive_http_client(
+                client_kwargs.get("base_url", ""),
+            )
+            if keepalive_http is not None:
+                client_kwargs["http_client"] = keepalive_http
+        _ra().logger.warning(
+            "Tinfoil EHBP transport not registered, "
+            "falling back to plain OpenAI client"
+        )
+        return _ra().OpenAI(**client_kwargs)
+
+    api_key = client_kwargs.get("api_key", "")
+    base_url = str(client_kwargs.get("base_url", "") or "")
+    timeout = client_kwargs.get("timeout")
+    default_headers = client_kwargs.get("default_headers")
+
+    return transport.build_secure_openai_client(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        default_headers=default_headers,
+    )
+
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
@@ -1266,6 +1302,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 agent._client_log_context(),
             )
             return client
+    # Tinfoil EHBP secure client — attestation-verified enclave transport
+    if getattr(agent, "api_mode", "") == "tinfoil_ehbp":
+        return _build_tinfoil_client(agent, client_kwargs)
     # Inject TCP keepalives so the kernel detects dead provider connections
     # instead of letting them sit silently in CLOSE-WAIT (#10324).  Without
     # this, a peer that drops mid-stream leaves the socket in a state where

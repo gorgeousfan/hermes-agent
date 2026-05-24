@@ -36,6 +36,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
+| **Tinfoil.sh** | `TINFOIL_API_KEY` in `~/.hermes/.env` (provider: `tinfoil`, aliases: `tinfoil-sh`, `tinfoil.sh` — HPKE end-to-end encrypted AI inference) |
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
@@ -247,6 +248,10 @@ hermes chat --provider arcee --model trinity-large-thinking
 # Use the exact model ID returned by GMI's /v1/models endpoint.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requires: GMI_API_KEY in ~/.hermes/.env
+
+# Tinfoil.sh — HPKE end-to-end encrypted AI inference
+hermes chat --provider tinfoil --model kimi-k2-6
+# Requires: TINFOIL_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
@@ -256,7 +261,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `TINFOIL_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -467,6 +472,32 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### Tinfoil.sh
+
+HPKE end-to-end encrypted AI inference via [Tinfoil.sh](https://tinfoil.sh) — OpenAI-compatible API, API key authentication. All inference payloads are encrypted using HPKE (RFC 9180) secure enclaves before leaving the client.
+
+```bash
+# Tinfoil.sh
+hermes chat --provider tinfoil --model kimi-k2-6
+# Requires: TINFOIL_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "tinfoil"
+  default: "kimi-k2-6"
+```
+
+**Automatic model discovery:** Available chat models are fetched live from the Tinfoil `/v1/models` endpoint when you open the `/model` picker. Only models with `type: "chat"` are shown (embedding, audio, tts, and safety models are excluded). Results are cached in-process for the lifetime of the session. If the live API is unreachable, a built-in fallback list of known models is used.
+
+Model-to-endpoint mappings can be customized in `config.yaml` under the `tinfoil.endpoints` section:
+```yaml
+tinfoil:
+  endpoints:
+    kimi-k2-6: kimi-k2-6
+```
 
 ### StepFun
 
