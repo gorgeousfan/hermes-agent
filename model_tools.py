@@ -35,6 +35,16 @@ from toolsets import resolve_toolset, validate_toolset
 logger = logging.getLogger(__name__)
 
 
+
+def _maybe_trim_memory():
+    """Call malloc_trim(0) on Linux to reduce RSS."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
 # =============================================================================
@@ -845,6 +855,9 @@ def handle_function_call(
                 user_task=user_task,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        # Autolycus: return freed heap pages to OS
+        _maybe_trim_memory()
 
         try:
             from hermes_cli.plugins import invoke_hook
