@@ -403,8 +403,11 @@ def _convert_to_png(path: Path) -> bool:
     try:
         from PIL import Image
         img = Image.open(path)
-        img.save(path, "PNG")
-        return True
+        try:
+            img.save(path, "PNG")
+            return True
+        finally:
+            img.close()
     except ImportError:
         pass
     except Exception as e:
