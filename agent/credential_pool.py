@@ -56,6 +56,14 @@ def cached_config_loads() -> Iterator[None]:
     (issue #31556). Wrapping the discovery body in this context manager makes
     ``_load_config_safe()`` reuse the first successful load until the context
     exits.
+
+    READ-ONLY CONTRACT: callers inside the block share a single ``dict``
+    instance. Mutating the returned config (in-place writes, ``.pop()``,
+    ``.update()``, etc.) is forbidden — the mutation would be visible to
+    every subsequent ``_load_config_safe()`` caller in the same block. Use
+    only ``.get()`` / membership checks on the result. All three current
+    call sites in this module honour this (``_iter_custom_providers``,
+    ``get_pool_strategy``, the ``load_pool`` ``model_config`` seed path).
     """
     token = _cached_config_safe.set(None)
     try:
@@ -69,7 +77,10 @@ def _load_config_safe() -> Optional[dict]:
 
     Inside a :func:`cached_config_loads` block, the first successful load is
     memoized and returned on subsequent calls so YAML parsing and the
-    associated deepcopy don't repeat.
+    associated deepcopy don't repeat. The cached value is the *same instance*
+    on every call within the block — see :func:`cached_config_loads` for the
+    read-only contract. Outside a block this returns the fresh deepcopy that
+    :func:`load_config` provides, identical to pre-#31556 behaviour.
     """
     cached = _cached_config_safe.get()
     if cached is not _CONFIG_CACHE_UNSET and cached is not None:

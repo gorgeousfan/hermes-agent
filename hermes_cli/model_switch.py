@@ -1088,7 +1088,7 @@ def list_authenticated_providers(
 def _list_authenticated_providers_impl(
     current_provider: str = "",
     current_base_url: str = "",
-    user_providers: dict = None,
+    user_providers: dict | None = None,
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
