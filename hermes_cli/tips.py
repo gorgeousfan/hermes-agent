@@ -102,7 +102,7 @@ TIPS = [
     "hermes webhook subscribe creates event-driven webhook routes with HMAC validation.",
     "Save money: hermes tools disables unused tools, hermes skills config trims skills down.",
     "/reasoning low or /reasoning minimal cuts thinking depth below the default (medium) — faster, cheaper responses.",
-    "hermes models routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
+    "hermes model has an interactive auxiliary-model configuration menu that routes vision, compression, and aux tasks to cheaper models — cuts background token cost 85%+ without downgrading your main chat model.",
 
     # --- Configuration ---
     "Set display.bell_on_complete: true in config.yaml to hear a bell when long tasks finish.",
