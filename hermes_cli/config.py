@@ -1059,7 +1059,11 @@ DEFAULT_CONFIG = {
         # responses and content messages are never touched.  Default 0
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
-        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
+        # Per-platform display overrides:
+        # {"telegram": {"tool_progress": "all"},
+        # {"slack": {"tool_progress": "off"}}
+        # {"feishu": {"streaming": true}}
+        "platforms": {},
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
         # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
