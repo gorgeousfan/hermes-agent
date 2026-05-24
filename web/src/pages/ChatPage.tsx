@@ -321,9 +321,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     //      ever stops listening (e.g. overlays / pickers) or if the user
     //      has selected with the mouse outside of Ink's selection model.
     //
-    //   3. **Ctrl/Cmd+Shift+V.**  Reads the system clipboard and feeds
-    //      it to the terminal as keyboard input.  xterm's paste() wraps
-    //      it with bracketed-paste if the host has that mode enabled.
+    //   3. **Paste shortcuts / native paste.**  Reads pasted text and feeds
+    //      it to the terminal as keyboard input.  xterm's paste() wraps it
+    //      with bracketed-paste if the host has that mode enabled.
     //
     // OSC 52 reads (terminal asking to read the clipboard) are not
     // supported — that would let any content the TUI renders exfiltrate
@@ -350,8 +350,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return true;
     });
 
+    const mouseTrackingModes = new Set([1000, 1002, 1003, 1005, 1006, 1015]);
+    const mouseModeDisposable = term.parser.registerCsiHandler(
+      { prefix: "?", final: "h" },
+      (params) => {
+        // Hermes' browser embed does not forward terminal mouse reports to the
+        // PTY, so letting xterm enter mouse mode only breaks normal drag
+        // selection/highlighting. Swallow mouse-mode enables, while letting
+        // other DEC private modes such as alternate screen and cursor visibility
+        // continue through xterm's parser.
+        return (
+          params.length > 0 &&
+          params.every(
+            (param) => typeof param === "number" && mouseTrackingModes.has(param),
+          )
+        );
+      },
+    );
+
     const isMac =
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+
+    const pasteText = (text: string) => {
+      if (!text) return;
+      term.paste(text);
+      term.focus();
+    };
+
+    const pasteFromClipboard = () => {
+      navigator.clipboard
+        .readText()
+        .then(pasteText)
+        .catch((err) => {
+          console.warn("[dashboard clipboard] paste failed:", err.message);
+        });
+    };
+
+    const onNativePaste = (ev: ClipboardEvent) => {
+      const text = ev.clipboardData?.getData("text/plain") ?? "";
+      if (!text) return;
+      ev.preventDefault();
+      pasteText(text);
+    };
+    host.addEventListener("paste", onNativePaste);
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
@@ -361,9 +402,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
       // without a selection it passes through to the TUI so agents can still
       // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      // Paste: Cmd+V or Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const pasteModifier = isMac
+        ? ev.metaKey && !ev.altKey
+        : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -384,14 +427,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch((err) => {
-            console.warn("[dashboard clipboard] paste failed:", err.message);
-          });
+        pasteFromClipboard();
         ev.preventDefault();
         return false;
       }
@@ -630,7 +666,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
+      mouseModeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
+      host.removeEventListener("paste", onNativePaste);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
