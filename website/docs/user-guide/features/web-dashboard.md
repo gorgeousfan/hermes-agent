@@ -131,6 +131,24 @@ Each key shows:
 - An input field to set or update the value
 - A delete button to remove it
 
+### OAuth Providers
+
+Below the raw `.env` editor, the dashboard also exposes browser-based OAuth providers that Hermes knows how to log into directly.
+
+- **PKCE flows** — open the provider's authorize page in a new tab, then paste the returned callback URL or code back into the modal
+- **Device-code flows** — show a verification URL plus user code while Hermes polls in the background
+- **External CLI flows** — show the exact CLI command when the provider owns its own login outside Hermes
+
+Current in-dashboard OAuth-capable providers include:
+
+- **Anthropic (Claude API)**
+- **xAI Grok OAuth (SuperGrok Subscription)**
+- **Nous Portal**
+- **OpenAI Codex (ChatGPT)**
+- **MiniMax (OAuth)**
+
+For xAI specifically, the dashboard flow is enough to unlock both the `xai-oauth` inference provider and direct-to-xAI tools like `x_search`; there is no separate X Search login once the OAuth provider card shows as connected.
+
 Advanced/rarely-used keys are hidden by default behind a toggle.
 
 ### Sessions

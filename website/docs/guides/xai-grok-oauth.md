@@ -63,6 +63,19 @@ You can trigger a login without going through the model picker:
 hermes auth add xai-oauth
 ```
 
+### Dashboard login
+
+If the web dashboard is installed, you can also connect from the browser:
+
+1. Run `hermes dashboard`
+2. Open **API Keys**
+3. Find **OAuth Providers**
+4. Click **Connect** next to **xAI Grok OAuth (SuperGrok Subscription)**
+5. Complete the browser flow at `accounts.x.ai`
+6. Paste the returned callback URL (or the `?code=...&state=...` query string) back into the dashboard modal
+
+This uses the same `xai-oauth` auth store as `hermes auth add xai-oauth`, so CLI, dashboard, gateway setup flows, and `x_search` all see the same login immediately.
+
 ### Remote / headless sessions
 
 On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser.

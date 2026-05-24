@@ -34,6 +34,17 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
   const { t } = useI18n();
+  const isXaiPkce = provider.id === "xai-oauth";
+  const pkcePlaceholder = isXaiPkce
+    ? "Paste full callback URL or ?code=...&state=..."
+    : t.oauth.pasteCode;
+  const pkceSteps = isXaiPkce
+    ? [
+        "A new tab opened to xAI. Sign in and approve access.",
+        "After authorizing, copy the full callback URL from the browser address bar.",
+        "Paste the full callback URL or ?code=...&state=... below and submit.",
+      ]
+    : [t.oauth.pkceStep1, t.oauth.pkceStep2, t.oauth.pkceStep3];
 
   // Initiate flow on mount
   useEffect(() => {
@@ -129,6 +140,9 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
         setPhase("approved");
         onSuccess(`${provider.name} connected`);
         window.setTimeout(() => isMounted.current && onClose(), 1500);
+      } else if (resp.retryable) {
+        setPhase("awaiting_user");
+        setErrorMsg(resp.message || "Try pasting the callback again.");
       } else {
         setPhase("error");
         setErrorMsg(resp.message || "Token exchange failed");
@@ -212,15 +226,23 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
           {start?.flow === "pkce" && phase === "awaiting_user" && (
             <>
               <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
-                <li>{t.oauth.pkceStep1}</li>
-                <li>{t.oauth.pkceStep2}</li>
-                <li>{t.oauth.pkceStep3}</li>
+                {pkceSteps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
               </ol>
+              {errorMsg && (
+                <div className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                  {errorMsg}
+                </div>
+              )}
               <div className="flex flex-col gap-2">
                 <Input
                   value={pkceCode}
-                  onChange={(e) => setPkceCode(e.target.value)}
-                  placeholder={t.oauth.pasteCode}
+                  onChange={(e) => {
+                    setPkceCode(e.target.value);
+                    if (errorMsg) setErrorMsg(null);
+                  }}
+                  placeholder={pkcePlaceholder}
                   onKeyDown={(e) => e.key === "Enter" && handleSubmitPkceCode()}
                   autoFocus
                 />

@@ -1439,6 +1439,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,  # dispatched via auth.get_codex_auth_status
     },
     {
+        "id": "xai-oauth",
+        "name": "xAI Grok OAuth (SuperGrok Subscription)",
+        "flow": "pkce",
+        "cli_command": "hermes auth add xai-oauth",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
+        "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
+    },
+    {
         "id": "qwen-oauth",
         "name": "Qwen (via Qwen CLI)",
         "flow": "external",
@@ -1490,6 +1498,21 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "token_preview": _truncate_token(raw.get("api_key")),
                 "expires_at": None,
                 "has_refresh_token": False,
+                "last_refresh": raw.get("last_refresh"),
+            }
+        if provider_id == "xai-oauth":
+            raw = hauth.get_xai_oauth_auth_status()
+            source = raw.get("source") or "xai_oauth"
+            source_label = raw.get("auth_store") or "Hermes auth store"
+            if isinstance(source, str) and source.startswith("pool:"):
+                source_label = source
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": source,
+                "source_label": source_label,
+                "token_preview": _truncate_token(raw.get("api_key")),
+                "expires_at": None,
+                "has_refresh_token": bool(raw.get("logged_in")),
                 "last_refresh": raw.get("last_refresh"),
             }
         if provider_id == "qwen-oauth":
@@ -1598,15 +1621,15 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
 #
 # Two flow shapes are supported:
 #
-#   PKCE (Anthropic):
-#     1. POST /api/providers/oauth/anthropic/start
-#          → server generates code_verifier + challenge, builds claude.ai
-#            authorize URL, stashes verifier in _oauth_sessions[session_id]
+#   PKCE (Anthropic, xai-oauth):
+#     1. POST /api/providers/oauth/{provider}/start
+#          → server generates code_verifier + challenge, builds authorize URL,
+#            stashes verifier in _oauth_sessions[session_id]
 #          → returns { session_id, flow: "pkce", auth_url }
 #     2. UI opens auth_url in a new tab. User authorizes, copies code.
-#     3. POST /api/providers/oauth/anthropic/submit { session_id, code }
-#          → server exchanges (code + verifier) → tokens at console.anthropic.com
-#          → persists to ~/.hermes/.anthropic_oauth.json AND credential pool
+#     3. POST /api/providers/oauth/{provider}/submit { session_id, code }
+#          → server exchanges (code + verifier) → tokens at the provider token
+#            endpoint and persists them via the existing Hermes auth helpers
 #          → returns { ok: true, status: "approved" }
 #
 #   Device code (Nous, OpenAI Codex):
@@ -1750,6 +1773,46 @@ def _start_anthropic_pkce() -> Dict[str, Any]:
     }
 
 
+def _start_xai_pkce() -> Dict[str, Any]:
+    """Begin xAI's PKCE flow. Returns the auth URL the UI should open."""
+    from hermes_cli import auth as hauth
+
+    discovery = hauth._xai_oauth_discovery(20.0)
+    redirect_uri = (
+        f"http://{hauth.XAI_OAUTH_REDIRECT_HOST}:{hauth.XAI_OAUTH_REDIRECT_PORT}"
+        f"{hauth.XAI_OAUTH_REDIRECT_PATH}"
+    )
+    hauth._xai_validate_loopback_redirect_uri(redirect_uri)
+
+    code_verifier = hauth._oauth_pkce_code_verifier()
+    code_challenge = hauth._oauth_pkce_code_challenge(code_verifier)
+    state = secrets.token_hex(16)
+    nonce = secrets.token_hex(16)
+    auth_url = hauth._xai_oauth_build_authorize_url(
+        authorization_endpoint=discovery["authorization_endpoint"],
+        redirect_uri=redirect_uri,
+        code_challenge=code_challenge,
+        state=state,
+        nonce=nonce,
+    )
+
+    sid, sess = _new_oauth_session("xai-oauth", "pkce")
+    sess["discovery"] = discovery
+    sess["token_endpoint"] = discovery["token_endpoint"]
+    sess["redirect_uri"] = redirect_uri
+    sess["code_verifier"] = code_verifier
+    sess["code_challenge"] = code_challenge
+    sess["state"] = state
+    sess["nonce"] = nonce
+
+    return {
+        "session_id": sid,
+        "flow": "pkce",
+        "auth_url": auth_url,
+        "expires_in": _OAUTH_SESSION_TTL_SECONDS,
+    }
+
+
 def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     """Exchange authorization code for tokens. Persists on success."""
     with _oauth_sessions_lock:
@@ -1813,6 +1876,86 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     with _oauth_sessions_lock:
         sess["status"] = "approved"
     _log.info("oauth/pkce: anthropic login completed (session=%s)", session_id)
+    return {"ok": True, "status": "approved"}
+
+
+def _submit_xai_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
+    """Exchange an xAI authorization code and persist the resulting tokens."""
+    from datetime import datetime, timezone
+    from hermes_cli import auth as hauth
+
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if not sess or sess["provider"] != "xai-oauth" or sess["flow"] != "pkce":
+        raise HTTPException(status_code=404, detail="Unknown or expired session")
+    if sess["status"] != "pending":
+        return {"ok": False, "status": sess["status"], "message": sess.get("error_message")}
+
+    def _retryable(message: str) -> Dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "error",
+            "message": message,
+            "retryable": True,
+        }
+
+    callback = hauth._parse_pasted_callback(code_input)
+    if callback.get("error"):
+        return _retryable(
+            "xAI authorization failed: "
+            f"{callback.get('error_description') or callback.get('error')}"
+        )
+
+    state = str(callback.get("state") or "").strip()
+    if not state:
+        return _retryable(
+            "Paste the full xAI callback URL (or ?code=...&state=...) "
+            "so Hermes can verify the returned state."
+        )
+    if state != sess["state"]:
+        return _retryable("xAI authorization failed: state mismatch.")
+
+    code = str(callback.get("code") or "").strip()
+    if not code:
+        return _retryable("xAI authorization failed: missing authorization code.")
+
+    try:
+        payload = hauth._xai_oauth_exchange_code_for_tokens(
+            token_endpoint=sess["token_endpoint"],
+            code=code,
+            redirect_uri=sess["redirect_uri"],
+            code_verifier=sess["code_verifier"],
+            code_challenge=sess["code_challenge"],
+        )
+        access_token = str(payload.get("access_token", "") or "").strip()
+        refresh_token = str(payload.get("refresh_token", "") or "").strip()
+        if not access_token or not refresh_token:
+            raise RuntimeError("xAI token exchange did not return both access and refresh tokens.")
+    except Exception as e:
+        return _retryable(f"xAI token exchange failed: {e}")
+
+    try:
+        hauth._save_xai_oauth_tokens(
+            {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "id_token": str(payload.get("id_token", "") or "").strip(),
+                "expires_in": payload.get("expires_in"),
+                "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+            },
+            discovery=sess.get("discovery"),
+            redirect_uri=sess["redirect_uri"],
+            last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+    except Exception as e:
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = f"xAI token save failed: {e}"
+        return {"ok": False, "status": "error", "message": sess["error_message"]}
+
+    with _oauth_sessions_lock:
+        sess["status"] = "approved"
+    _log.info("oauth/pkce: xai-oauth login completed (session=%s)", session_id)
     return {"ok": True, "status": "approved"}
 
 
@@ -2292,14 +2435,13 @@ async def start_oauth_login(provider_id: str, request: Request):
             detail=f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually",
         )
     try:
-        # The pkce branch is gated on provider_id == "anthropic" because
-        # `_start_anthropic_pkce()` is hardcoded to the Anthropic flow.
-        # Routing any other future pkce-flagged provider through it would
-        # silently launch the Anthropic OAuth flow (the bug fixed in this
-        # change for MiniMax). New PKCE providers must add their own
-        # start function and an explicit branch here.
-        if catalog_entry["flow"] == "pkce" and provider_id == "anthropic":
-            return _start_anthropic_pkce()
+        if catalog_entry["flow"] == "pkce":
+            if provider_id == "anthropic":
+                return _start_anthropic_pkce()
+            if provider_id == "xai-oauth":
+                return await asyncio.get_running_loop().run_in_executor(
+                    None, _start_xai_pkce,
+                )
         if catalog_entry["flow"] == "device_code":
             return await _start_device_code_flow(provider_id)
     except HTTPException:
@@ -2322,6 +2464,10 @@ async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Re
     if provider_id == "anthropic":
         return await asyncio.get_running_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
+        )
+    if provider_id == "xai-oauth":
+        return await asyncio.get_running_loop().run_in_executor(
+            None, _submit_xai_pkce, body.session_id, body.code,
         )
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
 
