@@ -6989,6 +6989,12 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            # /cron-list is read-only scheduler inspection. It reads the
+            # cron job store directly, does not shell out, and is safe to
+            # run while an agent is active.
+            if _cmd_def_inner and _cmd_def_inner.name == "cron-list":
+                return await self._handle_cron_list_command(event)
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -7312,6 +7318,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "cron-list":
+            return await self._handle_cron_list_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -9428,6 +9437,71 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_cron_list_command(self, event: MessageEvent) -> str:
+        """Handle /cron-list by reading the scheduler job store directly."""
+        import asyncio
+
+        raw_args = (event.get_command_args() or "").strip()
+        normalized = raw_args.lower()
+        if normalized in {"", "active", "enabled"}:
+            include_disabled = False
+        elif normalized in {"all", "--all"}:
+            include_disabled = True
+        else:
+            return "Usage: /cron-list [all]"
+
+        def _render() -> str:
+            from cron.jobs import list_jobs
+
+            jobs = list_jobs(include_disabled=include_disabled)
+            if not jobs:
+                if include_disabled:
+                    return "No scheduled jobs."
+                return "No active scheduled jobs. Try `/cron-list all` to include paused jobs."
+
+            lines = [f"**Scheduled Jobs:** {len(jobs)}"]
+            if not include_disabled:
+                lines.append("_Use `/cron-list all` to include paused jobs._")
+            lines.append("")
+
+            for job in jobs:
+                job_id = str(job.get("id") or "?")
+                name = str(job.get("name") or "(unnamed)")
+                schedule = str(
+                    job.get("schedule_display")
+                    or (job.get("schedule") or {}).get("value")
+                    or "?"
+                )
+                state = str(job.get("state") or "").strip().lower()
+                enabled = bool(job.get("enabled", True))
+                if state == "paused":
+                    status = "paused"
+                elif state == "completed":
+                    status = "completed"
+                elif enabled:
+                    status = "active"
+                else:
+                    status = "disabled"
+                last_run = str(job.get("last_run_at") or "never")
+                next_run = str(job.get("next_run_at") or "not scheduled")
+
+                lines.extend(
+                    [
+                        f"- `{job_id}` {name}",
+                        f"  schedule: {schedule}",
+                        f"  status: {status}",
+                        f"  last_run: {last_run}",
+                        f"  next_run: {next_run}",
+                    ]
+                )
+
+            return "\n".join(lines)
+
+        output = await asyncio.to_thread(_render)
+        if len(output) > 3800:
+            output = output[:3800] + "\n…\nUse `/cron-list all` or the API for the full list."
+        return output
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
