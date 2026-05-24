@@ -442,6 +442,14 @@ prompt_caching:
 #     download_timeout: 30   # Image HTTP download timeout (seconds)
 #                            # Increase for slow connections or self-hosted image servers
 #
+#   # Tip: pin a vision-capable side model when your main model is text-only.
+#   # The example below routes screenshots through GPT-4o-mini even when
+#   # model.default is DeepSeek/Kimi/etc.  Requires OPENAI_API_KEY in .env.
+#   #
+#   # vision:
+#   #   provider: "openai"
+#   #   model: "gpt-4o-mini"
+#
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:
 #     provider: "auto"

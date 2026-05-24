@@ -4652,6 +4652,23 @@ def call_llm(
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
+            # When the user explicitly chose a non-aggregator vision provider
+            # but no client could be resolved, fail fast with a clear error
+            # instead of silently re-running the auto chain — which falls
+            # through to the user's main provider and produces confusing
+            # "unknown variant image_url, expected text" errors when that
+            # main model is text-only (DeepSeek V4, etc.).  Mirrors the
+            # non-vision branch below.  Issue #31179.
+            _explicit = (resolved_provider or "").strip().lower()
+            if _explicit and _explicit not in {"openrouter", "custom"}:
+                raise RuntimeError(
+                    f"auxiliary.vision.provider={_explicit!r} is set in "
+                    f"config.yaml but no client could be resolved. Check that "
+                    f"the provider name is valid (run: hermes config providers) "
+                    f"and that the corresponding API key is set "
+                    f"(e.g. {_explicit.upper().replace('-', '_')}_API_KEY), or "
+                    f"set auxiliary.vision.provider to 'auto' to use the default chain."
+                )
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
@@ -5054,6 +5071,19 @@ async def async_call_llm(
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
+            # See call_llm() — fail fast on unresolved explicit vision
+            # providers instead of silently routing through the user's
+            # text-only main model.  Issue #31179.
+            _explicit = (resolved_provider or "").strip().lower()
+            if _explicit and _explicit not in {"openrouter", "custom"}:
+                raise RuntimeError(
+                    f"auxiliary.vision.provider={_explicit!r} is set in "
+                    f"config.yaml but no client could be resolved. Check that "
+                    f"the provider name is valid (run: hermes config providers) "
+                    f"and that the corresponding API key is set "
+                    f"(e.g. {_explicit.upper().replace('-', '_')}_API_KEY), or "
+                    f"set auxiliary.vision.provider to 'auto' to use the default chain."
+                )
             logger.warning(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
