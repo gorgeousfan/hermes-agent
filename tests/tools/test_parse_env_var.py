@@ -87,6 +87,45 @@ class TestParseEnvVar:
                 _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
 
 
+class TestParseOptionalIntEnv:
+    """``_parse_optional_int_env`` must round-trip YAML null without raising.
+
+    The config→env bridge stringifies values, so a YAML ``null`` reaches us as
+    the literal string ``"None"``. Treat it (and ``"null"``/``"none"``) as
+    unset so a stock generated config.yaml does not break terminal startup.
+    """
+
+    def test_unset_returns_none(self):
+        import os
+        from tools.terminal_tool import _parse_optional_int_env
+        env = os.environ.copy()
+        env.pop("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL", None)
+        with patch.dict("os.environ", env, clear=True):
+            assert _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL") is None
+
+    def test_empty_returns_none(self):
+        from tools.terminal_tool import _parse_optional_int_env
+        with patch.dict("os.environ", {"TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL": ""}):
+            assert _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL") is None
+
+    @pytest.mark.parametrize("spelling", ["None", "none", "NONE", "null", "Null", "NULL"])
+    def test_null_spellings_treated_as_unset(self, spelling):
+        from tools.terminal_tool import _parse_optional_int_env
+        with patch.dict("os.environ", {"TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL": spelling}):
+            assert _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL") is None
+
+    def test_valid_int_returned(self):
+        from tools.terminal_tool import _parse_optional_int_env
+        with patch.dict("os.environ", {"TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL": "60"}):
+            assert _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL") == 60
+
+    def test_invalid_int_still_raises(self):
+        from tools.terminal_tool import _parse_optional_int_env
+        with patch.dict("os.environ", {"TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL": "5m"}):
+            with pytest.raises(ValueError, match="TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL"):
+                _parse_optional_int_env("TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL")
+
+
 class TestImportTimeEnvParsing:
     """Module-level env parsing should never make terminal_tool unimportable."""
 

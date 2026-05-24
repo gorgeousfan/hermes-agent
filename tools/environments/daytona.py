@@ -47,6 +47,9 @@ class DaytonaEnvironment(BaseEnvironment):
         disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
+        auto_stop_interval: int = 0,
+        auto_archive_interval: int | None = None,
+        auto_delete_interval: int | None = None,
     ):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
@@ -117,17 +120,36 @@ class DaytonaEnvironment(BaseEnvironment):
                     self._sandbox = None
 
         if self._sandbox is None:
+            create_params = {
+                "image": image,
+                "name": sandbox_name,
+                "labels": labels,
+                "auto_stop_interval": auto_stop_interval,
+                "resources": resources,
+            }
+            # Only pass auto_archive/auto_delete when explicitly configured so
+            # callers that leave them at None get the Daytona SDK defaults
+            # rather than overriding to a literal 0.
+            if auto_archive_interval is not None:
+                create_params["auto_archive_interval"] = auto_archive_interval
+            if auto_delete_interval is not None:
+                create_params["auto_delete_interval"] = auto_delete_interval
             self._sandbox = self._daytona.create(
-                CreateSandboxFromImageParams(
-                    image=image,
-                    name=sandbox_name,
-                    labels=labels,
-                    auto_stop_interval=0,
-                    resources=resources,
-                )
+                CreateSandboxFromImageParams(**create_params)
             )
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)
+        else:
+            # Resumed sandbox (persistent_filesystem path): create_params do
+            # not apply on resume, so push the current config through the SDK
+            # runtime setters. Without this, changing terminal.daytona_auto_*
+            # in config.yaml has no effect on persistent sandboxes until the
+            # user manually deletes and re-creates them.
+            self._apply_interval_setters(
+                auto_stop_interval=auto_stop_interval,
+                auto_archive_interval=auto_archive_interval,
+                auto_delete_interval=auto_delete_interval,
+            )
 
         # Detect remote home dir
         self._remote_home = "/root"
@@ -202,6 +224,43 @@ class DaytonaEnvironment(BaseEnvironment):
     # ------------------------------------------------------------------
     # Sandbox lifecycle
     # ------------------------------------------------------------------
+
+    def _apply_interval_setters(
+        self,
+        *,
+        auto_stop_interval: int,
+        auto_archive_interval: int | None,
+        auto_delete_interval: int | None,
+    ) -> None:
+        """Push interval config to a resumed sandbox via SDK runtime setters.
+
+        Older SDK versions may not expose every setter; missing ones are
+        logged at debug and skipped so config changes still apply to the
+        intervals the SDK *does* expose. None values are intentionally
+        skipped to preserve the "SDK / account default" semantics.
+        """
+        setter_map = {
+            "set_autostop_interval": auto_stop_interval,
+            "set_auto_archive_interval": auto_archive_interval,
+            "set_auto_delete_interval": auto_delete_interval,
+        }
+        for setter_name, minutes in setter_map.items():
+            if minutes is None:
+                continue
+            setter = getattr(self._sandbox, setter_name, None)
+            if setter is None:
+                logger.debug(
+                    "Daytona: sandbox %s lacks %s; skipping interval sync",
+                    self._sandbox.id, setter_name,
+                )
+                continue
+            try:
+                setter(minutes)
+            except Exception as e:
+                logger.warning(
+                    "Daytona: %s(%s) failed on sandbox %s: %s",
+                    setter_name, minutes, self._sandbox.id, e,
+                )
 
     def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""

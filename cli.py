@@ -569,6 +569,9 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "daytona_auto_stop_interval": "TERMINAL_DAYTONA_AUTO_STOP_INTERVAL",
+        "daytona_auto_archive_interval": "TERMINAL_DAYTONA_AUTO_ARCHIVE_INTERVAL",
+        "daytona_auto_delete_interval": "TERMINAL_DAYTONA_AUTO_DELETE_INTERVAL",
         "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
@@ -605,6 +608,12 @@ def load_cli_config() -> Dict[str, Any]:
                 continue
             if _file_has_terminal_config or env_var not in os.environ:
                 val = terminal_config[config_key]
+                # YAML null / Python None means "keep the SDK / parser default"
+                # for optional ints (daytona_auto_archive_interval, etc.).
+                # Writing str(None) here would export the literal "None" string,
+                # which _parse_optional_int_env then has to special-case.
+                if val is None:
+                    continue
                 if isinstance(val, (list, dict)):
                     os.environ[env_var] = json.dumps(val)
                 else:
