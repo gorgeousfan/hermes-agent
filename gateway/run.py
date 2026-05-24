@@ -6435,6 +6435,21 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
+    def is_user_authorized(self, source: SessionSource) -> bool:
+        """Public wrapper for plugin authors.
+
+        ``pre_gateway_dispatch`` hooks fire *before* the gateway's own auth
+        step (by design, so plugins can handle unauthorized senders without
+        triggering the pairing flow).  Plugins that return ``"allow"`` for a
+        user-originated message should call this method to ensure the sender
+        is authorized before the message reaches the agent loop.
+
+        If your hook does NOT call this, the gateway will still run the
+        normal auth check afterwards — this is a convenience for hooks that
+        need to make an early auth decision.
+        """
+        return self._is_user_authorized(source)
+
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 

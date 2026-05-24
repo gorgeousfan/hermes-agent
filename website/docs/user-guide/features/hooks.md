@@ -869,7 +869,11 @@ def my_callback(event, gateway, session_store, **kwargs):
 | `gateway` | `GatewayRunner` | The active gateway runner, so plugins can call `gateway.adapters[platform].send(...)` for side-channel replies (owner notifications, etc.). |
 | `session_store` | `SessionStore` | For silent transcript ingestion via `session_store.append_to_transcript(...)`. |
 
-**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed — **before** the gateway's own auth/pairing step. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+
+:::caution
+The hook runs **before** the gateway checks `_is_user_authorized(source)`. This is intentional — it lets plugins handle unauthorized senders without triggering the pairing flow. If your hook returns `"allow"` for a user-originated message, call `gateway.is_user_authorized(source)` to ensure the sender passes the gateway's normal allowlist / pairing checks. Otherwise the gateway will still run its own auth check after your hook returns.
+:::
 
 **Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
 
