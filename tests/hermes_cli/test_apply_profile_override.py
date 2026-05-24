@@ -111,6 +111,28 @@ class TestApplyProfileOverrideHermesHomeGuard:
             "HERMES_HOME must remain unchanged when already pointing to a profile dir"
         )
 
+    def test_gateway_run_trusts_root_hermes_home_over_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Service-managed gateway runtimes must not be profile-hijacked.
+
+        A default-profile service sets HERMES_HOME to the root ~/.hermes.  If a
+        sticky active_profile points at a named profile, the gateway runtime
+        must still write PID/status files under the service's HERMES_HOME.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile="coder",
+            argv=["hermes", "gateway", "run"],
+        )
+
+        assert result == str(hermes_root)
+
     def test_hermes_home_unset_reads_active_profile(self, tmp_path, monkeypatch):
         """Classic case: HERMES_HOME unset + active_profile=coder must set
         HERMES_HOME to the profile directory (existing behaviour must not regress).

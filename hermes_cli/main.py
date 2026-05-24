@@ -208,18 +208,33 @@ def _apply_profile_override() -> None:
             profile_name = None
             consume = 0
 
+    is_gateway_run = False
+    try:
+        gateway_index = argv.index("gateway")
+        is_gateway_run = (
+            len(argv) > gateway_index + 1
+            and argv[gateway_index + 1] == "run"
+        )
+    except ValueError:
+        pass
+
     # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
-    # only when it already points to a specific profile directory.  The
+    # when it already points to a specific profile directory.  The
     # distinguishing heuristic: a profile path has "profiles" as its immediate
     # parent directory name (e.g. ~/.hermes/profiles/coder or
-    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
-    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
-    # still read active_profile — the user may have switched profiles via
-    # `hermes profile use` and the gateway should honour that choice.
-    # See issue #22502.
+    # /opt/data/profiles/coder).
+    #
+    # Also trust HERMES_HOME for the actual gateway runtime process
+    # (``hermes gateway run``), even when it points to the default root.  Service
+    # managers pin HERMES_HOME in the unit environment; letting sticky
+    # active_profile rewrite that at runtime makes the default service write its
+    # PID/status files into a named profile.
+    #
+    # For ordinary CLI management commands, preserve issue #22502 behavior:
+    # HERMES_HOME at the root can still follow `hermes profile use`.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
-        if Path(hermes_home_env).parent.name == "profiles":
+        if Path(hermes_home_env).parent.name == "profiles" or is_gateway_run:
             return
 
     # 2. If no flag, check active_profile in the hermes root
