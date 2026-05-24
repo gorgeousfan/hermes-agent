@@ -2158,14 +2158,30 @@ class AIAgent:
         
         The gateway creates a fresh AIAgent per message, so the in-memory
         TodoStore is empty. We scan the history for the most recent todo
-        tool response and replay it to reconstruct the state.
+        tool response with a matching assistant todo call and replay it to
+        reconstruct the state.
         """
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
         # Walk history backwards to find the most recent todo tool response
         last_todo_response = None
-        for msg in reversed(history):
+        for idx in range(len(history) - 1, -1, -1):
+            msg = history[idx]
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
+            if not self._tool_response_matches_todo_call(history, idx):
+                continue
+            if not isinstance(content, str):
+                continue
+            if len(content) > MAX_TODO_RESULT_CHARS:
+                logger.warning(
+                    "Skipping oversized todo tool response during hydration: "
+                    "session=%s chars=%d",
+                    self.session_id or "none",
+                    len(content),
+                )
+                continue
             # Quick check: todo responses contain "todos" key
             if '"todos"' not in content:
                 continue
@@ -2183,6 +2199,62 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
+
+    @classmethod
+    def _tool_response_matches_todo_call(
+        cls,
+        history: List[Dict[str, Any]],
+        tool_index: int,
+    ) -> bool:
+        """Return True when a tool result belongs to a prior assistant todo call."""
+        if tool_index < 0 or tool_index >= len(history):
+            return False
+        tool_msg = history[tool_index]
+        tool_call_id = tool_msg.get("tool_call_id")
+        if not tool_call_id:
+            return False
+
+        for prior_idx in range(tool_index - 1, -1, -1):
+            prior = history[prior_idx]
+            role = prior.get("role")
+            if role == "assistant":
+                return cls._assistant_has_todo_tool_call(prior, tool_call_id)
+            if role in {"user", "system"}:
+                return False
+        return False
+
+    @classmethod
+    def _assistant_has_todo_tool_call(
+        cls,
+        assistant_msg: Dict[str, Any],
+        tool_call_id: str,
+    ) -> bool:
+        tool_calls = assistant_msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return False
+
+        for tool_call in tool_calls:
+            if cls._tool_call_id(tool_call) != tool_call_id:
+                continue
+            if cls._tool_call_name(tool_call) == "todo":
+                return True
+        return False
+
+    @staticmethod
+    def _tool_call_id(tool_call: Any) -> Optional[str]:
+        if isinstance(tool_call, dict):
+            return tool_call.get("id")
+        return getattr(tool_call, "id", None)
+
+    @staticmethod
+    def _tool_call_name(tool_call: Any) -> Optional[str]:
+        if isinstance(tool_call, dict):
+            function = tool_call.get("function") or {}
+            if isinstance(function, dict):
+                return function.get("name")
+            return getattr(function, "name", None)
+        function = getattr(tool_call, "function", None)
+        return getattr(function, "name", None)
 
     @property
     def is_interrupted(self) -> bool:

@@ -2,7 +2,13 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from tools.todo_tool import (
+    MAX_TODO_CONTENT_CHARS,
+    MAX_TODO_ID_CHARS,
+    MAX_TODO_ITEMS,
+    TodoStore,
+    todo_tool,
+)
 
 
 class TestWriteAndRead:
@@ -35,6 +41,20 @@ class TestWriteAndRead:
             {"id": "2", "content": "Other task", "status": "pending"},
             {"id": "1", "content": "Latest version", "status": "in_progress"},
         ]
+
+    def test_write_caps_items_and_text_lengths(self):
+        store = TodoStore()
+        result = store.write([
+            {
+                "id": f"{i}-" + ("i" * MAX_TODO_ID_CHARS),
+                "content": "c" * (MAX_TODO_CONTENT_CHARS + 50),
+                "status": "pending",
+            }
+            for i in range(MAX_TODO_ITEMS + 25)
+        ])
+        assert len(result) == MAX_TODO_ITEMS
+        assert all(len(item["id"]) <= MAX_TODO_ID_CHARS for item in result)
+        assert all(len(item["content"]) <= MAX_TODO_CONTENT_CHARS for item in result)
 
 
 class TestHasItems:

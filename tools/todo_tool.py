@@ -20,6 +20,10 @@ from typing import Dict, Any, List, Optional
 
 # Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+MAX_TODO_ITEMS = 100
+MAX_TODO_ID_CHARS = 128
+MAX_TODO_CONTENT_CHARS = 1000
+MAX_TODO_RESULT_CHARS = 128_000
 
 
 class TodoStore:
@@ -44,22 +48,38 @@ class TodoStore:
             merge: if False, replace the entire list. If True, update
                    existing items by id and append new ones.
         """
+        limited_todos = self._limit_items(todos)
+
         if not merge:
             # Replace mode: new list entirely
-            self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
+            self._items = self._dedupe_validated_by_id(
+                [self._validate(t) for t in limited_todos]
+            )
         else:
             # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
-            for t in self._dedupe_by_id(todos):
-                item_id = str(t.get("id", "")).strip()
+            for t in self._dedupe_by_id(limited_todos):
+                item_id = (
+                    self._normalize_text(
+                        t.get("id", ""),
+                        max_chars=MAX_TODO_ID_CHARS,
+                        fallback="",
+                    )
+                    if isinstance(t, dict)
+                    else ""
+                )
                 if not item_id:
                     continue  # Can't merge without an id
 
                 if item_id in existing:
                     # Update only the fields the LLM actually provided
-                    if "content" in t and t["content"]:
-                        existing[item_id]["content"] = str(t["content"]).strip()
-                    if "status" in t and t["status"]:
+                    if isinstance(t, dict) and "content" in t and t["content"]:
+                        existing[item_id]["content"] = self._normalize_text(
+                            t["content"],
+                            max_chars=MAX_TODO_CONTENT_CHARS,
+                            fallback=existing[item_id]["content"],
+                        )
+                    if isinstance(t, dict) and "status" in t and t["status"]:
                         status = str(t["status"]).strip().lower()
                         if status in VALID_STATUSES:
                             existing[item_id]["status"] = status
@@ -129,11 +149,22 @@ class TodoStore:
         Ensures required fields exist and status is valid.
         Returns a clean dict with only {id, content, status}.
         """
-        item_id = str(item.get("id", "")).strip()
+        if not isinstance(item, dict):
+            item = {}
+
+        item_id = TodoStore._normalize_text(
+            item.get("id", ""),
+            max_chars=MAX_TODO_ID_CHARS,
+            fallback="?",
+        )
         if not item_id:
             item_id = "?"
 
-        content = str(item.get("content", "")).strip()
+        content = TodoStore._normalize_text(
+            item.get("content", ""),
+            max_chars=MAX_TODO_CONTENT_CHARS,
+            fallback="(no description)",
+        )
         if not content:
             content = "(no description)"
 
@@ -144,11 +175,43 @@ class TodoStore:
         return {"id": item_id, "content": content, "status": status}
 
     @staticmethod
+    def _normalize_text(value: Any, *, max_chars: int, fallback: str) -> str:
+        text = str(value).strip()
+        if not text:
+            return fallback
+        return text[:max_chars]
+
+    @staticmethod
+    def _limit_items(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not isinstance(todos, list):
+            return []
+        return todos[:MAX_TODO_ITEMS]
+
+    @staticmethod
+    def _item_id_for_dedupe(item: Dict[str, Any]) -> str:
+        if not isinstance(item, dict):
+            return "?"
+        return TodoStore._normalize_text(
+            item.get("id", ""),
+            max_chars=MAX_TODO_ID_CHARS,
+            fallback="?",
+        )
+
+    @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Collapse duplicate ids, keeping the last occurrence in its position."""
         last_index: Dict[str, int] = {}
         for i, item in enumerate(todos):
-            item_id = str(item.get("id", "")).strip() or "?"
+            item_id = TodoStore._item_id_for_dedupe(item)
+            last_index[item_id] = i
+        return [todos[i] for i in sorted(last_index.values())]
+
+    @staticmethod
+    def _dedupe_validated_by_id(todos: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Collapse duplicate ids, keeping the last occurrence in its position."""
+        last_index: Dict[str, int] = {}
+        for i, item in enumerate(todos):
+            item_id = item.get("id") or "?"
             last_index[item_id] = i
         return [todos[i] for i in sorted(last_index.values())]
 

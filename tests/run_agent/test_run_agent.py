@@ -921,6 +921,20 @@ class TestInterrupt:
 
 
 class TestHydrateTodoStore:
+    @staticmethod
+    def _assistant_todo_call(call_id="c1"):
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "todo", "arguments": "{}"},
+                }
+            ],
+        }
+
     def test_no_todo_in_history(self, agent):
         history = [
             {"role": "user", "content": "hello"},
@@ -934,7 +948,7 @@ class TestHydrateTodoStore:
         todos = [{"id": "1", "content": "do thing", "status": "pending"}]
         history = [
             {"role": "user", "content": "plan"},
-            {"role": "assistant", "content": "ok"},
+            self._assistant_todo_call("c1"),
             {
                 "role": "tool",
                 "content": json.dumps({"todos": todos}),
@@ -945,11 +959,51 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert agent._todo_store.has_items()
 
-    def test_skips_non_todo_tools(self, agent):
+    def test_skips_tool_response_without_matching_todo_call(self, agent):
+        todos = [{"id": "1", "content": "do thing", "status": "pending"}]
         history = [
             {
                 "role": "tool",
-                "content": '{"result": "search done"}',
+                "content": json.dumps({"todos": todos}),
+                "tool_call_id": "c1",
+            },
+        ]
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        assert not agent._todo_store.has_items()
+
+    def test_skips_tool_response_matched_to_non_todo_call(self, agent):
+        todos = [{"id": "1", "content": "do thing", "status": "pending"}]
+        history = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({"todos": todos}),
+                "tool_call_id": "c1",
+            },
+        ]
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        assert not agent._todo_store.has_items()
+
+    def test_skips_oversized_todo_tool_response(self, agent):
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
+        history = [
+            self._assistant_todo_call("c1"),
+            {
+                "role": "tool",
+                "content": '{"todos":"' + ("x" * MAX_TODO_RESULT_CHARS) + '"}',
                 "tool_call_id": "c1",
             },
         ]
@@ -959,6 +1013,7 @@ class TestHydrateTodoStore:
 
     def test_invalid_json_skipped(self, agent):
         history = [
+            self._assistant_todo_call("c1"),
             {
                 "role": "tool",
                 "content": 'not valid json "todos" oops',
