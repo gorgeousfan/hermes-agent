@@ -666,7 +666,18 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    entry = _lookup_official_docs_pricing(route)
+    if entry:
+        return entry
+    # Fallback: try OpenRouter's model API as a generic pricing source.
+    # OpenRouter's /v1/models endpoint returns pricing for almost every
+    # publicly-routed model, so this covers models not in our hardcoded
+    # lookup — e.g. deepseek-v4-flash, gpt-5.x, date-suffixed variants.
+    try:
+        return _openrouter_pricing_entry(route)
+    except Exception:
+        pass
+    return None
 
 
 def normalize_usage(
