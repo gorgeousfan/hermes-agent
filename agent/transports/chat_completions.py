@@ -353,15 +353,19 @@ class ChatCompletionsTransport(ProviderTransport):
                         {"id": "pareto-router", "min_coding_score": _pareto_score_f}
                     ]
 
-        # Kimi extra_body.thinking
+        # Kimi extra_body.thinking — only emit when DISABLED (reasoning_effort
+        # top-level kwarg covers the enabled case; sending both causes HTTP 400
+        # on the Moonshot/Kimi API because they are mutually exclusive).
         if is_kimi:
-            _kimi_thinking_enabled = True
-            if reasoning_config and isinstance(reasoning_config, dict):
-                if reasoning_config.get("enabled") is False:
-                    _kimi_thinking_enabled = False
-            extra_body["thinking"] = {
-                "type": "enabled" if _kimi_thinking_enabled else "disabled",
-            }
+            _kimi_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if _kimi_thinking_off:
+                extra_body["thinking"] = {
+                    "type": "disabled",
+                }
 
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.

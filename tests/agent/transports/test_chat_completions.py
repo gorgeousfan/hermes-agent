@@ -500,15 +500,23 @@ class TestChatCompletionsKimi:
         # Mirror Kimi CLI: omit reasoning_effort entirely when thinking off
         assert "reasoning_effort" not in kw
 
-    def test_kimi_thinking_enabled_extra_body(self, transport):
+    def test_kimi_reasoning_effort_mutually_exclusive_with_thinking(self, transport):
+        """When enabled, reasoning_effort is top-level and thinking is NOT in extra_body
+        (they are mutually exclusive on the Moonshot API)."""
         from providers import get_provider_profile
         profile = get_provider_profile("kimi-coding")
         kw = transport.build_kwargs(
             model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
             provider_profile=profile,
+            reasoning_config={"effort": "high"},
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
-        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        assert kw["reasoning_effort"] == "high"
+        # thinking must NOT be in extra_body when reasoning_effort is set
+        extra_body = kw.get("extra_body", {}) or {}
+        assert "thinking" not in extra_body, (
+            "extra_body.thinking must not be sent alongside top-level reasoning_effort"
+        )
 
     def test_kimi_thinking_disabled_extra_body(self, transport):
         from providers import get_provider_profile
@@ -520,6 +528,8 @@ class TestChatCompletionsKimi:
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
         assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+        # reasoning_effort must NOT be present when thinking is disabled
+        assert "reasoning_effort" not in kw
 
     def test_moonshot_tool_schemas_are_sanitized_by_model_name(self, transport):
         """Aggregator routes (Nous, OpenRouter) hit Moonshot by model name, not base URL."""

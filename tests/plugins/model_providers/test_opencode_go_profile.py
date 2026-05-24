@@ -17,14 +17,15 @@ def opencode_go_profile():
 
 
 class TestOpenCodeGoKimiReasoning:
-    """Kimi K2 models use Moonshot's thinking + reasoning_effort shape on OpenCode Go."""
+    """Kimi K2 models use reasoning_effort (top-level) without extra_body.thinking
+    when thinking is enabled (they are mutually exclusive on the Moonshot API)."""
 
-    def test_high_effort_emits_thinking_and_effort(self, opencode_go_profile):
+    def test_high_effort_emits_reasoning_effort_without_thinking(self, opencode_go_profile):
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {}, "thinking must not be in extra_body when reasoning_effort is set"
         assert top_level == {"reasoning_effort": "high"}
 
     def test_disabled_emits_thinking_disabled_without_effort(self, opencode_go_profile):
@@ -35,14 +36,14 @@ class TestOpenCodeGoKimiReasoning:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-    def test_minimal_effort_enables_thinking_without_effort(self, opencode_go_profile):
-        # "minimal" is not a Moonshot-supported value — drop it, keep thinking on.
+    def test_minimal_effort_falls_back_to_medium(self, opencode_go_profile):
+        # "minimal" is not a Moonshot-supported value — fall back to "medium".
         extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "minimal"},
             model="kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
-        assert top_level == {}
+        assert extra_body == {}, "thinking must not be in extra_body when reasoning_effort is set"
+        assert top_level == {"reasoning_effort": "medium"}
 
     @pytest.mark.parametrize(
         "effort",
@@ -56,7 +57,7 @@ class TestOpenCodeGoKimiReasoning:
             reasoning_config={"enabled": True, "effort": effort},
             model="moonshotai/kimi-k2.6",
         )
-        assert extra_body == {"thinking": {"type": "enabled"}}
+        assert extra_body == {}, "thinking must not be in extra_body when reasoning_effort is set"
         assert top_level == {"reasoning_effort": "high"}
 
     def test_low_and_medium_pass_through(self, opencode_go_profile):
@@ -65,7 +66,7 @@ class TestOpenCodeGoKimiReasoning:
                 reasoning_config={"enabled": True, "effort": effort},
                 model="kimi-k2.5",
             )
-            assert extra_body == {"thinking": {"type": "enabled"}}
+            assert extra_body == {}, "thinking must not be in extra_body when reasoning_effort is set"
             assert top_level == {"reasoning_effort": effort}
 
     def test_no_config_preserves_server_default(self, opencode_go_profile):
@@ -149,7 +150,7 @@ class TestOpenCodeGoModelGating:
 class TestOpenCodeGoFullKwargsIntegration:
     """End-to-end transport kwargs include the profile-provided controls."""
 
-    def test_kimi_reasoning_reaches_extra_body_and_top_level(self, opencode_go_profile):
+    def test_kimi_reasoning_reaches_top_level_without_extra_body_thinking(self, opencode_go_profile):
         from agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
@@ -160,8 +161,12 @@ class TestOpenCodeGoFullKwargsIntegration:
             reasoning_config={"enabled": True, "effort": "high"},
             base_url="https://opencode.ai/zen/go/v1",
         )
-        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+        # reasoning_effort at top level, NOT also in extra_body.thinking
         assert kwargs["reasoning_effort"] == "high"
+        extra_body = kwargs.get("extra_body", {}) or {}
+        assert "thinking" not in extra_body, (
+            "extra_body.thinking must not be sent alongside top-level reasoning_effort"
+        )
 
     def test_deepseek_thinking_reaches_extra_body_and_top_level(
         self, opencode_go_profile
