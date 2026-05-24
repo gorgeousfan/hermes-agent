@@ -317,6 +317,56 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    # ------------------------------------------------------------------
+    # Image-to-image (edit) models — accept image_url for editing/transforming
+    # existing images via prompt-based instructions.
+    # ------------------------------------------------------------------
+    "fal-ai/nano-banana-pro/edit": {
+        "display": "Nano Banana Pro (Edit)",
+        "speed": "~10s",
+        "strengths": "Edit existing images with Gemini 3 Pro",
+        "price": "$0.15/image (1K)",
+        "size_style": "aspect_ratio",
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+            "safety_tolerance": "5",
+            "resolution": "1K",
+        },
+        "supports": {
+            "prompt", "image_urls", "aspect_ratio", "num_images",
+            "output_format", "safety_tolerance", "seed", "sync_mode",
+            "resolution", "enable_web_search", "limit_generations",
+        },
+        "upscale": False,
+    },
+    "openai/gpt-image-2/edit": {
+        "display": "GPT Image 2 (Edit)",
+        "speed": "~20s",
+        "strengths": "Edit images with SOTA text rendering",
+        "price": "$0.04–0.06/image",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_4_3",
+            "square": "square_hd",
+            "portrait": "portrait_4_3",
+        },
+        "defaults": {
+            "quality": "medium",
+            "num_images": 1,
+            "output_format": "png",
+        },
+        "supports": {
+            "prompt", "image", "image_size", "quality", "num_images",
+            "output_format", "sync_mode",
+        },
+        "upscale": False,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.
@@ -324,6 +374,15 @@ DEFAULT_MODEL = "fal-ai/flux-2/klein/9b"
 
 DEFAULT_ASPECT_RATIO = "landscape"
 VALID_ASPECT_RATIOS = ("landscape", "square", "portrait")
+
+# Maps text-to-image model IDs → their image-to-image (edit) variants.
+# Used for automatic routing when the agent passes an image_url.
+_I2I_MODEL_MAP: Dict[str, str] = {
+    "fal-ai/nano-banana-pro": "fal-ai/nano-banana-pro/edit",
+    "fal-ai/gpt-image-2": "openai/gpt-image-2/edit",
+}
+# Fallback i2i model when the configured t2i model has no edit variant.
+_I2I_FALLBACK = "fal-ai/nano-banana-pro/edit"
 
 
 # ---------------------------------------------------------------------------
@@ -417,8 +476,12 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
+def _resolve_fal_model(image_url: Optional[str] = None) -> tuple:
     """Resolve the active FAL model from config.yaml (primary) or default.
+
+    When ``image_url`` is provided, automatically routes to the image-to-image
+    (edit) variant of the configured model, falling back to ``_I2I_FALLBACK``
+    if no edit variant exists for the current model.
 
     Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
     configured model is unknown (logged as a warning).
@@ -449,6 +512,20 @@ def _resolve_fal_model() -> tuple:
         )
         return DEFAULT_MODEL, FAL_MODELS[DEFAULT_MODEL]
 
+    # Automatic i2i routing: when image_url is provided, use the edit variant.
+    if image_url:
+        # Check if the base model has a mapped edit variant.
+        if model_id in _I2I_MODEL_MAP:
+            edit_id = _I2I_MODEL_MAP[model_id]
+        elif model_id in _I2I_MODEL_MAP.values():
+            edit_id = model_id  # Already an i2i model, use as-is.
+        else:
+            edit_id = _I2I_FALLBACK
+            logger.info("No i2i variant for %s, falling back to %s", model_id, edit_id)
+        if edit_id != model_id:
+            logger.info("Image has image_url: routing %s → %s", model_id, edit_id)
+        model_id = edit_id
+
     return model_id, FAL_MODELS[model_id]
 
 
@@ -457,9 +534,13 @@ def _build_fal_payload(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     seed: Optional[int] = None,
+    image_url: Optional[str] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build a FAL request payload for `model_id` from unified inputs.
+
+    When ``image_url`` is provided, constructs an image-to-image payload
+    (e.g. ``image_urls`` for Nano Banana Pro edit, ``image`` for GPT Image 2 edit).
 
     Translates aspect_ratio into the model's native size spec (preset enum,
     aspect-ratio enum, or GPT literal string), merges model defaults, applies
@@ -485,6 +566,14 @@ def _build_fal_payload(
 
     if seed is not None and isinstance(seed, int):
         payload["seed"] = seed
+
+    if image_url:
+        # Nano Banana Pro edit uses image_urls[] (plural, list of URLs).
+        if "image_urls" in meta.get("supports", {}):
+            payload["image_urls"] = [image_url]
+        # GPT Image 2 edit uses image dict with url + type.
+        elif "image" in meta.get("supports", {}):
+            payload["image"] = {"url": image_url, "image_type": "jpg"}
 
     if overrides:
         for k, v in overrides.items():
@@ -550,6 +639,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    image_url: Optional[str] = None,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None,
@@ -558,20 +648,25 @@ def image_generate_tool(
 ) -> str:
     """Generate an image from a text prompt using the configured FAL model.
 
-    The agent-facing schema exposes only ``prompt`` and ``aspect_ratio``; the
-    remaining kwargs are overrides for direct Python callers and are filtered
-    per-model via the ``supports`` whitelist (unsupported overrides are
-    silently dropped so legacy callers don't break when switching models).
+    When ``image_url`` is provided, the tool routes to the image-to-image
+    (edit) endpoint to transform the input image according to the prompt.
+
+    The agent-facing schema exposes only ``prompt``, ``aspect_ratio``, and
+    ``image_url``; the remaining kwargs are overrides for direct Python callers
+    and are filtered per-model via the ``supports`` whitelist (unsupported
+    overrides are silently dropped so legacy callers don't break when switching
+    models).
 
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(image_url=image_url)
 
     debug_call_data = {
         "model": model_id,
         "parameters": {
             "prompt": prompt,
+            "image_url": image_url,
             "aspect_ratio": aspect_ratio,
             "num_inference_steps": num_inference_steps,
             "guidance_scale": guidance_scale,
@@ -613,7 +708,8 @@ def image_generate_tool(
             overrides["output_format"] = output_format
 
         arguments = _build_fal_payload(
-            model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
+            model_id, prompt, aspect_lc, seed=seed, image_url=image_url,
+            overrides=overrides,
         )
 
         logger.info(
@@ -823,10 +919,13 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
+        "Generate high-quality images from text prompts, or edit existing "
+        "images by passing an ``image_url``. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
+        "selectable by the agent. When ``image_url`` is provided, the tool "
+        "automatically routes to an image-to-image model to transform the "
+        "input image per the prompt instructions. Returns either a URL or an "
+        "absolute file path in the `image` field; display it with markdown "
         "![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
@@ -834,7 +933,11 @@ IMAGE_GENERATE_SCHEMA = {
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The text prompt describing the desired image. Be detailed and descriptive.",
+                "description": "The text prompt describing the desired image. For image-to-image edits, describe how to transform the input image (e.g. 'change hair to caramel balayage, long hair').",
+            },
+            "image_url": {
+                "type": "string",
+                "description": "Optional URL of an existing image to edit/transform. When provided, the tool routes to an image-to-image model instead of generating from scratch. The prompt should describe the desired changes to this image.",
             },
             "aspect_ratio": {
                 "type": "string",
@@ -971,6 +1074,7 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    image_url = args.get("image_url") or None
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
@@ -981,6 +1085,7 @@ def _handle_image_generate(args, **kw):
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        image_url=image_url,
     )
 
 
