@@ -5243,6 +5243,27 @@ def _gateway_command_inner(args):
                 print(f"✓ Stopped {get_service_name()} service")
     
     elif subcmd == "restart":
+        graceful = getattr(args, 'graceful', False)
+
+        # --graceful: drain-aware SIGUSR1 restart, safe from cron subprocesses
+        # inside the gateway's cgroup. Unlike systemctl restart, SIGUSR1 only
+        # signals the main process — the sending process and any sibling cron
+        # children survive the stop phase. systemd's Restart=always brings the
+        # gateway back.
+        if graceful:
+            from gateway.status import get_running_pid
+            pid = get_running_pid()
+            if pid is None:
+                print("✗ No running gateway PID found (gateway.pid missing or stale)")
+                sys.exit(1)
+            drain_timeout = parse_restart_drain_timeout(None)
+            ok = _graceful_restart_via_sigusr1(pid, drain_timeout)
+            if ok:
+                print(f"✓ Graceful restart signalled (PID {pid}). Gateway will restart via service manager.")
+                return
+            print("✗ Graceful restart failed — falling back to service restart")
+            # Fall through to the normal restart path below
+
         # Try service first, fall back to killing and restarting
         service_available = False
         system = getattr(args, 'system', False)

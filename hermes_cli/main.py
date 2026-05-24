@@ -11216,6 +11216,11 @@ def main():
         action="store_true",
         help="Kill ALL gateway processes across all profiles before restarting",
     )
+    gateway_restart.add_argument(
+        "--graceful",
+        action="store_true",
+        help="Send SIGUSR1 for a drain-aware graceful restart (safe from within cron jobs)",
+    )
 
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
