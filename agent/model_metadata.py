@@ -1102,6 +1102,33 @@ def _model_name_suggests_kimi(model: str) -> bool:
     return lower.startswith("kimi") or "moonshot" in lower
 
 
+# One-shot deduplication for the LM Studio "model not loaded" warning so a
+# stale config slug logs once per (model, server) pair instead of every time
+# an aux client probes context length.
+_LMSTUDIO_MISSING_MODEL_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_lmstudio_model_not_loaded(model: str, server_url: str, models_in_list: list) -> None:
+    """Log a one-time warning when the requested model isn't loaded in LM Studio."""
+    key = (model, server_url)
+    if key in _LMSTUDIO_MISSING_MODEL_WARNED:
+        return
+    _LMSTUDIO_MISSING_MODEL_WARNED.add(key)
+    loaded_ids = sorted({
+        str(m.get("id") or m.get("key") or "").strip()
+        for m in models_in_list
+        if (m.get("id") or m.get("key"))
+    })
+    loaded_summary = ", ".join(loaded_ids) if loaded_ids else "(none loaded)"
+    logger.warning(
+        "Model %r is not loaded in LM Studio at %s. Loaded models: %s. "
+        "Skipping /v1/models/{model} and /v1/models probes (they would 404). "
+        "Either load %r in LM Studio, edit ~/.hermes/config.yaml model.default, "
+        "or run `hermes model` to pick from the loaded list.",
+        model, server_url, loaded_summary, model,
+    )
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1160,8 +1187,11 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                 resp = client.get(f"{server_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
-                    for m in data.get("models", []):
+                    models_in_list = data.get("models", []) or []
+                    matched = False
+                    for m in models_in_list:
                         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
+                            matched = True
                             # Prefer loaded instance context (actual runtime value)
                             for inst in m.get("loaded_instances", []):
                                 cfg = inst.get("config", {})
@@ -1169,6 +1199,17 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
                             break
+                    # LM Studio confirmed reachable. If the requested model
+                    # isn't in its model list, the OpenAI-compat probes below
+                    # (GET /v1/models/{model} and GET /v1/models) will both
+                    # 404 in a loop and spam LM Studio's log. See #24102 —
+                    # most often the user's config.yaml has a stale
+                    # aggregator slug (e.g. google/gemini-3-flash-preview)
+                    # left over from an earlier OpenRouter/Nous setup. Bail
+                    # out with a one-shot, actionable warning instead.
+                    if not matched:
+                        _warn_lmstudio_model_not_loaded(model, server_url, models_in_list)
+                        return None
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
