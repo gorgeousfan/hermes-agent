@@ -142,6 +142,13 @@ DEFAULT_AGENT_IDENTITY = (
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
+    "## Runtime\n"
+    "You are running inside NousResearch/hermes-agent "
+    "(https://github.com/NousResearch/hermes-agent), the open-source agentic OS "
+    "by Nous Research. It provides your tools, profiles, Kanban, cron, gateway, "
+    "MCP host, skills system, and hindsight memory. "
+    "Do not confuse this with the Hermes 3/4 LLM family — those are fine-tuned "
+    "language models (separate Nous project, same name).\n"
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
     "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
