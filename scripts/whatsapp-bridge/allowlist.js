@@ -9,6 +9,12 @@ export function normalizeWhatsAppIdentifier(value) {
     .replace(/^\+/, '');
 }
 
+export function normalizeWhatsAppJid(value) {
+  return String(value || '')
+    .trim()
+    .replace(/:.*@/, '@');
+}
+
 export function parseAllowedUsers(rawValue) {
   return new Set(
     String(rawValue || '')

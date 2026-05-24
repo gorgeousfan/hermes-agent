@@ -34,6 +34,7 @@ from tools.send_message_tool import (
     _send_signal,
     _send_telegram,
     _send_to_platform,
+    _send_whatsapp,
     send_message_tool,
 )
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -815,6 +816,49 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+    def test_whatsapp_media_routes_via_local_bridge_sender(self, tmp_path):
+        chat_id = "test-user@lid"
+        image_path = tmp_path / "proof.jpg"
+        image_path.write_bytes(b"fake image")
+        media_files = [(str(image_path), False)]
+        async_mock = AsyncMock(return_value={"success": True, "platform": "whatsapp", "chat_id": chat_id, "message_id": "media123"})
+
+        with patch("tools.send_message_tool._send_whatsapp", async_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token=None, extra={"bridge_port": 3000}),
+                    chat_id,
+                    "photo caption",
+                    media_files=media_files,
+                )
+            )
+
+        assert result["success"] is True
+        async_mock.assert_awaited_once_with(
+            {"bridge_port": 3000},
+            chat_id,
+            "photo caption",
+            media_files=media_files,
+        )
+
+    def test_whatsapp_missing_media_without_text_returns_clear_error(self):
+        missing_path = "/nonexistent/whatsapp-proof.jpg"
+
+        result = asyncio.run(
+            _send_whatsapp(
+                {"bridge_port": 3000},
+                "test-user@lid",
+                "",
+                media_files=[(missing_path, False)],
+            )
+        )
+
+        assert result["error"] == "No deliverable text or media remained after processing"
+        assert result["warnings"] == [
+            f"WhatsApp media file not found, skipping: {missing_path}"
+        ]
 
 
 class TestSendTelegramHtmlDetection:

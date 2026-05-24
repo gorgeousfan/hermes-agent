@@ -10,8 +10,17 @@
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
- *   POST /typing         - Send typing indicator { chatId }
+ *   POST /send-buttons   - Send buttons or safe text fallback { chatId, text, buttons[], footer? }
+ *   POST /send-list      - Send list or safe text fallback { chatId, text, sections[] }
+ *   POST /send-poll      - Send poll { chatId, question, options[], selectableCount? }
+ *   POST /presence       - Send presence { chatId, state: typing|paused|recording }
+ *   POST /typing         - Back-compat typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
+ *   GET  /groups         - List participating groups
+ *   GET  /groups/:id/participants - List group participants
+ *   GET  /lid-map        - Get known LID/phone aliases
+ *   GET  /account        - Get current account identifiers
+ *   GET  /labels         - Get labels when supported by Baileys
  *   GET  /health         - Health check
  *
  * Usage:
@@ -28,7 +37,7 @@ import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedUser, normalizeWhatsAppJid, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -120,8 +129,29 @@ function trackSentMessageId(sent) {
 }
 
 function normalizeWhatsAppId(value) {
-  if (!value) return '';
-  return String(value).replace(':', '@');
+  return normalizeWhatsAppJid(value);
+}
+
+const HERMES_APPROVAL_ACTIONS = {
+  hermes_approve_once: '/approve',
+  hermes_approve_session: '/approve session',
+  hermes_approve_always: '/approve always',
+  hermes_deny: '/deny',
+};
+
+function approvalActionText(rawId) {
+  const value = String(rawId || '');
+  const separator = value.indexOf(':');
+  const actionId = separator === -1 ? value : value.slice(0, separator);
+  const approvalId = separator === -1 ? '' : value.slice(separator + 1);
+  const command = HERMES_APPROVAL_ACTIONS[actionId];
+  if (!command) return null;
+  if (!approvalId) return command;
+  if (command === '/approve') return `/approve ${approvalId}`;
+  if (command === '/approve session') return `/approve ${approvalId} session`;
+  if (command === '/approve always') return `/approve ${approvalId} always`;
+  if (command === '/deny') return `/deny ${approvalId}`;
+  return command;
 }
 
 function getMessageContent(msg) {
@@ -146,6 +176,117 @@ function getContextInfo(messageContent) {
   return {};
 }
 
+function getInteractiveResponse(messageContent) {
+  const buttonResponse = messageContent.buttonsResponseMessage;
+  if (buttonResponse) {
+    const id = buttonResponse.selectedButtonId || '';
+    return {
+      eventType: 'button.response',
+      id,
+      title: buttonResponse.selectedDisplayText || id,
+      text: approvalActionText(id) || buttonResponse.selectedDisplayText || id,
+    };
+  }
+
+  const templateResponse = messageContent.templateButtonReplyMessage;
+  if (templateResponse) {
+    const id = templateResponse.selectedId || '';
+    return {
+      eventType: 'button.response',
+      id,
+      title: templateResponse.selectedDisplayText || id,
+      text: approvalActionText(id) || templateResponse.selectedDisplayText || id,
+    };
+  }
+
+  const listResponse = messageContent.listResponseMessage;
+  if (listResponse) {
+    const id = listResponse.singleSelectReply?.selectedRowId || '';
+    return {
+      eventType: 'list.response',
+      id,
+      title: listResponse.title || id,
+      description: listResponse.description || '',
+      text: approvalActionText(id) || listResponse.title || id,
+    };
+  }
+
+  const nativeFlow = messageContent.interactiveResponseMessage?.nativeFlowResponseMessage;
+  if (nativeFlow) {
+    let id = nativeFlow.name || '';
+    let title = id;
+    try {
+      const params = JSON.parse(nativeFlow.paramsJson || '{}');
+      id = params.id || params.rowId || params.button_id || id;
+      title = params.title || params.display_text || params.name || title;
+    } catch {}
+    return {
+      eventType: 'interactive.response',
+      id,
+      title,
+      text: approvalActionText(id) || title || id,
+    };
+  }
+
+  return null;
+}
+
+function getPollCreation(messageContent) {
+  return (
+    messageContent.pollCreationMessage ||
+    messageContent.pollCreationMessageV2 ||
+    messageContent.pollCreationMessageV3 ||
+    null
+  );
+}
+
+function parsePollCreation(poll) {
+  if (!poll) return null;
+  return {
+    question: poll.name || poll.question || '',
+    options: (poll.options || [])
+      .map(option => option.optionName || option.name || option.text || '')
+      .filter(Boolean),
+    selectableCount: poll.selectableOptionsCount || poll.selectableCount || 1,
+  };
+}
+
+function extractPollSelectedOptions(pollUpdateMessage) {
+  const vote = pollUpdateMessage?.vote || pollUpdateMessage || {};
+  if (Array.isArray(vote.selectedOptions)) return vote.selectedOptions;
+  if (Array.isArray(vote.selectedOptionNames)) return vote.selectedOptionNames;
+  if (Array.isArray(vote.selectedOptionHashes)) return vote.selectedOptionHashes;
+  if (vote.selectedOptionName) return [vote.selectedOptionName];
+  if (vote.selectedOption) return [vote.selectedOption];
+  return [];
+}
+
+function rememberPollApproval(sent, approvalActions) {
+  const messageId = sent?.key?.id;
+  if (!messageId || !approvalActions || typeof approvalActions !== 'object') return;
+  pollApprovalActions.set(messageId, approvalActions);
+  if (pollApprovalActions.size > MAX_POLL_APPROVALS) {
+    pollApprovalActions.delete(pollApprovalActions.keys().next().value);
+  }
+}
+
+function pollCreationMessageId(pollUpdateMessage) {
+  const key = pollUpdateMessage?.pollCreationMessageKey || pollUpdateMessage?.pollCreationKey || {};
+  return key.id || key.key?.id || '';
+}
+
+function resolvePollApprovalAction(pollUpdateMessage, selectedOptions) {
+  const pollId = pollCreationMessageId(pollUpdateMessage);
+  const actions = pollId ? pollApprovalActions.get(pollId) : null;
+  for (const option of selectedOptions || []) {
+    const key = String(option || '');
+    if (actions?.[key]) return actions[key];
+    const direct = approvalActionText(key);
+    if (direct) return direct;
+  }
+  return null;
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
@@ -164,6 +305,14 @@ function buildLidMap() {
 }
 let lidToPhone = buildLidMap();
 
+function buildPhoneToLidMap() {
+  const map = {};
+  for (const [lid, phone] of Object.entries(buildLidMap())) {
+    map[phone] = lid;
+  }
+  return map;
+}
+
 const logger = pino({ level: 'warn' });
 
 // Message queue for polling
@@ -173,6 +322,11 @@ const MAX_QUEUE_SIZE = 100;
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
 const MAX_RECENT_IDS = 50;
+
+// Track approval polls so a vote can become the same slash command text that
+// the gateway already authorizes and dispatches.
+const pollApprovalActions = new Map();
+const MAX_POLL_APPROVALS = 100;
 
 let sock = null;
 let connectionState = 'disconnected';
@@ -318,17 +472,35 @@ async function startSocket() {
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
       const quotedMessageId = contextInfo?.stanzaId || null;
-      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
+      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '') || null;
       const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
       const hasQuotedMessage = !!contextInfo?.quotedMessage;
+      const interactiveResponse = getInteractiveResponse(messageContent);
+      const pollCreation = parsePollCreation(getPollCreation(messageContent));
+      const pollUpdateMessage = messageContent.pollUpdateMessage;
 
       // Extract message body
       let body = '';
       let hasMedia = false;
       let mediaType = '';
+      let eventType = 'message.received';
+      let selectedOptions = [];
       const mediaUrls = [];
 
-      if (messageContent.conversation) {
+      if (interactiveResponse) {
+        body = interactiveResponse.text;
+        eventType = interactiveResponse.eventType;
+      } else if (pollCreation) {
+        body = `[poll] ${pollCreation.question}`;
+        eventType = 'poll.created';
+      } else if (pollUpdateMessage) {
+        selectedOptions = extractPollSelectedOptions(pollUpdateMessage);
+        const approvalAction = resolvePollApprovalAction(pollUpdateMessage, selectedOptions);
+        body = approvalAction || (selectedOptions.length
+          ? `[poll vote] ${selectedOptions.join(', ')}`
+          : '[poll vote received]');
+        eventType = 'poll.vote';
+      } else if (messageContent.conversation) {
         body = messageContent.conversation;
       } else if (messageContent.extendedTextMessage?.text) {
         body = messageContent.extendedTextMessage.text;
@@ -421,6 +593,7 @@ async function startSocket() {
       }
 
       const event = {
+        eventType,
         messageId: msg.key.id,
         chatId,
         senderId,
@@ -436,6 +609,9 @@ async function startSocket() {
         quotedParticipant,
         quotedRemoteJid,
         hasQuotedMessage,
+        interactive: interactiveResponse,
+        poll: pollCreation,
+        selectedOptions,
         botIds,
         timestamp: msg.messageTimestamp,
       };
@@ -652,6 +828,186 @@ app.post('/send-media', async (req, res) => {
   }
 });
 
+function normalizeButton(button, index) {
+  const rawId = button?.id || button?.buttonId || button?.rowId || `button_${index + 1}`;
+  const rawText = button?.text || button?.title || button?.displayText || rawId;
+  return {
+    id: String(rawId),
+    text: String(rawText).slice(0, 60),
+    description: button?.description ? String(button.description).slice(0, 72) : undefined,
+  };
+}
+
+function formatFallbackOptions(buttons) {
+  return buttons
+    .map((button, index) => {
+      const actionText = approvalActionText(button.id);
+      const command = actionText ? ` (${actionText})` : '';
+      return `${index + 1}. ${button.text}${command}`;
+    })
+    .join('\n');
+}
+
+async function sendTextFallback(chatId, text, optionText = '', footer = '') {
+  const fallbackText = [text, optionText, footer].filter(Boolean).join('\n\n');
+  const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(fallbackText) });
+  trackSentMessageId(sent);
+  return sent;
+}
+
+app.post('/send-buttons', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, text, buttons, footer } = req.body;
+  if (!chatId || !text || !Array.isArray(buttons) || buttons.length === 0) {
+    return res.status(400).json({ error: 'chatId, text, and buttons[] are required' });
+  }
+
+  const normalizedButtons = buttons.map(normalizeButton).slice(0, 10);
+  const nativeButtons = normalizedButtons.map(button => ({
+    buttonId: button.id,
+    buttonText: { displayText: button.text },
+    type: 1,
+  }));
+
+  try {
+    const sent = await sock.sendMessage(chatId, {
+      text: formatOutgoingMessage(text),
+      footer: footer || undefined,
+      buttons: nativeButtons,
+      headerType: 1,
+    });
+    trackSentMessageId(sent);
+    res.json({ success: true, messageId: sent?.key?.id, native: true });
+  } catch (err) {
+    try {
+      const sent = await sendTextFallback(
+        chatId,
+        text,
+        formatFallbackOptions(normalizedButtons),
+        footer || '',
+      );
+      res.json({
+        success: true,
+        messageId: sent?.key?.id,
+        native: false,
+        warning: err.message,
+      });
+    } catch (fallbackErr) {
+      res.status(500).json({ error: fallbackErr.message || err.message });
+    }
+  }
+});
+
+app.post('/send-list', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, text, sections, buttonText, title, footer } = req.body;
+  if (!chatId || !text || !Array.isArray(sections) || sections.length === 0) {
+    return res.status(400).json({ error: 'chatId, text, and sections[] are required' });
+  }
+
+  const normalizedSections = sections.map((section, sectionIndex) => ({
+    title: String(section?.title || `Section ${sectionIndex + 1}`),
+    rows: (section?.rows || section?.items || []).map((row, rowIndex) => {
+      const button = normalizeButton(row, rowIndex);
+      return {
+        title: button.text,
+        rowId: button.id,
+        description: button.description,
+      };
+    }),
+  })).filter(section => section.rows.length > 0);
+
+  if (normalizedSections.length === 0) {
+    return res.status(400).json({ error: 'At least one list row is required' });
+  }
+
+  try {
+    const sent = await sock.sendMessage(chatId, {
+      text: formatOutgoingMessage(text),
+      title: title || undefined,
+      footer: footer || undefined,
+      buttonText: buttonText || 'Choose',
+      sections: normalizedSections,
+    });
+    trackSentMessageId(sent);
+    res.json({ success: true, messageId: sent?.key?.id, native: true });
+  } catch (err) {
+    try {
+      const rows = normalizedSections.flatMap(section => section.rows.map(row => ({
+        id: row.rowId,
+        text: `${section.title}: ${row.title}`,
+      })));
+      const sent = await sendTextFallback(chatId, text, formatFallbackOptions(rows), footer || '');
+      res.json({
+        success: true,
+        messageId: sent?.key?.id,
+        native: false,
+        warning: err.message,
+      });
+    } catch (fallbackErr) {
+      res.status(500).json({ error: fallbackErr.message || err.message });
+    }
+  }
+});
+
+app.post('/send-poll', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, question, options, selectableCount, approvalActions } = req.body;
+  if (!chatId || !question || !Array.isArray(options) || options.length < 2) {
+    return res.status(400).json({ error: 'chatId, question, and at least two options are required' });
+  }
+
+  try {
+    const sent = await sock.sendMessage(chatId, {
+      poll: {
+        name: String(question),
+        values: options.map(option => String(option)).slice(0, 12),
+        selectableCount: Number.isInteger(selectableCount) ? selectableCount : 1,
+      },
+    });
+    trackSentMessageId(sent);
+    rememberPollApproval(sent, approvalActions);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/presence', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  const { chatId, state } = req.body;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+
+  const presence = {
+    typing: 'composing',
+    paused: 'paused',
+    recording: 'recording',
+  }[String(state || 'typing').toLowerCase()];
+
+  if (!presence) {
+    return res.status(400).json({ error: 'state must be typing, paused, or recording' });
+  }
+
+  try {
+    await sock.sendPresenceUpdate(presence, chatId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Typing indicator
 app.post('/typing', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -669,9 +1025,32 @@ app.post('/typing', async (req, res) => {
   }
 });
 
+function formatParticipant(participant) {
+  const id = normalizeWhatsAppId(participant?.id || '');
+  const bare = id.replace(/@.*/, '');
+  return {
+    id,
+    phone: id.endsWith('@lid') ? lidToPhone[id] || lidToPhone[bare] || null : bare || null,
+    lid: id.endsWith('@lid') ? id : null,
+    admin: participant?.admin || null,
+  };
+}
+
+function formatGroupMetadata(metadata) {
+  return {
+    id: metadata.id,
+    name: metadata.subject,
+    owner: normalizeWhatsAppId(metadata.owner || ''),
+    description: metadata.desc || '',
+    participants: (metadata.participants || []).map(formatParticipant),
+    participantCount: (metadata.participants || []).length,
+    createdAt: metadata.creation || null,
+  };
+}
+
 // Chat info
 app.get('/chat/:id', async (req, res) => {
-  const chatId = req.params.id;
+  const chatId = decodeURIComponent(req.params.id);
   const isGroup = chatId.endsWith('@g.us');
 
   if (isGroup && sock) {
@@ -680,7 +1059,7 @@ app.get('/chat/:id', async (req, res) => {
       return res.json({
         name: metadata.subject,
         isGroup: true,
-        participants: metadata.participants.map(p => p.id),
+        participants: metadata.participants.map(formatParticipant),
       });
     } catch {
       // Fall through to default
@@ -692,6 +1071,89 @@ app.get('/chat/:id', async (req, res) => {
     isGroup,
     participants: [],
   });
+});
+
+// List groups for directory/picker UX
+app.get('/groups', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  try {
+    const participating = await sock.groupFetchAllParticipating();
+    const groups = Object.values(participating || {}).map(formatGroupMetadata);
+    res.json({ success: true, groups });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List participants for a single group
+app.get('/groups/:id/participants', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  try {
+    const chatId = decodeURIComponent(req.params.id);
+    const metadata = await sock.groupMetadata(chatId);
+    res.json({
+      success: true,
+      groupId: chatId,
+      participants: (metadata.participants || []).map(formatParticipant),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Known LID/phone aliases discovered from Baileys auth state files
+app.get('/lid-map', (req, res) => {
+  lidToPhone = buildLidMap();
+  res.json({
+    success: true,
+    lidToPhone,
+    phoneToLid: buildPhoneToLidMap(),
+  });
+});
+
+// Current WhatsApp account identity
+app.get('/account', (req, res) => {
+  res.json({
+    success: true,
+    status: connectionState,
+    id: normalizeWhatsAppId(sock?.user?.id),
+    lid: normalizeWhatsAppId(sock?.user?.lid),
+    name: sock?.user?.name || '',
+    phone: normalizeWhatsAppId(sock?.user?.id).replace(/@.*/, ''),
+  });
+});
+
+// Labels are available only on some Baileys/WhatsApp app-state surfaces.
+app.get('/labels', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected' });
+  }
+
+  try {
+    if (typeof sock.getLabels === 'function') {
+      const labels = await sock.getLabels();
+      return res.json({ success: true, supported: true, labels: labels || [] });
+    }
+    if (typeof sock.fetchLabels === 'function') {
+      const labels = await sock.fetchLabels();
+      return res.json({ success: true, supported: true, labels: labels || [] });
+    }
+  } catch (err) {
+    return res.json({
+      success: true,
+      supported: false,
+      labels: [],
+      error: err.message,
+    });
+  }
+
+  res.json({ success: true, supported: false, labels: [] });
 });
 
 // Health check

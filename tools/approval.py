@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -539,13 +540,18 @@ def unregister_gateway_notify(session_key: str) -> None:
         entry.event.set()
 
 
-def resolve_gateway_approval(session_key: str, choice: str,
-                             resolve_all: bool = False) -> int:
+def resolve_gateway_approval(
+    session_key: str,
+    choice: str,
+    resolve_all: bool = False,
+    approval_id: Optional[str] = None,
+) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
+    resolved at once (``/approve all``).  When *approval_id* is supplied,
+    only that matching approval is resolved.  Otherwise only the oldest one
     is resolved (FIFO).
 
     Returns the number of approvals resolved (0 means nothing was pending).
@@ -557,6 +563,17 @@ def resolve_gateway_approval(session_key: str, choice: str,
         if resolve_all:
             targets = list(queue)
             queue.clear()
+        elif approval_id:
+            target_index = next(
+                (
+                    index for index, entry in enumerate(queue)
+                    if str(entry.data.get("approval_id", "")) == str(approval_id)
+                ),
+                None,
+            )
+            if target_index is None:
+                return 0
+            targets = [queue.pop(target_index)]
         else:
             targets = [queue.pop(0)]
         if not queue:
@@ -1193,6 +1210,7 @@ def check_all_command_guards(command: str, env_type: str,
             # Each call gets its own _ApprovalEntry so parallel subagents
             # and execute_code threads can block concurrently.
             approval_data = {
+                "approval_id": uuid.uuid4().hex[:12],
                 "command": command,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,

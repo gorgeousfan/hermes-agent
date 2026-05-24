@@ -702,6 +702,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- WhatsApp: native attachment support via local Baileys bridge ---
+    if platform == Platform.WHATSAPP and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_whatsapp(
+                pconfig.extra,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Yuanbao: native media attachment support via running gateway adapter ---
     if platform == Platform.YUANBAO and media_files:
         last_result = None
@@ -738,7 +754,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, whatsapp, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -746,7 +762,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, whatsapp, yuanbao and feishu"
         )
 
     last_result = None
@@ -1059,7 +1075,7 @@ async def _send_slack(token, chat_id, message):
         return _error(f"Slack send failed: {e}")
 
 
-async def _send_whatsapp(extra, chat_id, message):
+async def _send_whatsapp(extra, chat_id, message, media_files=None):
     """Send via the local WhatsApp bridge HTTP API."""
     try:
         import aiohttp
@@ -1067,7 +1083,64 @@ async def _send_whatsapp(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        warnings = []
+        valid_media = []
+        for media_path, is_voice in media_files or []:
+            if os.path.exists(media_path):
+                valid_media.append((media_path, is_voice))
+            else:
+                warning = f"WhatsApp media file not found, skipping: {media_path}"
+                logger.warning(warning)
+                warnings.append(warning)
+
+        if not valid_media and not message.strip():
+            error = "No deliverable text or media remained after processing"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
         async with aiohttp.ClientSession() as session:
+            if valid_media:
+                last_data = None
+                for index, (media_path, is_voice) in enumerate(valid_media):
+                    ext = os.path.splitext(media_path)[1].lower()
+                    media_type = None
+                    if ext in _IMAGE_EXTS:
+                        media_type = "image"
+                    elif ext in _VIDEO_EXTS:
+                        media_type = "video"
+                    elif ext in _AUDIO_EXTS or is_voice:
+                        media_type = "audio"
+                    payload = {
+                        "chatId": chat_id,
+                        "filePath": media_path,
+                    }
+                    if media_type:
+                        payload["mediaType"] = media_type
+                    if index == 0 and message.strip():
+                        payload["caption"] = message
+                    async with session.post(
+                        f"http://localhost:{bridge_port}/send-media",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120),
+                    ) as resp:
+                        if resp.status != 200:
+                            body = await resp.text()
+                            error = _error(f"WhatsApp bridge error ({resp.status}): {body}")
+                            if warnings:
+                                error["warnings"] = warnings
+                            return error
+                        last_data = await resp.json()
+                result = {
+                    "success": True,
+                    "platform": "whatsapp",
+                    "chat_id": chat_id,
+                    "message_id": (last_data or {}).get("messageId"),
+                }
+                if warnings:
+                    result["warnings"] = warnings
+                return result
+
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
                 json={"chatId": chat_id, "message": message},
@@ -1081,8 +1154,14 @@ async def _send_whatsapp(extra, chat_id, message):
                         "chat_id": chat_id,
                         "message_id": data.get("messageId"),
                     }
+                    if warnings:
+                        result["warnings"] = warnings
+                    return result
                 body = await resp.text()
-                return _error(f"WhatsApp bridge error ({resp.status}): {body}")
+                error = _error(f"WhatsApp bridge error ({resp.status}): {body}")
+                if warnings:
+                    error["warnings"] = warnings
+                return error
     except Exception as e:
         return _error(f"WhatsApp send failed: {e}")
 

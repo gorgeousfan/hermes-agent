@@ -8,6 +8,7 @@ import {
   expandWhatsAppIdentifiers,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
+  normalizeWhatsAppJid,
   parseAllowedUsers,
 } from './allowlist.js';
 
@@ -15,6 +16,11 @@ test('normalizeWhatsAppIdentifier strips jid syntax and plus prefix', () => {
   assert.equal(normalizeWhatsAppIdentifier('+19175395595@s.whatsapp.net'), '19175395595');
   assert.equal(normalizeWhatsAppIdentifier('267383306489914@lid'), '267383306489914');
   assert.equal(normalizeWhatsAppIdentifier('19175395595:12@s.whatsapp.net'), '19175395595');
+});
+
+test('normalizeWhatsAppJid strips device suffix without corrupting jid domain', () => {
+  assert.equal(normalizeWhatsAppJid('19175395595:12@s.whatsapp.net'), '19175395595@s.whatsapp.net');
+  assert.equal(normalizeWhatsAppJid('267383306489914:3@lid'), '267383306489914@lid');
 });
 
 test('expandWhatsAppIdentifiers resolves phone and lid aliases from session files', () => {

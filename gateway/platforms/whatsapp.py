@@ -28,6 +28,7 @@ import subprocess
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
+from urllib.parse import quote
 
 from hermes_constants import get_hermes_dir
 
@@ -926,6 +927,261 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    def _bridge_url(self, path: str) -> str:
+        """Build a loopback URL for the managed WhatsApp bridge."""
+        return f"http://127.0.0.1:{self._bridge_port}{path}"
+
+    async def _post_bridge_json(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        *,
+        timeout_seconds: int = 30,
+    ) -> SendResult:
+        """POST JSON to the bridge and normalize the response as SendResult."""
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+
+        try:
+            import aiohttp
+
+            async with self._http_session.post(
+                self._bridge_url(path),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    success = data.get("success", True)
+                    return SendResult(
+                        success=bool(success),
+                        message_id=data.get("messageId"),
+                        error=data.get("error") if not success else None,
+                        raw_response=data,
+                    )
+                return SendResult(success=False, error=await resp.text())
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def _get_bridge_json(
+        self,
+        path: str,
+        *,
+        timeout_seconds: int = 15,
+    ) -> Dict[str, Any]:
+        """GET JSON from the bridge, returning an empty dict on failure."""
+        if not self._running or not self._http_session:
+            return {}
+        if await self._check_managed_bridge_exit():
+            return {}
+
+        try:
+            import aiohttp
+
+            async with self._http_session.get(
+                self._bridge_url(path),
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+        except Exception as e:
+            logger.debug("Could not fetch WhatsApp bridge path %s: %s", path, e)
+        return {}
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a WhatsApp approval prompt as a poll, with text fallback."""
+        cmd_preview = command[:1200] + "..." if len(command) > 1200 else command
+        approval_id = None
+        if isinstance(metadata, dict):
+            approval_id = metadata.get("approval_id")
+        approve_once_text = f"`/approve {approval_id}`" if approval_id else "`/approve`"
+        deny_text = f"`/deny {approval_id}`" if approval_id else "`/deny`"
+        question = (
+            "*Dangerous command requires approval:*\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {description}"
+        )
+        fallback_text = (
+            f"{question}\n\n"
+            f"Reply {approve_once_text} to execute once, "
+            f"`/approve {approval_id} session` to approve for this session, "
+            f"`/approve {approval_id} always` to approve permanently, or "
+            f"{deny_text} to cancel."
+            if approval_id
+            else (
+                f"{question}\n\n"
+                "Reply `/approve` to execute once, `/approve session` to approve "
+                "for this session, `/approve always` to approve permanently, or "
+                "`/deny` to cancel."
+            )
+        )
+        approval_actions = {
+            "Approve once": f"/approve {approval_id}" if approval_id else "/approve",
+            "Approve session": (
+                f"/approve {approval_id} session" if approval_id else "/approve session"
+            ),
+            "Approve always": (
+                f"/approve {approval_id} always" if approval_id else "/approve always"
+            ),
+            "Deny": f"/deny {approval_id}" if approval_id else "/deny",
+        }
+        payload = {
+            "chatId": chat_id,
+            "question": question,
+            "options": list(approval_actions.keys()),
+            "selectableCount": 1,
+            "approvalActions": approval_actions,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        if session_key:
+            payload["sessionKey"] = session_key
+        poll_result = await self._post_bridge_json("/send-poll", payload, timeout_seconds=30)
+        if poll_result.success:
+            return poll_result
+
+        fallback_result = await self._post_bridge_json(
+            "/send",
+            {"chatId": chat_id, "message": fallback_text},
+            timeout_seconds=30,
+        )
+        if fallback_result.success:
+            return fallback_result
+        return SendResult(
+            success=False,
+            error=(
+                f"Poll approval failed: {poll_result.error}; "
+                f"text fallback failed: {fallback_result.error}"
+            ),
+            raw_response={
+                "poll": poll_result.raw_response,
+                "fallback": fallback_result.raw_response,
+            },
+        )
+
+    async def send_poll(
+        self,
+        chat_id: str,
+        question: str,
+        options: list[str],
+        *,
+        selectable_count: int = 1,
+    ) -> SendResult:
+        """Send a WhatsApp poll through the bridge."""
+        if not question or not options:
+            return SendResult(success=False, error="question and options are required")
+        return await self._post_bridge_json(
+            "/send-poll",
+            {
+                "chatId": chat_id,
+                "question": question,
+                "options": [str(option) for option in options],
+                "selectableCount": selectable_count,
+            },
+            timeout_seconds=30,
+        )
+
+    async def send_buttons(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: list[Dict[str, Any]],
+        *,
+        footer: Optional[str] = None,
+    ) -> SendResult:
+        """Send a WhatsApp button message through the bridge."""
+        return await self._post_bridge_json(
+            "/send-buttons",
+            {
+                "chatId": chat_id,
+                "text": text,
+                "buttons": buttons,
+                "footer": footer,
+            },
+            timeout_seconds=30,
+        )
+
+    async def send_list(
+        self,
+        chat_id: str,
+        text: str,
+        sections: list[Dict[str, Any]],
+        *,
+        button_text: str = "Choose",
+        title: Optional[str] = None,
+        footer: Optional[str] = None,
+    ) -> SendResult:
+        """Send a WhatsApp list message through the bridge."""
+        return await self._post_bridge_json(
+            "/send-list",
+            {
+                "chatId": chat_id,
+                "text": text,
+                "sections": sections,
+                "buttonText": button_text,
+                "title": title,
+                "footer": footer,
+            },
+            timeout_seconds=30,
+        )
+
+    async def send_presence(self, chat_id: str, state: str = "typing") -> SendResult:
+        """Send a WhatsApp presence update through the bridge."""
+        normalized = str(state or "").strip().lower()
+        if normalized not in {"typing", "paused", "recording"}:
+            return SendResult(success=False, error=f"Unsupported presence state: {state}")
+        return await self._post_bridge_json(
+            "/presence",
+            {"chatId": chat_id, "state": normalized},
+            timeout_seconds=5,
+        )
+
+    async def list_groups(self) -> list[Dict[str, Any]]:
+        """Return groups the WhatsApp account participates in."""
+        data = await self._get_bridge_json("/groups", timeout_seconds=20)
+        return data.get("groups", []) if data.get("success", True) else []
+
+    async def get_group_participants(self, chat_id: str) -> list[Dict[str, Any]]:
+        """Return participant metadata for a WhatsApp group."""
+        encoded = quote(str(chat_id), safe="")
+        data = await self._get_bridge_json(
+            f"/groups/{encoded}/participants",
+            timeout_seconds=20,
+        )
+        return data.get("participants", []) if data.get("success", True) else []
+
+    async def get_lid_map(self) -> Dict[str, Any]:
+        """Return the bridge's known LID/phone alias mapping."""
+        data = await self._get_bridge_json("/lid-map", timeout_seconds=10)
+        return {
+            "lidToPhone": data.get("lidToPhone", {}),
+            "phoneToLid": data.get("phoneToLid", {}),
+        }
+
+    async def get_account_info(self) -> Dict[str, Any]:
+        """Return current WhatsApp account identifiers from the bridge."""
+        data = await self._get_bridge_json("/account", timeout_seconds=10)
+        data.pop("success", None)
+        return data
+
+    async def get_labels(self) -> Dict[str, Any]:
+        """Return labels when the active Baileys socket exposes label APIs."""
+        data = await self._get_bridge_json("/labels", timeout_seconds=20)
+        return {
+            "supported": bool(data.get("supported", False)),
+            "labels": data.get("labels", []),
+        }
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1080,15 +1336,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            # Must wrap in `async with` — a bare `await session.post(...)`
-            # leaves the response object alive until GC, holding its TCP
-            # socket in CLOSE_WAIT. See #18451.
+            # Prefer the richer presence endpoint. Must wrap in `async with`
+            # — a bare `await session.post(...)` leaves the response object
+            # alive until GC, holding its TCP socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                self._bridge_url("/presence"),
+                json={"chatId": chat_id, "state": "typing"},
                 timeout=aiohttp.ClientTimeout(total=5)
-            ):
-                pass
+            ) as resp:
+                if resp.status == 404:
+                    async with self._http_session.post(
+                        self._bridge_url("/typing"),
+                        json={"chatId": chat_id},
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ):
+                        pass
         except Exception:
             pass  # Ignore typing indicator failures
     
@@ -1103,7 +1365,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                self._bridge_url(f"/chat/{quote(str(chat_id), safe='')}"),
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:

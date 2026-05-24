@@ -5728,23 +5728,6 @@ class GatewayRunner:
 
             timeout = self._restart_drain_timeout
 
-            # Pre-mark sessions as resume_pending BEFORE the drain wait.
-            # If the process is killed by the service manager during the
-            # drain, the durable marker is already written so the next
-            # gateway boot can recover in-flight sessions (#27856).
-            _pre_drain_keys: list[str] = []
-            for _sk, _agent in list(self._running_agents.items()):
-                if _agent is _AGENT_PENDING_SENTINEL:
-                    continue
-                try:
-                    self.session_store.mark_resume_pending(
-                        _sk,
-                        "restart_timeout" if self._restart_requested else "shutdown_timeout",
-                    )
-                    _pre_drain_keys.append(_sk)
-                except Exception as _e:
-                    logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
-
             _drain_started_at = time.monotonic()
             active_agents, timed_out = await self._drain_active_agents(timeout)
             logger.info(
@@ -5756,20 +5739,6 @@ class GatewayRunner:
                 len(active_agents),
                 self._running_agent_count(),
             )
-
-            if not timed_out:
-                # Drain completed gracefully — all running sessions finished.
-                # Clear the pre-drain resume_pending markers so sessions that
-                # completed during the drain window don't carry a stale flag.
-                for _sk in _pre_drain_keys:
-                    if _sk not in self._running_agents:
-                        try:
-                            self.session_store.clear_resume_pending(_sk)
-                        except Exception as _e:
-                            logger.debug(
-                                "clear_resume_pending after drain failed for %s: %s",
-                                _sk, _e,
-                            )
 
             if timed_out:
                 logger.warning(
@@ -13536,8 +13505,14 @@ class GatewayRunner:
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
 
-        # Parse args: support "all", "all session", "all always", "session", "always"
-        args = event.get_command_args().strip().lower().split()
+        # Parse args: support an optional approval id first, then modifiers:
+        # "all", "all session", "all always", "session", "always".
+        raw_args = event.get_command_args().strip().split()
+        known_modifiers = {"all", "always", "permanent", "permanently", "session", "ses"}
+        approval_id = None
+        if raw_args and raw_args[0].lower() not in known_modifiers:
+            approval_id = raw_args.pop(0)
+        args = [a.lower() for a in raw_args]
         resolve_all = "all" in args
         remaining = [a for a in args if a != "all"]
 
@@ -13548,7 +13523,12 @@ class GatewayRunner:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            session_key,
+            choice,
+            resolve_all=resolve_all,
+            approval_id=approval_id,
+        )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -13582,10 +13562,19 @@ class GatewayRunner:
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
-        args = event.get_command_args().strip().lower()
+        raw_args = event.get_command_args().strip().split()
+        approval_id = None
+        if raw_args and raw_args[0].lower() != "all":
+            approval_id = raw_args.pop(0)
+        args = [a.lower() for a in raw_args]
         resolve_all = "all" in args
 
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            session_key,
+            "deny",
+            resolve_all=resolve_all,
+            approval_id=approval_id,
+        )
         if not count:
             return t("gateway.deny.no_pending")
 
@@ -16634,6 +16623,10 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                approval_id = approval_data.get("approval_id")
+                approval_metadata = dict(_status_thread_metadata or {})
+                if approval_id:
+                    approval_metadata["approval_id"] = approval_id
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -16646,7 +16639,7 @@ class GatewayRunner:
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=approval_metadata,
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -16680,7 +16673,7 @@ class GatewayRunner:
                         _status_adapter.send(
                             _status_chat_id,
                             msg,
-                            metadata=_status_thread_metadata,
+                            metadata=approval_metadata,
                         ),
                         _loop_for_step,
                         logger=logger,
