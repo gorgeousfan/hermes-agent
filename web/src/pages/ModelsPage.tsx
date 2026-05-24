@@ -85,18 +85,21 @@ function TokenBar({
   input,
   output,
   cacheRead,
+  cacheWrite,
   reasoning,
 }: {
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite: number;
   reasoning: number;
 }) {
-  const total = input + output + cacheRead + reasoning;
+  const total = input + output + cacheRead + cacheWrite + reasoning;
   if (total === 0) return null;
 
   const segments = [
     { value: cacheRead, color: "bg-blue-400/60", dotColor: "bg-blue-400", label: "Cache Read" },
+    { value: cacheWrite, color: "bg-cyan-400/60", dotColor: "bg-cyan-400", label: "Cache Write" },
     { value: reasoning, color: "bg-purple-400/60", dotColor: "bg-purple-400", label: "Reasoning" },
     { value: input, color: "bg-[#ffe6cb]/70", dotColor: "bg-[#ffe6cb]", label: "Input" },
     { value: output, color: "bg-emerald-500/70", dotColor: "bg-emerald-500", label: "Output" },
@@ -323,7 +326,7 @@ function ModelCard({
 }) {
   const { t } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
-  const totalTokens = entry.input_tokens + entry.output_tokens;
+  const totalTokens = entry.total_tokens ?? entry.input_tokens + entry.output_tokens + entry.cache_read_tokens + entry.cache_write_tokens;
   const caps = entry.capabilities;
 
   const isMain =
@@ -419,6 +422,7 @@ function ModelCard({
               input={entry.input_tokens}
               output={entry.output_tokens}
               cacheRead={entry.cache_read_tokens}
+              cacheWrite={entry.cache_write_tokens}
               reasoning={entry.reasoning_tokens}
             />
 
@@ -893,7 +897,11 @@ export default function ModelsPage() {
                         {
                           label: t.analytics.totalTokens,
                           value: formatTokens(
-                            data.totals.total_input + data.totals.total_output,
+                            data.totals.total_tokens ??
+                              data.totals.total_input +
+                                data.totals.total_output +
+                                data.totals.total_cache_read +
+                                (data.totals.total_cache_write ?? 0),
                           ),
                         },
                         {
