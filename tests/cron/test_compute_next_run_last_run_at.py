@@ -85,3 +85,36 @@ class TestCronComputeNextRunUsesLastRunAt:
         interval_dt = datetime.fromisoformat(interval_result)
         assert cron_dt > last_run, f"Cron next {cron_dt} should be after last_run {last_run}"
         assert interval_dt > last_run, f"Interval next {interval_dt} should be after last_run {last_run}"
+
+
+class TestCronTimezoneMigration:
+    """Regression tests for issue #28934: Cron jobs double-firing after timezone changes."""
+
+    def test_naive_timestamp_treated_as_utc(self):
+        """Legacy naive timestamps should be treated as UTC, not local time."""
+        from cron.jobs import _ensure_aware
+        from datetime import datetime, timezone
+
+        # Simulate a legacy naive timestamp
+        naive_dt = datetime(2026, 5, 10, 14, 30, 0)  # no tzinfo
+
+        result = _ensure_aware(naive_dt)
+
+        assert result.tzinfo is not None
+        assert result.tzinfo == timezone.utc
+        assert result.hour == 14  # Should preserve the wall time as UTC
+
+    def test_aware_timestamp_converted_to_utc(self):
+        """Timezone-aware timestamps should be converted to UTC."""
+        from cron.jobs import _ensure_aware
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+
+        tokyo = ZoneInfo("Asia/Tokyo")
+        tokyo_dt = datetime(2026, 5, 10, 23, 0, 0, tzinfo=tokyo)  # 23:00 JST
+
+        result = _ensure_aware(tokyo_dt)
+
+        assert result.tzinfo == timezone.utc
+        # 23:00 JST = 14:00 UTC
+        assert result.hour == 14
