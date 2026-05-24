@@ -92,6 +92,14 @@ class TestMessageEventGetCommand:
         event = MessageEvent(text="/")
         assert event.get_command() == ""
 
+    def test_mobile_space_after_slash_command(self):
+        event = MessageEvent(text="/ reload-mcp")
+        assert event.get_command() == "reload-mcp"
+
+    def test_mobile_space_after_slash_command_with_args(self):
+        event = MessageEvent(text="/ model openai/gpt-5.5")
+        assert event.get_command() == "model"
+
     def test_command_with_at_botname(self):
         event = MessageEvent(text="/new@TigerNanoBot")
         assert event.get_command() == "new"
@@ -117,6 +125,10 @@ class TestMessageEventGetCommandArgs:
     def test_not_a_command_returns_full_text(self):
         event = MessageEvent(text="hello world")
         assert event.get_command_args() == "hello world"
+
+    def test_mobile_space_after_slash_command_args(self):
+        event = MessageEvent(text="/ reload-mcp now")
+        assert event.get_command_args() == "now"
 
 
 # ---------------------------------------------------------------------------

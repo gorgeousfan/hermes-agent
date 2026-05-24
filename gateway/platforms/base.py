@@ -1078,26 +1078,41 @@ class MessageEvent:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.text.startswith("/")
     
-    def get_command(self) -> Optional[str]:
-        """Extract command name if this is a command message."""
+    def _split_command_text(self) -> tuple[Optional[str], str]:
+        """Return ``(command, args)`` for slash commands.
+
+        Humans sometimes type ``/ restart`` or ``/ reload-mcp`` on mobile.
+        Treat that as the intended slash command instead of sending the text
+        through the LLM. A bare slash still returns an empty command, matching
+        the historical behavior used by tests and unknown-command handling.
+        """
         if not self.is_command():
-            return None
-        # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
-        raw = parts[0][1:].lower() if parts else None
+            return None, self.text
+
+        body = self.text[1:]
+        # Tolerate whitespace after the slash before the command name.
+        body = body.lstrip()
+        if not body:
+            return "", ""
+
+        parts = body.split(maxsplit=1)
+        raw = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
         # Reject file paths: valid command names never contain /
         if raw and "/" in raw:
-            return None
+            return None, args
+        return raw, args
+
+    def get_command(self) -> Optional[str]:
+        """Extract command name if this is a command message."""
+        raw, _ = self._split_command_text()
         return raw
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
-        if not self.is_command():
-            return self.text
-        parts = self.text.split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
+        _, args = self._split_command_text()
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args

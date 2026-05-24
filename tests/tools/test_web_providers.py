@@ -301,25 +301,19 @@ class TestUnconfiguredErrorEnvelopeParity:
         ):
             monkeypatch.delenv(k, raising=False)
 
-    def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
-        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
-        — matching main's ``tool_error()`` envelope, not a per-result shape.
-        """
+    def test_unconfigured_search_uses_free_fallback_when_available(self, monkeypatch):
+        """``web_search_tool`` can use no-key search providers when installed."""
         import json
         from tools import web_tools
 
         self._clear_web_creds(monkeypatch)
-        # Reset firecrawl client cache so the unconfigured state is re-evaluated
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
-        assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
-        # No per-result burying
+        assert result.get("success") is True, result
+        assert "web" in result.get("data", {})
         assert "results" not in result
 
     def test_unconfigured_crawl_emits_top_level_error(self, monkeypatch):
@@ -340,6 +334,6 @@ class TestUnconfiguredErrorEnvelopeParity:
         result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
         assert result.get("success") is False
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        assert "web_crawl requires Firecrawl" in result["error"]
+        assert "search-only backend and cannot crawl" in result["error"]
         # Crucially: no per-page burying
         assert "results" not in result

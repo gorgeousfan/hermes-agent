@@ -14,6 +14,7 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.gateway import GatewayRuntimeSnapshot
 
 
 class TestDoctorPlatformHints:
@@ -49,6 +50,90 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+
+class TestOperatorDoctor:
+    def test_cron_job_counts_ignore_disabled_and_paused_jobs(self, tmp_path):
+        cron_dir = tmp_path / "cron"
+        cron_dir.mkdir()
+        (cron_dir / "jobs.json").write_text(
+            '{"jobs": ['
+            '{"id": "enabled"},'
+            '{"id": "disabled", "enabled": false},'
+            '{"id": "paused", "state": "paused"}'
+            ']}'
+        )
+
+        assert doctor._operator_cron_job_counts(tmp_path) == (1, 3)
+
+    def test_operator_doctor_reports_readiness_gaps(self, monkeypatch, tmp_path, capsys):
+        cron_dir = tmp_path / "cron"
+        cron_dir.mkdir()
+        (cron_dir / "jobs.json").write_text(
+            '{"jobs": [{"id": "morning", "enabled": true, "state": "scheduled"}]}'
+        )
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: GatewayRuntimeSnapshot(
+                manager="launchd",
+                service_installed=True,
+                service_running=False,
+                gateway_pids=(),
+            ),
+        )
+        config_mod = __import__("hermes_cli.config", fromlist=["load_config"])
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "agent": {"reasoning_effort": "xhigh"},
+                "kanban": {"dispatch_in_gateway": False},
+                "auxiliary": {
+                    "web_extract": {"provider": "auto", "model": ""},
+                    "compression": {"provider": "fast", "model": "tiny"},
+                    "session_search": {},
+                    "approval": {"base_url": "http://127.0.0.1:8000/v1"},
+                    "title_generation": {"provider": "", "model": ""},
+                    "mcp": {"provider": "fast", "model": "tiny"},
+                },
+            },
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.profiles",
+            types.SimpleNamespace(list_profiles=lambda: ["operator"]),
+        )
+
+        doctor_mod.run_operator_doctor(Namespace(system=False))
+
+        out = capsys.readouterr().out
+        assert "Hermes Operator Doctor" in out
+        assert "Gateway service installed but not running" in out
+        assert "Home channel configured" in out
+        assert "telegram" in out
+        assert "Cron jobs configured" in out
+        assert "1 enabled, 1 total" in out
+        assert "Kanban dispatcher disabled in gateway" in out
+        assert "Main reasoning effort is high" in out
+        assert "xhigh" in out
+        assert "Latency-sensitive auxiliary tasks use auto/default routing" in out
+        assert "web_extract" in out
+        assert "session_search" in out
+        assert "title_generation" in out
+        assert "12345" not in out
+
+
+def test_run_doctor_delegates_operator_mode(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(doctor_mod, "run_operator_doctor", lambda args: seen.setdefault("operator", args.operator))
+
+    doctor_mod.run_doctor(Namespace(operator=True, fix=False))
+
+    assert seen == {"operator": True}
 
 
 class TestDoctorEnvFileEncoding:

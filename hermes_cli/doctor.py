@@ -4,6 +4,7 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import json
 import os
 import sys
 import subprocess
@@ -195,6 +196,191 @@ def check_info(text: str):
     print(f"    {color('→', Colors.CYAN)} {text}")
 
 
+def _operator_home_channels_from_env() -> list[str]:
+    """Return platform names with a configured cron/gateway home target."""
+    try:
+        from cron.scheduler import _HOME_TARGET_ENV_VARS, _LEGACY_HOME_TARGET_ENV_VARS
+    except Exception:
+        _HOME_TARGET_ENV_VARS = {
+            "matrix": "MATRIX_HOME_ROOM",
+            "telegram": "TELEGRAM_HOME_CHANNEL",
+            "discord": "DISCORD_HOME_CHANNEL",
+            "slack": "SLACK_HOME_CHANNEL",
+            "signal": "SIGNAL_HOME_CHANNEL",
+            "mattermost": "MATTERMOST_HOME_CHANNEL",
+            "sms": "SMS_HOME_CHANNEL",
+            "email": "EMAIL_HOME_ADDRESS",
+            "dingtalk": "DINGTALK_HOME_CHANNEL",
+            "feishu": "FEISHU_HOME_CHANNEL",
+            "wecom": "WECOM_HOME_CHANNEL",
+            "weixin": "WEIXIN_HOME_CHANNEL",
+            "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
+            "qqbot": "QQBOT_HOME_CHANNEL",
+            "whatsapp": "WHATSAPP_HOME_CHANNEL",
+        }
+        _LEGACY_HOME_TARGET_ENV_VARS = {"QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL"}
+
+    configured: list[str] = []
+    for platform, env_var in sorted(_HOME_TARGET_ENV_VARS.items()):
+        value = os.getenv(env_var, "").strip()
+        if not value:
+            legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
+            if legacy:
+                value = os.getenv(legacy, "").strip()
+        if value:
+            configured.append(platform)
+    return configured
+
+
+def _operator_cron_job_counts(hermes_home: Path | None = None) -> tuple[int, int]:
+    """Return (enabled_jobs, total_jobs) without mutating cron storage."""
+    home = hermes_home or HERMES_HOME
+    jobs_file = home / "cron" / "jobs.json"
+    if not jobs_file.exists():
+        return 0, 0
+    try:
+        payload = json.loads(jobs_file.read_text(encoding="utf-8"), strict=False)
+    except Exception:
+        return 0, 0
+    jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
+    if not isinstance(jobs, list):
+        return 0, 0
+    total = len([j for j in jobs if isinstance(j, dict)])
+    enabled = len([
+        j for j in jobs
+        if isinstance(j, dict)
+        and j.get("enabled", True)
+        and j.get("state", "scheduled") != "paused"
+    ])
+    return enabled, total
+
+
+def _operator_auxiliary_summary(config: dict) -> tuple[list[str], list[str]]:
+    """Return (configured_tasks, auto_or_unset_tasks) for latency-sensitive aux tasks."""
+    aux = config.get("auxiliary") if isinstance(config, dict) else {}
+    if not isinstance(aux, dict):
+        aux = {}
+    latency_sensitive = (
+        "web_extract",
+        "compression",
+        "session_search",
+        "approval",
+        "title_generation",
+        "mcp",
+    )
+    configured: list[str] = []
+    auto_or_unset: list[str] = []
+    for task in latency_sensitive:
+        task_cfg = aux.get(task)
+        if not isinstance(task_cfg, dict):
+            auto_or_unset.append(task)
+            continue
+        provider = str(task_cfg.get("provider") or "").strip()
+        model = str(task_cfg.get("model") or "").strip()
+        base_url = str(task_cfg.get("base_url") or "").strip()
+        if base_url or (provider and provider != "auto" and model):
+            configured.append(task)
+        else:
+            auto_or_unset.append(task)
+    return configured, auto_or_unset
+
+
+def _operator_reasoning_effort(config: dict) -> str:
+    agent = config.get("agent") if isinstance(config, dict) else {}
+    if not isinstance(agent, dict):
+        return "medium"
+    value = str(agent.get("reasoning_effort") or "").strip().lower()
+    return value or "medium"
+
+
+def run_operator_doctor(args=None) -> None:
+    """Focused readiness check for Hermes as an autonomous operator."""
+    print()
+    print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
+    print(color("│              🧭 Hermes Operator Doctor                  │", Colors.CYAN))
+    print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    _section("Proactive execution")
+
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+        snapshot = get_gateway_runtime_snapshot(system=getattr(args, "system", False))
+        if snapshot.running:
+            detail = f"({snapshot.manager}"
+            if snapshot.gateway_pids:
+                detail += f", pid(s): {', '.join(str(p) for p in snapshot.gateway_pids[:3])}"
+            detail += ")"
+            check_ok("Gateway running", detail)
+        elif snapshot.service_installed:
+            check_warn("Gateway service installed but not running", "(cron, Kanban dispatcher, and messaging delivery may be idle)")
+            check_info("Run: hermes gateway start")
+        else:
+            check_warn("Gateway service not installed/running", "(Hermes cannot work while you are away)")
+            check_info("Run: hermes gateway install && hermes gateway start")
+    except Exception as e:
+        check_warn("Could not inspect gateway runtime", f"({e})")
+
+    home_channels = _operator_home_channels_from_env()
+    if home_channels:
+        check_ok("Home channel configured", f"({', '.join(home_channels)})")
+    else:
+        check_warn("No home channel configured", "(scheduled work may have nowhere to report)")
+        check_info("In your preferred gateway chat, run: /sethome")
+
+    enabled_jobs, total_jobs = _operator_cron_job_counts()
+    if enabled_jobs:
+        check_ok("Cron jobs configured", f"({enabled_jobs} enabled, {total_jobs} total)")
+    else:
+        check_warn("No enabled cron jobs found", "(no recurring review/monitor loop)")
+        check_info("Create a review loop with: hermes cron create '0 7 * * 1-5' --name 'Morning review packet'")
+
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as e:
+        cfg = {}
+        check_warn("Could not load config for operator tuning", f"({e})")
+
+    kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else {}
+    dispatch_in_gateway = True if not isinstance(kanban_cfg, dict) else bool(kanban_cfg.get("dispatch_in_gateway", True))
+    if dispatch_in_gateway:
+        check_ok("Kanban dispatcher enabled in gateway")
+    else:
+        check_warn("Kanban dispatcher disabled in gateway", "(durable project work needs a separate dispatcher)")
+        check_info("Either run a separate dispatcher or set kanban.dispatch_in_gateway true")
+
+    _section("Speed and focus tuning")
+    reasoning = _operator_reasoning_effort(cfg)
+    if reasoning in {"high", "xhigh"}:
+        check_warn("Main reasoning effort is high", f"({reasoning}; good for hard review, slow for routine operator work)")
+        check_info("Use lower-effort profiles for routing/status work; reserve high/xhigh for reviewer tasks")
+    else:
+        check_ok("Main reasoning effort not over-tuned", f"({reasoning})")
+
+    configured_aux, auto_aux = _operator_auxiliary_summary(cfg)
+    if auto_aux:
+        check_warn("Latency-sensitive auxiliary tasks use auto/default routing", f"({', '.join(auto_aux)})")
+        check_info("Set fast auxiliary providers/models for web_extract, compression, session_search, approval, and title_generation")
+    else:
+        check_ok("Latency-sensitive auxiliary tasks explicitly routed", f"({', '.join(configured_aux)})")
+
+    try:
+        from hermes_cli.profiles import list_profiles
+        profiles = list_profiles()
+        if len(profiles) >= 2:
+            check_ok("Multiple profiles available", f"({len(profiles)} profiles for role splitting)")
+        else:
+            check_warn("Only one profile detected", "(consider operator/researcher/reviewer profiles for durable work)")
+    except Exception:
+        check_info("Could not inspect profiles; run: hermes profile list")
+
+    print()
+    print(color("Recommended operating loop:", Colors.BOLD))
+    print("  1. Put durable projects on Kanban, not just in chat.")
+    print("  2. Use cron for daily review packets and monitoring.")
+    print("  3. Use /goal for one long objective that should continue across turns.")
+    print("  4. Require final packets: status, evidence, decision points, risks, next action.")
+
+
 def _section(title: str) -> None:
     """Print a doctor section banner: blank line + bold cyan ◆ title."""
     print()
@@ -336,6 +522,10 @@ def _build_apikey_providers_list() -> list:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    if getattr(args, "operator", False):
+        run_operator_doctor(args)
+        return
+
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
 

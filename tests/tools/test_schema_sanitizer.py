@@ -144,6 +144,27 @@ def test_well_formed_schema_unchanged():
     assert out[0]["function"]["parameters"] == schema
 
 
+def test_boolean_numeric_validation_keywords_are_dropped():
+    """Osaurus MCP emitted ``minimum: false``; strict backends require numbers."""
+    tools = [_tool("mcp_osaurus_schedule_next_run", {
+        "type": "object",
+        "properties": {
+            "in_seconds": {
+                "type": "integer",
+                "minimum": False,
+                "exclusiveMinimum": False,
+                "maximum": 3600,
+            },
+        },
+    })]
+
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["in_seconds"]
+    assert "minimum" not in prop
+    assert "exclusiveMinimum" not in prop
+    assert prop["maximum"] == 3600
+
+
 def test_additional_properties_bool_preserved():
     tools = [_tool("t", {
         "type": "object",

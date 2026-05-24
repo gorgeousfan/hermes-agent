@@ -71,23 +71,24 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """Bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_core_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
-        names = sorted(p.name for p in list_providers())
-        assert names == [
+        names = {p.name for p in list_providers()}
+        assert {
             "brave-free",
             "ddgs",
             "exa",
             "firecrawl",
+            "jina",
             "parallel",
             "searxng",
             "tavily",
             "xai",
-        ]
+        }.issubset(names)
 
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract,expected_crawl",
@@ -98,6 +99,7 @@ class TestBundledPluginsRegister:
             ("exa", True, True, False),
             ("parallel", True, True, False),
             ("tavily", True, True, True),
+            ("jina", False, True, False),
             # firecrawl: search + extract + crawl. Crawl was originally
             # disabled in the migration (fell through to a legacy inline
             # path); the follow-up commit enabled it natively.
@@ -124,7 +126,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "jina"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -137,7 +139,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "jina"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -158,7 +160,7 @@ class TestBundledPluginsRegister:
 
 
 class TestIsAvailable:
-    """Each plugin's ``is_available()`` returns False without env config."""
+    """Each plugin's ``is_available()`` reflects its actual setup requirements."""
 
     def test_brave_free_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
@@ -228,7 +230,7 @@ class TestIsAvailable:
         assert p.is_available() is True
 
     def test_ddgs_always_available_when_package_importable(self) -> None:
-        """DDGS is the always-on fallback — no API key required.
+        """DDGS is a no-key fallback gated by the optional package import.
 
         It may report unavailable if the ``ddgs`` package itself isn't
         installed in the env (legitimate — the plugin's post_setup hook
@@ -252,6 +254,15 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no XAI_API_KEY, no auth.json
         monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_jina_reader_requires_no_local_credentials(self) -> None:
+        """Jina Reader is extract-only and available without API keys."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("jina")
+        assert p is not None
         assert p.is_available() is True
 
 

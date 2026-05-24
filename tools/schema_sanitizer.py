@@ -20,6 +20,10 @@ The failure modes we've seen in the wild:
 * ``anyOf`` / ``oneOf`` unions whose only purpose is to permit ``null`` for
   optional fields (common Pydantic/MCP shape). Anthropic rejects these at
   the top of ``input_schema``; collapse them to the non-null branch.
+* Numeric validation keywords (``minimum``, ``exclusiveMinimum``, etc.) whose
+  value is a boolean instead of a number. Some MCP servers emit legacy/buggy
+  shapes like ``minimum: false``; strict OpenAI-compatible backends reject the
+  entire tool list with ``False is not of type 'number'``.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
 
 This module walks the final tool schema tree (after MCP-level normalization
@@ -35,6 +39,14 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_NUMERIC_VALIDATION_KEYS = frozenset({
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+})
 
 
 def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
@@ -230,6 +242,21 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
     out: dict = {}
     for key, value in node.items():
+        if key in _NUMERIC_VALIDATION_KEYS:
+            # Strict OpenAI-compatible backends require these JSON Schema
+            # validation keywords to be numeric. Some MCP servers emit invalid
+            # legacy/buggy booleans (e.g. ``minimum: false``), which are also
+            # ``int`` subclasses in Python, so check bool explicitly.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                logger.debug(
+                    "schema_sanitizer[%s]: dropping non-numeric %s=%r "
+                    "from schema node",
+                    path, key, value,
+                )
+                continue
+            out[key] = value
+            continue
+
         # type: [X, "null"] → type: X (the backend's tool-call parser only
         # accepts singular string types; nullable is lost but the call still
         # succeeds, and the model can still pass null on its own.)
