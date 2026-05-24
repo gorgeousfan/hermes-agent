@@ -59,29 +59,50 @@ class TestHandleFunctionCall:
                 "pre_tool_call",
                 tool_name="web_search",
                 args={"q": "test"},
+                original_args={"q": "test"},
+                middleware_trace=[],
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
+                telemetry_schema_version="hermes.observer.v1",
             ),
             call(
                 "post_tool_call",
                 tool_name="web_search",
                 args={"q": "test"},
+                original_args={"q": "test"},
+                middleware_trace=[],
                 result='{"ok":true}',
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+                telemetry_schema_version="hermes.observer.v1",
             ),
             call(
                 "transform_tool_result",
                 tool_name="web_search",
                 args={"q": "test"},
                 result='{"ok":true}',
+                original_args={"q": "test"},
+                middleware_trace=[],
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                turn_id="",
+                api_request_id="",
                 duration_ms=ANY,
+                status="ok",
+                error_type=None,
+                error_message=None,
+                telemetry_schema_version="hermes.observer.v1",
             ),
         ]
 
@@ -112,6 +133,77 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_tool_request_middleware_rewrites_args_before_hooks_and_dispatch(self, monkeypatch):
+        hook_calls = []
+        dispatched = {}
+
+        def fake_invoke_middleware(kind, **kwargs):
+            if kind == "tool_request":
+                assert kwargs["args"] == {"q": "original"}
+                assert kwargs["original_args"] == {"q": "original"}
+                return [{"args": {"q": "rewritten"}, "source": "test-middleware"}]
+            return []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            dispatched["tool_name"] = tool_name
+            dispatched["args"] = args
+            return json.dumps({"ok": True, "args": args})
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("web_search", {"q": "original"}, task_id="t1"))
+
+        assert result == {"ok": True, "args": {"q": "rewritten"}}
+        assert dispatched == {"tool_name": "web_search", "args": {"q": "rewritten"}}
+        pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
+        assert pre_call[1]["args"] == {"q": "rewritten"}
+        assert pre_call[1]["original_args"] == {"q": "original"}
+        assert pre_call[1]["middleware_trace"] == [{"source": "test-middleware"}]
+
+    def test_tool_execution_middleware_wraps_dispatch(self, monkeypatch):
+        dispatched = {}
+        middleware_seen = {}
+
+        def around_tool(**kwargs):
+            middleware_seen["tool_name"] = kwargs["tool_name"]
+            middleware_seen["args"] = kwargs["args"]
+            middleware_seen["schema"] = kwargs["middleware_schema_version"]
+            next_args = dict(kwargs["args"])
+            next_args["wrapped"] = True
+            return kwargs["next_call"](next_args)
+
+        class Manager:
+            _middleware = {"tool_execution": [around_tool]}
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            dispatched["tool_name"] = tool_name
+            dispatched["args"] = args
+            return json.dumps({"ok": True, "args": args})
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", lambda kind, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda hook_name, **kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: Manager())
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
+
+        assert result == {"ok": True, "args": {"q": "test", "wrapped": True}}
+        assert dispatched == {
+            "tool_name": "web_search",
+            "args": {"q": "test", "wrapped": True},
+        }
+        assert middleware_seen == {
+            "tool_name": "web_search",
+            "args": {"q": "test"},
+            "schema": "hermes.middleware.v1",
+        }
+
 
 # =========================================================================
 # Agent loop tools
@@ -137,7 +229,10 @@ class TestPreToolCallBlocking:
     """Verify that pre_tool_call hooks can block tool execution."""
 
     def test_blocked_tool_returns_error_and_skips_dispatch(self, monkeypatch):
+        hook_calls = []
+
         def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
             if hook_name == "pre_tool_call":
                 return [{"action": "block", "message": "Blocked by policy"}]
             return []
@@ -156,6 +251,11 @@ class TestPreToolCallBlocking:
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"error": "Blocked by policy"}
         assert not dispatch_called
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "plugin_block"
+        assert post_call[1]["error_message"] == "Blocked by policy"
+        assert post_call[1]["duration_ms"] == 0
 
     def test_blocked_tool_skips_read_loop_notification(self, monkeypatch):
         notifications = []

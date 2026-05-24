@@ -1809,6 +1809,39 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        hook_calls = []
+        agent.session_id = "session-1"
+        agent._current_turn_id = "turn-1"
+        agent._current_api_request_id = "api-1"
+
+        def _capture_hook(hook_name, **kwargs):
+            hook_calls.append((hook_name, kwargs))
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _capture_hook)
+
+        with (
+            patch("run_agent.handle_function_call", side_effect=KeyboardInterrupt),
+            patch("run_agent._set_interrupt"),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
+        assert len(post_calls) == 1
+        assert post_calls[0]["tool_name"] == "web_search"
+        assert post_calls[0]["tool_call_id"] == "c1"
+        assert post_calls[0]["session_id"] == "session-1"
+        assert post_calls[0]["turn_id"] == "turn-1"
+        assert post_calls[0]["api_request_id"] == "api-1"
+        assert post_calls[0]["status"] == "cancelled"
+        assert post_calls[0]["error_type"] == "keyboard_interrupt"
+        assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -2184,6 +2217,8 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                turn_id="",
+                api_request_id="",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
             )
@@ -2231,6 +2266,30 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Agent-owned tool paths should close observer tool spans."""
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1", tool_call_id="todo-1")
+
+        mock_todo.assert_called_once()
+        assert result == '{"ok":true}'
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["tool_call_id"] == "todo-1"
+        assert post_call[1]["status"] == "ok"
+        assert post_call[1]["error_type"] is None
+        assert isinstance(post_call[1]["duration_ms"], int)
 
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
@@ -2283,6 +2342,60 @@ class TestConcurrentToolExecution:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
+    def test_sequential_blocked_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Blocked pre_tool_call decisions still terminate observer tool spans."""
+        tool_call = _mock_tool_call(name="write_file",
+                                    arguments='{"path":"test.txt","content":"hello"}',
+                                    call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "write_file"
+        assert post_call[1]["tool_call_id"] == "c1"
+        assert post_call[1]["status"] == "blocked"
+        assert post_call[1]["error_type"] == "plugin_block"
+        assert post_call[1]["error_message"] == "Blocked by policy"
+
+    def test_sequential_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
+        """Sequential built-in tool paths should also close observer tool spans."""
+        tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_todo.assert_called_once()
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert post_call[1]["tool_name"] == "todo"
+        assert post_call[1]["tool_call_id"] == "todo-1"
+        assert post_call[1]["result"] == '{"ok":true}'
+        assert post_call[1]["status"] == "ok"
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
@@ -2709,9 +2822,17 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
+        assert all(call["turn_id"] == pre_request_calls[0]["turn_id"] for call in pre_request_calls + post_request_calls)
+        assert [call["api_request_id"] for call in pre_request_calls] == [
+            call["api_request_id"] for call in post_request_calls
+        ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
+        assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
+        assert all("original_request" in c and "messages" in c["original_request"]["body"] for c in pre_request_calls)
+        assert all(c["middleware_trace"] == [] for c in pre_request_calls + post_request_calls)
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
-        assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
+        assert all("usage" in c and "response" in c for c in post_request_calls)
+        assert all("assistant_message" in c["response"] for c in post_request_calls)
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

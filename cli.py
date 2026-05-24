@@ -943,8 +943,14 @@ def _run_cleanup():
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
+        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+            reason="shutdown",
+            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+        )
     except Exception:
         pass
     try:
@@ -960,6 +966,43 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+
+
+def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
+    """Best-effort on_session_end hook for interrupted non-interactive runs."""
+    agent = getattr(cli, "agent", None)
+    if agent is None:
+        return
+
+    try:
+        agent.interrupt(reason.replace("_", " "))
+    except Exception:
+        pass
+
+    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+    if session_id:
+        try:
+            cli.session_id = session_id
+        except Exception:
+            pass
+
+    try:
+        from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_end",
+            session_id=session_id,
+            task_id=getattr(agent, "_current_task_id", "") or "",
+            turn_id=getattr(agent, "_current_turn_id", "") or "",
+            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            completed=False,
+            interrupted=True,
+            model=getattr(agent, "model", None),
+            platform=getattr(agent, "platform", None) or "cli",
+            reason=reason,
+            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+        )
     except Exception:
         pass
 
@@ -6253,11 +6296,13 @@ class HermesCLI:
         lifecycle point (shutdown, /new, /reset).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
             _invoke_hook(
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
+                reason="new_session" if event_type == "on_session_reset" else "session_boundary",
+                telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
             )
         except Exception:
             pass
@@ -14398,7 +14443,7 @@ class HermesCLI:
             # the exit occurred, meaning run_conversation's hook didn't fire.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
-                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
                     _invoke_hook(
                         "on_session_end",
                         session_id=self.agent.session_id,
@@ -14406,6 +14451,8 @@ class HermesCLI:
                         interrupted=True,
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
+                        reason="shutdown",
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
                     )
                 except Exception:
                     pass
@@ -14642,6 +14689,7 @@ def main(
         raise KeyboardInterrupt()
     try:
         import signal as _signal
+        _signal.signal(_signal.SIGINT, _signal_handler_q)
         _signal.signal(_signal.SIGTERM, _signal_handler_q)
         if hasattr(_signal, "SIGHUP"):
             _signal.signal(_signal.SIGHUP, _signal_handler_q)
@@ -14719,10 +14767,15 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                    except KeyboardInterrupt:
+                        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
+                        sys.exit(130)
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without
