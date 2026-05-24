@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +30,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _resolve_task_delegation_route,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -847,6 +849,389 @@ class TestBlockedTools(unittest.TestCase):
         self.assertTrue(_get_orchestrator_enabled())      # default
         self.assertEqual(_MIN_SPAWN_DEPTH, 1)
         self.assertEqual(_MAX_SPAWN_DEPTH_CAP, 3)
+
+
+class TestCascadeFlowDelegationRouting(unittest.TestCase):
+    def _install_fake_cascadeflow(self, decision_payload):
+        cascadeflow_mod = types.ModuleType("cascadeflow")
+        integrations_mod = types.ModuleType("cascadeflow.integrations")
+        hermes_mod = types.ModuleType("cascadeflow.integrations.hermes")
+
+        class FakeRequest:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FakeDecision:
+            def to_dict(self):
+                return dict(decision_payload)
+
+        class FakeRouter:
+            @classmethod
+            def from_dict(cls, data):
+                instance = cls()
+                instance.config = data
+                return instance
+
+            def route_delegation(self, request):
+                self.request = request
+                return FakeDecision()
+
+        hermes_mod.HermesDelegationRequest = FakeRequest
+        hermes_mod.HermesDelegationRouter = FakeRouter
+        return patch.dict(
+            sys.modules,
+            {
+                "cascadeflow": cascadeflow_mod,
+                "cascadeflow.integrations": integrations_mod,
+                "cascadeflow.integrations.hermes": hermes_mod,
+            },
+        )
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_route_mode_applies_per_task_provider_model_and_reasoning(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        routed_creds = {
+            "model": "nous/hermes-4.1",
+            "provider": "nous",
+            "base_url": "https://api.nousresearch.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "chat_completions",
+        }
+        mock_resolve.side_effect = [base_creds, routed_creds]
+        cfg = {
+            "cascadeflow_model_routing": {
+                "enabled": True,
+                "mode": "route",
+                "routes": {"code": {"provider": "nous"}},
+            }
+        }
+        decision = {
+            "action": "route",
+            "provider": "nous",
+            "model": "nous/hermes-4.1",
+            "reasoning_effort": "high",
+            "domain": "code",
+            "complexity": "hard",
+            "confidence": 0.92,
+            "reason": "code_debugging",
+            "metadata": {"applied": True},
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Debug the failing unit test", "toolsets": ["terminal"]},
+                ["terminal"],
+                "leaf",
+            )
+
+        self.assertEqual(creds, routed_creds)
+        self.assertEqual(effort, "high")
+        self.assertEqual(routing["provider"], "nous")
+        self.assertTrue(routing["metadata"]["hermes_applied"])
+        self.assertTrue(routing["metadata"]["hermes_provider_model_applied"])
+        self.assertTrue(routing["metadata"]["hermes_reasoning_applied"])
+        self.assertEqual(mock_resolve.call_count, 2)
+        overlay_cfg = mock_resolve.call_args_list[1].args[0]
+        self.assertEqual(overlay_cfg["provider"], "nous")
+        self.assertEqual(overlay_cfg["model"], "nous/hermes-4.1")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_low_confidence_route_is_observed_but_not_applied(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_resolve.return_value = base_creds
+        cfg = {
+            "cascadeflow_model_routing": {
+                "enabled": True,
+                "mode": "route",
+                "min_confidence": 0.80,
+            }
+        }
+        decision = {
+            "action": "route",
+            "provider": "nous",
+            "model": "nous/hermes-4.1",
+            "reasoning_effort": "high",
+            "confidence": 0.42,
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Debug the failing unit test"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, base_creds)
+        self.assertIsNone(effort)
+        self.assertEqual(mock_resolve.call_count, 1)
+        self.assertFalse(routing["metadata"]["hermes_applied"])
+        self.assertFalse(routing["metadata"]["hermes_provider_model_applied"])
+        self.assertFalse(routing["metadata"]["hermes_reasoning_applied"])
+        self.assertEqual(
+            routing["metadata"]["hermes_reason"],
+            "confidence_below_minimum",
+        )
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_model_toggle_leaves_credentials_inherited(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_resolve.return_value = base_creds
+        cfg = {
+            "cascadeflow_model_routing": {
+                "enabled": True,
+                "mode": "route",
+                "route_provider_model": False,
+                "route_reasoning_effort": True,
+            }
+        }
+        decision = {
+            "action": "route",
+            "provider": "nous",
+            "model": "nous/hermes-4.1",
+            "reasoning_effort": "high",
+            "confidence": 0.92,
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Debug the failing unit test"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, base_creds)
+        self.assertEqual(effort, "high")
+        self.assertEqual(mock_resolve.call_count, 1)
+        self.assertTrue(routing["metadata"]["hermes_applied"])
+        self.assertFalse(routing["metadata"]["hermes_provider_model_applied"])
+        self.assertTrue(routing["metadata"]["hermes_reasoning_applied"])
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_reasoning_toggle_leaves_reasoning_inherited(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        routed_creds = {
+            "model": "nous/hermes-4.1",
+            "provider": "nous",
+            "base_url": "https://api.nousresearch.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "chat_completions",
+        }
+        mock_resolve.side_effect = [base_creds, routed_creds]
+        cfg = {
+            "cascadeflow_model_routing": {
+                "enabled": True,
+                "mode": "route",
+                "route_provider_model": True,
+                "route_reasoning_effort": False,
+            }
+        }
+        decision = {
+            "action": "route",
+            "provider": "nous",
+            "model": "nous/hermes-4.1",
+            "reasoning_effort": "high",
+            "confidence": 0.92,
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Debug the failing unit test"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, routed_creds)
+        self.assertIsNone(effort)
+        self.assertEqual(mock_resolve.call_count, 2)
+        self.assertTrue(routing["metadata"]["hermes_applied"])
+        self.assertTrue(routing["metadata"]["hermes_provider_model_applied"])
+        self.assertFalse(routing["metadata"]["hermes_reasoning_applied"])
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_disabled_route_toggles_return_audit_without_applying(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_resolve.return_value = base_creds
+        cfg = {
+            "cascadeflow_model_routing": {
+                "enabled": True,
+                "mode": "route",
+                "route_provider_model": False,
+                "route_reasoning_effort": False,
+            }
+        }
+        decision = {
+            "action": "route",
+            "provider": "nous",
+            "model": "nous/hermes-4.1",
+            "reasoning_effort": "high",
+            "confidence": 0.92,
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Debug the failing unit test"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, base_creds)
+        self.assertIsNone(effort)
+        self.assertEqual(mock_resolve.call_count, 1)
+        self.assertFalse(routing["metadata"]["hermes_applied"])
+        self.assertFalse(routing["metadata"]["hermes_provider_model_applied"])
+        self.assertFalse(routing["metadata"]["hermes_reasoning_applied"])
+        self.assertEqual(
+            routing["metadata"]["hermes_reason"],
+            "routing_disabled_by_toggles",
+        )
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_observe_mode_returns_audit_without_overriding_credentials(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_resolve.return_value = base_creds
+        cfg = {
+            "cascadeflow_model_routing": {
+                "enabled": True,
+                "mode": "observe",
+                "routes": {"simple": {"provider": "nous"}},
+            }
+        }
+        decision = {
+            "action": "inherit",
+            "provider": "nous",
+            "model": "nous/hermes-flash",
+            "reasoning_effort": "low",
+            "confidence": 0.81,
+            "metadata": {"would_route": True},
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Summarize this short note"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, base_creds)
+        self.assertIsNone(effort)
+        self.assertEqual(mock_resolve.call_count, 1)
+        self.assertFalse(routing["metadata"]["hermes_applied"])
+        self.assertEqual(routing["metadata"]["hermes_reason"], "observe_or_inherit")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_static_delegation_config_wins_over_cascadeflow_route(self, mock_resolve):
+        base_creds = {
+            "model": "configured/model",
+            "provider": "configured",
+            "base_url": "https://configured.example/v1",
+            "api_key": "sk-configured",
+            "api_mode": "chat_completions",
+        }
+        mock_resolve.return_value = base_creds
+        cfg = {
+            "provider": "configured",
+            "model": "configured/model",
+            "cascadeflow_model_routing": {"enabled": True, "mode": "route"},
+        }
+        decision = {
+            "action": "route",
+            "provider": "nous",
+            "model": "nous/hermes-4.1",
+            "reasoning_effort": "high",
+            "metadata": {"applied": True},
+        }
+
+        with self._install_fake_cascadeflow(decision):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Debug a production issue"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, base_creds)
+        self.assertIsNone(effort)
+        self.assertEqual(mock_resolve.call_count, 1)
+        self.assertFalse(routing["metadata"]["hermes_applied"])
+        self.assertEqual(
+            routing["metadata"]["hermes_reason"],
+            "static_delegation_config_wins",
+        )
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_missing_cascadeflow_package_falls_back_to_current_behavior(self, mock_resolve):
+        base_creds = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        mock_resolve.return_value = base_creds
+        cfg = {"cascadeflow_model_routing": {"enabled": True, "mode": "route"}}
+
+        with patch.dict(sys.modules, {"cascadeflow.integrations.hermes": None}):
+            creds, effort, routing = _resolve_task_delegation_route(
+                cfg,
+                _make_mock_parent(),
+                {"goal": "Research market news"},
+                None,
+                "leaf",
+            )
+
+        self.assertEqual(creds, base_creds)
+        self.assertIsNone(effort)
+        self.assertIsNone(routing)
+        self.assertEqual(mock_resolve.call_count, 1)
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):
@@ -1830,6 +2215,26 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_override_reasoning_effort_from_cascadeflow(self, MockAgent, mock_cfg):
+        """CascadeFlow can set reasoning per child when static config is empty."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": ""}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "low"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, override_reasoning_effort="high",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(
+            call_kwargs["reasoning_config"],
+            {"enabled": True, "effort": "high"},
+        )
 
     @patch("tools.delegate_tool._load_config")
     @patch("run_agent.AIAgent")

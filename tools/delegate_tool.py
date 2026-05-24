@@ -28,7 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from toolsets import TOOLSETS
 
@@ -450,6 +450,293 @@ def _get_inherit_mcp_toolsets() -> bool:
     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
     cfg = _load_config()
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
+
+
+def _get_cascadeflow_routing_config(cfg: dict) -> Dict[str, Any]:
+    """Return the optional CascadeFlow routing config for delegated children."""
+    raw = cfg.get("cascadeflow_model_routing")
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def _static_delegation_route_configured(cfg: dict) -> bool:
+    """Whether Hermes has explicit delegation routing that must win."""
+    for key in ("model", "provider", "base_url", "api_key", "reasoning_effort"):
+        if str(cfg.get(key) or "").strip():
+            return True
+    return False
+
+
+def _loaded_skill_names_from_parent(parent_agent) -> List[str]:
+    """Best-effort skill names for CascadeFlow topic/per-skill routing."""
+    names: List[str] = []
+    for attr in (
+        "loaded_skills",
+        "active_skills",
+        "enabled_skills",
+        "skill_names",
+        "_loaded_skills",
+        "_active_skills",
+        "_enabled_skills",
+    ):
+        value = getattr(parent_agent, attr, None)
+        if not value:
+            continue
+        if isinstance(value, dict):
+            iterable = value.keys()
+        elif isinstance(value, str):
+            iterable = [value]
+        else:
+            try:
+                iterable = list(value)
+            except TypeError:
+                continue
+        for item in iterable:
+            text = str(item or "").strip()
+            if text and text not in names:
+                names.append(text)
+    return names
+
+
+def _skill_metadata_from_task_or_parent(task: dict, parent_agent) -> Optional[dict]:
+    """Return explicit skill metadata when available.
+
+    Hermes does not require subagent tasks to carry skill metadata, but keeping
+    this passthrough lets future skill loaders or external callers opt into
+    deterministic per-skill routing without changing delegate_task again.
+    """
+    for value in (
+        task.get("skill_metadata") if isinstance(task, dict) else None,
+        task.get("cascadeflow_skill_metadata") if isinstance(task, dict) else None,
+        getattr(parent_agent, "skill_metadata", None),
+        getattr(parent_agent, "_skill_metadata", None),
+    ):
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _annotate_cascadeflow_decision(
+    decision: Dict[str, Any],
+    *,
+    applied: bool,
+    reason: Optional[str] = None,
+    provider_model_applied: bool = False,
+    reasoning_applied: bool = False,
+) -> Dict[str, Any]:
+    """Add Hermes-side application status to a CascadeFlow decision payload."""
+    annotated = dict(decision)
+    metadata = dict(annotated.get("metadata") or {})
+    metadata["hermes_applied"] = bool(applied)
+    metadata["hermes_provider_model_applied"] = bool(provider_model_applied)
+    metadata["hermes_reasoning_applied"] = bool(reasoning_applied)
+    if reason:
+        metadata["hermes_reason"] = reason
+    annotated["metadata"] = metadata
+    return annotated
+
+
+def _cascadeflow_route_delegation(
+    cfg: dict,
+    parent_agent,
+    task: dict,
+    toolsets: Optional[List[str]],
+    role: str,
+) -> Optional[Dict[str, Any]]:
+    """Ask CascadeFlow for a delegation routing decision if it is installed.
+
+    CascadeFlow is intentionally optional. Missing package, disabled config, or
+    router errors all degrade to Hermes' existing delegation behavior.
+    """
+    routing_cfg = _get_cascadeflow_routing_config(cfg)
+    if not routing_cfg or not is_truthy_value(routing_cfg.get("enabled"), default=False):
+        return None
+
+    try:
+        from cascadeflow.integrations.hermes import (
+            HermesDelegationRequest,
+            HermesDelegationRouter,
+        )
+    except Exception as exc:
+        logger.debug("CascadeFlow Hermes integration unavailable: %s", exc)
+        return None
+
+    try:
+        request = HermesDelegationRequest(
+            goal=str(task.get("goal") or ""),
+            context=task.get("context"),
+            toolsets=tuple(task.get("toolsets") or toolsets or ()),
+            role=role,
+            parent_provider=getattr(parent_agent, "provider", None),
+            parent_model=getattr(parent_agent, "model", None),
+            loaded_skills=tuple(_loaded_skill_names_from_parent(parent_agent)),
+            skill_metadata=_skill_metadata_from_task_or_parent(task, parent_agent),
+            task_metadata=task.get("metadata") if isinstance(task.get("metadata"), dict) else None,
+        )
+        router = HermesDelegationRouter.from_dict(routing_cfg)
+        decision = router.route_delegation(request)
+        if hasattr(decision, "to_dict"):
+            payload = decision.to_dict()
+        elif isinstance(decision, dict):
+            payload = dict(decision)
+        else:
+            return None
+    except Exception as exc:
+        logger.debug("CascadeFlow delegation routing failed: %s", exc)
+        return None
+
+    if routing_cfg.get("log_decisions", True):
+        logger.info(
+            "CascadeFlow delegation routing: action=%s provider=%s model=%s "
+            "reasoning_effort=%s domain=%s complexity=%s confidence=%s reason=%s",
+            payload.get("action"),
+            payload.get("provider"),
+            payload.get("model"),
+            payload.get("reasoning_effort"),
+            payload.get("domain"),
+            payload.get("complexity"),
+            payload.get("confidence"),
+            payload.get("reason"),
+        )
+    return payload
+
+
+def _resolve_task_delegation_route(
+    cfg: dict,
+    parent_agent,
+    task: dict,
+    fallback_toolsets: Optional[List[str]],
+    role: str,
+) -> Tuple[dict, Optional[str], Optional[Dict[str, Any]]]:
+    """Resolve credentials and optional CascadeFlow routing for one child."""
+    base_creds = _resolve_delegation_credentials(cfg, parent_agent)
+    decision = _cascadeflow_route_delegation(
+        cfg,
+        parent_agent,
+        task,
+        fallback_toolsets,
+        role,
+    )
+    if not decision:
+        return base_creds, None, None
+
+    routing_cfg = _get_cascadeflow_routing_config(cfg)
+    action = str(decision.get("action") or "").strip().lower()
+    if action != "route":
+        return (
+            base_creds,
+            None,
+            _annotate_cascadeflow_decision(
+                decision,
+                applied=False,
+                reason="observe_or_inherit",
+            ),
+        )
+
+    try:
+        min_confidence = float(routing_cfg.get("min_confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        min_confidence = 0.0
+    try:
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < min_confidence:
+        return (
+            base_creds,
+            None,
+            _annotate_cascadeflow_decision(
+                decision,
+                applied=False,
+                reason="confidence_below_minimum",
+            ),
+        )
+
+    if _static_delegation_route_configured(cfg):
+        return (
+            base_creds,
+            None,
+            _annotate_cascadeflow_decision(
+                decision,
+                applied=False,
+                reason="static_delegation_config_wins",
+            ),
+        )
+
+    overlay = dict(cfg)
+    route_provider_model = is_truthy_value(
+        routing_cfg.get("route_provider_model"),
+        default=True,
+    )
+    route_reasoning_effort = is_truthy_value(
+        routing_cfg.get("route_reasoning_effort"),
+        default=True,
+    )
+    wants_provider_model = bool(decision.get("provider") or decision.get("model"))
+    provider_model_applied = False
+    if route_provider_model and decision.get("provider"):
+        overlay["provider"] = decision.get("provider")
+    if route_provider_model and decision.get("model"):
+        overlay["model"] = decision.get("model")
+
+    route_creds = base_creds
+    if route_provider_model and wants_provider_model:
+        try:
+            route_creds = _resolve_delegation_credentials(overlay, parent_agent)
+            provider_model_applied = True
+        except ValueError as exc:
+            logger.warning(
+                "CascadeFlow route could not be resolved by Hermes credentials; "
+                "falling back to inherited delegation route: %s",
+                exc,
+            )
+            return (
+                base_creds,
+                None,
+                _annotate_cascadeflow_decision(
+                    decision,
+                    applied=False,
+                    reason="credential_resolution_failed",
+                ),
+            )
+
+    reasoning_effort = None
+    reasoning_applied = False
+    if route_reasoning_effort and decision.get("reasoning_effort"):
+        reasoning_effort = decision.get("reasoning_effort")
+        reasoning_applied = True
+
+    if not provider_model_applied and not reasoning_applied:
+        reason = None
+        if wants_provider_model and not route_provider_model:
+            reason = "provider_model_routing_disabled"
+        if decision.get("reasoning_effort") and not route_reasoning_effort:
+            reason = (
+                "routing_disabled_by_toggles"
+                if reason
+                else "reasoning_routing_disabled"
+            )
+        return (
+            base_creds,
+            None,
+            _annotate_cascadeflow_decision(
+                decision,
+                applied=False,
+                reason=reason or "no_route_fields_applied",
+            ),
+        )
+
+    return (
+        route_creds,
+        reasoning_effort,
+        _annotate_cascadeflow_decision(
+            decision,
+            applied=True,
+            provider_model_applied=provider_model_applied,
+            reasoning_applied=reasoning_applied,
+        ),
+    )
 
 
 def _is_mcp_toolset_name(name: str) -> bool:
@@ -884,6 +1171,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_reasoning_effort: Optional[str] = None,
+    cascadeflow_routing: Optional[Dict[str, Any]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1057,11 +1346,16 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: CascadeFlow per-task override >
+    # delegation override > parent inherit.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        delegation_effort = str(
+            override_reasoning_effort
+            or delegation_cfg.get("reasoning_effort")
+            or ""
+        ).strip()
         if delegation_effort:
             from hermes_constants import parse_reasoning_effort
 
@@ -1070,7 +1364,7 @@ def _build_child_agent(
                 child_reasoning = parsed
             else:
                 logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                    "Unknown delegation reasoning_effort '%s', inheriting parent level",
                     delegation_effort,
                 )
     except Exception as exc:
@@ -1146,6 +1440,8 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    if isinstance(cascadeflow_routing, dict):
+        child._cascadeflow_routing = cascadeflow_routing
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1316,6 +1612,13 @@ def _dump_subagent_timeout_diagnostic(
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
         return None
+
+
+def _routing_payload_from_child(child) -> Optional[Dict[str, Any]]:
+    payload = getattr(child, "_cascadeflow_routing", None)
+    if isinstance(payload, dict):
+        return dict(payload)
+    return None
 
 
 def _run_single_child(
@@ -1592,7 +1895,7 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
+            entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
@@ -1603,6 +1906,10 @@ def _run_single_child(
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
+            _routing = _routing_payload_from_child(child)
+            if _routing is not None:
+                entry["routing"] = _routing
+            return entry
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -1718,6 +2025,9 @@ def _run_single_child(
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+        _routing = _routing_payload_from_child(child)
+        if _routing is not None:
+            entry["routing"] = _routing
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -1829,7 +2139,7 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
+        entry = {
             "task_index": task_index,
             "status": "error",
             "summary": None,
@@ -1838,6 +2148,10 @@ def _run_single_child(
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
+        _routing = _routing_payload_from_child(child)
+        if _routing is not None:
+            entry["routing"] = _routing
+        return entry
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -1987,16 +2301,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2041,6 +2345,47 @@ def delegate_task(
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
+    # Resolve routing before constructing child agents. Child construction
+    # registers active children, so credential failures should happen while no
+    # child needs cleanup.
+    resolved_task_routes = []
+    routing_cfg = _get_cascadeflow_routing_config(cfg)
+    routing_enabled = bool(routing_cfg) and is_truthy_value(
+        routing_cfg.get("enabled"),
+        default=False,
+    )
+    if not routing_enabled:
+        try:
+            base_creds = _resolve_delegation_credentials(cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        for t in task_list:
+            effective_role = _normalize_role(t.get("role") or top_role)
+            resolved_task_routes.append((effective_role, base_creds, None, None))
+    else:
+        for t in task_list:
+            effective_role = _normalize_role(t.get("role") or top_role)
+            try:
+                task_creds, task_reasoning_effort, routing_decision = (
+                    _resolve_task_delegation_route(
+                        cfg,
+                        parent_agent,
+                        t,
+                        toolsets,
+                        effective_role,
+                    )
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
+            resolved_task_routes.append(
+                (
+                    effective_role,
+                    task_creds,
+                    task_reasoning_effort,
+                    routing_decision,
+                )
+            )
+
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
     # which overwrites model_tools._last_resolved_tool_names with child's toolset.
@@ -2055,30 +2400,39 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
+            (
+                effective_role,
+                task_creds,
+                task_reasoning_effort,
+                routing_decision,
+            ) = resolved_task_routes[i]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (
+                        acp_args
+                        if acp_args is not None
+                        else task_creds.get("args")
+                    )
                 ),
+                override_reasoning_effort=task_reasoning_effort,
+                cascadeflow_routing=routing_decision,
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2142,6 +2496,11 @@ def delegate_task(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
                                 }
+                                _routing = _routing_payload_from_child(
+                                    _child_by_index.get(idx)
+                                )
+                                if _routing is not None:
+                                    entry["routing"] = _routing
                         else:
                             entry = {
                                 "task_index": idx,
@@ -2154,6 +2513,11 @@ def delegate_task(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
                             }
+                            _routing = _routing_payload_from_child(
+                                _child_by_index.get(idx)
+                            )
+                            if _routing is not None:
+                                entry["routing"] = _routing
                         results.append(entry)
                         completed_count += 1
                     break
@@ -2179,6 +2543,9 @@ def delegate_task(
                                 _child_by_index.get(idx), "_delegate_role", None
                             ),
                         }
+                        _routing = _routing_payload_from_child(_child_by_index.get(idx))
+                        if _routing is not None:
+                            entry["routing"] = _routing
                     results.append(entry)
                     completed_count += 1
 

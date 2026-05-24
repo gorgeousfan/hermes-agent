@@ -1233,6 +1233,31 @@ DEFAULT_CONFIG = {
         # warning log if out of range.
         "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # Optional CascadeFlow integration for intelligent subagent model
+        # routing. Requires `pip install cascadeflow`; when absent, Hermes
+        # silently keeps the current delegation behavior. "observe" records
+        # the route CascadeFlow would pick without applying it. "route" lets
+        # CascadeFlow recommend provider/model/reasoning per child, while
+        # Hermes still owns credentials, base URLs, fallback chains, and API
+        # modes. Explicit delegation.model/provider/base_url/api_key or
+        # reasoning_effort above always wins over CascadeFlow.
+        "cascadeflow_model_routing": {
+            "enabled": False,
+            "mode": "observe",  # observe | route
+            "min_confidence": 0.60,
+            "route_provider_model": True,
+            "route_reasoning_effort": True,
+            "log_decisions": True,
+            # Route keys may be domains/topics ("code", "research",
+            # "legal", "finance", "ops", "data", "creative") or complexity
+            # buckets ("simple", "hard", "expert").
+            # Example:
+            # "routes": {
+            #     "simple": {"provider": "nous", "model": "nous/hermes-flash", "reasoning_effort": "low"},
+            #     "code": {"provider": "nous", "model": "nous/hermes-4.1", "reasoning_effort": "high"},
+            # },
+            "routes": {},
+        },
         # When a subagent hits a dangerous-command approval prompt, the parent's
         # prompt_toolkit TUI owns stdin — a thread-local input() call from the
         # subagent worker would deadlock the parent UI. To avoid the deadlock,
