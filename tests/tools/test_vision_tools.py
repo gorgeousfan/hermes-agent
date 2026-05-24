@@ -424,6 +424,43 @@ class TestVisionConfig:
         assert result["success"] is True
         assert mock_llm.await_args.kwargs["temperature"] == 0.1
         assert mock_llm.await_args.kwargs["timeout"] == 120.0
+        # When config omits max_tokens, fall back to the 2000-token default.
+        assert mock_llm.await_args.kwargs["max_tokens"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_vision_honors_max_tokens_from_config(self, tmp_path):
+        """auxiliary.vision.max_tokens in config.yaml should override the 2000 default.
+
+        Regression test for hermes-agent#29590: reasoning models (e.g. Kimi)
+        would stall for 9+ minutes generating 2000-token essays because the
+        hardcoded cap could not be lowered via config.
+        """
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Brief analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={
+                "auxiliary": {"vision": {"max_tokens": 256}}
+            }),
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ) as mock_llm,
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
+
+        assert result["success"] is True
+        assert mock_llm.await_args.kwargs["max_tokens"] == 256
 
 
 class TestVisionSafetyGuards:
