@@ -8356,6 +8356,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "qq":
+            self._handle_qq_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -8691,6 +8693,145 @@ class HermesCLI:
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
+        thread.start()
+
+    def _handle_qq_command(self, cmd: str):
+        """Handle /qq <prompt> — ask a quick question with full memory context.
+
+        Like /background but designed for quick one-off questions.
+        Creates a fresh session so the question+answer don't pollute the
+        main conversation history, but the agent still has full memory
+        context (user profile, persistent memories). The response is
+        printed inline in a compact format.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /qq <prompt>")
+            _cprint("  Example: /qq What does the memory say about the WhatsApp setup?")
+            _cprint("  Runs in a separate session with full memory — won't pollute your history.")
+            return
+
+        prompt = parts[1].strip()
+        task_id = f"qq_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Make sure we have valid credentials
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start quick question: no valid credentials.")
+            return
+
+        _cprint(f"  💭 Quick question: \"{prompt[:80]}{'...' if len(prompt) > 80 else ''}\"")
+
+        turn_route = self._resolve_turn_agent_config(prompt)
+
+        def run_qq():
+            qq_agent = None
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
+            try:
+                qq_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                    skip_memory=False,  # explicit: load full memory context
+                    skip_context_files=False,  # load AGENTS.md etc.
+                    reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    openrouter_min_coding_score=self._openrouter_min_coding_score,
+                    fallback_model=self._fallback_model,
+                )
+                qq_agent._print_fn = lambda *_a, **_kw: None
+
+                def _qq_thinking(text: str) -> None:
+                    if not self._agent_running:
+                        self._spinner_text = text
+                        if self._app:
+                            self._app.invalidate()
+
+                qq_agent.thinking_callback = _qq_thinking
+
+                result = qq_agent.run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                )
+
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+
+                # Compact inline output
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ── 💬 Quick answer ──")
+                if response:
+                    _chat_console = ChatConsole()
+                    _chat_console.print(_render_final_assistant_content(response, mode=self.final_response_markdown))
+                else:
+                    _cprint("  (No response)")
+                print()
+
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+
+            except Exception as e:
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ Quick question failed: {e}")
+            finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
+                try:
+                    session_db = getattr(self, "_session_db", None)
+                    if session_db is not None:
+                        session_ids = []
+                        current_id = getattr(qq_agent, "session_id", None)
+                        if current_id:
+                            session_ids.append(str(current_id))
+                        if task_id not in session_ids:
+                            session_ids.append(task_id)
+                        for session_id in session_ids:
+                            session_db.delete_session(
+                                session_id,
+                                sessions_dir=get_hermes_home() / "sessions",
+                            )
+                except Exception:
+                    logger.debug("Failed to delete quick-question session %s", task_id, exc_info=True)
+                if not self._agent_running:
+                    self._spinner_text = ""
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_qq, daemon=True, name=f"qq-task-{task_id}")
         thread.start()
 
     @staticmethod

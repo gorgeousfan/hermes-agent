@@ -593,11 +593,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
-      case 'background.complete':
-        dropBgTask(ev.payload.task_id)
-        sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
+      case 'background.complete': {
+        const taskId = String(ev.payload?.task_id ?? '')
+        const text = String(ev.payload?.text ?? '')
+        const kind = String(ev.payload?.kind ?? '')
+
+        dropBgTask(taskId)
+        sys(
+          kind === 'quick_question' || taskId.startsWith('qq_')
+            ? `💬 Quick answer (${taskId}): ${text}`
+            : `[bg ${taskId}] ${text}`
+        )
 
         return
+      }
+
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line

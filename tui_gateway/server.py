@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -133,6 +134,7 @@ except (ValueError, TypeError):
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+_BACKGROUND_TASK_PREFIX_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -359,6 +361,25 @@ def _get_db():
 def _db_unavailable_error(rid, *, code: int):
     detail = _db_error or "state.db unavailable"
     return _err(rid, code, f"state.db unavailable: {detail}")
+
+
+def _delete_transient_sessions(session_ids: list[str]) -> None:
+    """Best-effort cleanup for short-lived helper-agent sessions."""
+    ordered_ids: list[str] = []
+    for session_id in session_ids:
+        if session_id and session_id not in ordered_ids:
+            ordered_ids.append(session_id)
+    if not ordered_ids:
+        return
+    db = _get_db()
+    if db is None:
+        return
+    sessions_dir = Path(get_hermes_home()) / "sessions"
+    for session_id in ordered_ids:
+        try:
+            db.delete_session(session_id, sessions_dir=sessions_dir)
+        except Exception:
+            logger.debug("Failed to delete transient session %s", session_id, exc_info=True)
 
 
 def write_json(obj: dict) -> bool:
@@ -3805,16 +3826,22 @@ def _(rid, params: dict) -> dict:
     text, parent = params.get("text", ""), params.get("session_id", "")
     if not text:
         return _err(rid, 4012, "text required")
-    task_id = f"bg_{uuid.uuid4().hex[:6]}"
+    raw_prefix = str(params.get("prefix") or "bg").strip().lower()
+    prefix = raw_prefix if _BACKGROUND_TASK_PREFIX_RE.fullmatch(raw_prefix) else "bg"
+    raw_kind = str(params.get("kind") or "").strip().lower()
+    kind = "quick_question" if raw_kind == "quick_question" or prefix == "qq" else "background"
+    task_id = f"{prefix}_{uuid.uuid4().hex[:6]}"
 
     def run():
+        bg_agent = None
         session_tokens = _set_session_context(task_id)
         try:
             from run_agent import AIAgent
 
-            result = AIAgent(
+            bg_agent = AIAgent(
                 **_background_agent_kwargs(session["agent"], task_id)
-            ).run_conversation(
+            )
+            result = bg_agent.run_conversation(
                 user_message=text,
                 task_id=task_id,
             )
@@ -3823,6 +3850,7 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {
                     "task_id": task_id,
+                    "kind": kind,
                     "text": (
                         result.get("final_response", str(result))
                         if isinstance(result, dict)
@@ -3834,9 +3862,16 @@ def _(rid, params: dict) -> dict:
             _emit(
                 "background.complete",
                 parent,
-                {"task_id": task_id, "text": f"error: {e}"},
+                {"task_id": task_id, "kind": kind, "text": f"error: {e}"},
             )
         finally:
+            if kind == "quick_question":
+                session_ids = []
+                current_id = getattr(bg_agent, "session_id", None)
+                if current_id:
+                    session_ids.append(str(current_id))
+                session_ids.append(task_id)
+                _delete_transient_sessions(session_ids)
             _clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()

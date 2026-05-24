@@ -2,6 +2,7 @@
 
 import io
 import json
+from pathlib import Path
 import sys
 import threading
 import time
@@ -499,6 +500,64 @@ def test_slash_exec_rejects_pending_input_commands(server, cmd):
     assert "error" in resp
     assert resp["error"]["code"] == 4018
     assert "pending-input command" in resp["error"]["message"]
+
+
+def test_prompt_background_quick_question_uses_qq_task_and_emits_kind(capture):
+    server, buf = capture
+    sid = "test-session"
+    db = MagicMock()
+    server._db = db
+
+    class FakeAIAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run_conversation(self, user_message, task_id):
+            assert user_message == "what do you remember?"
+            assert task_id.startswith("qq_")
+            return {"final_response": "quick answer"}
+
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": types.SimpleNamespace(model="test-model"),
+    }
+
+    with patch.dict(sys.modules, {"run_agent": types.SimpleNamespace(AIAgent=FakeAIAgent)}):
+        resp = server.handle_request({
+            "id": "r-qq-bg",
+            "method": "prompt.background",
+            "params": {
+                "kind": "quick_question",
+                "prefix": "qq",
+                "session_id": sid,
+                "text": "what do you remember?",
+            },
+        })
+
+        assert "error" not in resp
+        task_id = resp["result"]["task_id"]
+        assert task_id.startswith("qq_")
+
+        deadline = time.time() + 2
+        while (
+            "background.complete" not in buf.getvalue()
+            or not db.delete_session.called
+        ) and time.time() < deadline:
+            time.sleep(0.01)
+
+    frames = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+    event = next(frame for frame in frames if frame.get("method") == "event")
+    assert event["params"]["type"] == "background.complete"
+    assert event["params"]["session_id"] == sid
+    assert event["params"]["payload"] == {
+        "kind": "quick_question",
+        "task_id": task_id,
+        "text": "quick answer",
+    }
+    db.delete_session.assert_called_once_with(
+        task_id,
+        sessions_dir=Path("/tmp/hermes_test") / "sessions",
+    )
 
 
 def test_command_dispatch_queue_sends_message(server):
