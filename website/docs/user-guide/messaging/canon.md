@@ -1,0 +1,47 @@
+# Canon
+
+The Canon platform plugin connects Hermes directly to Canon conversations over
+Canon's REST and SSE APIs. It is the long-term native channel for
+Canon-Hermes deployments and does not require the legacy Node sidecar bridge.
+
+## Authentication
+
+Use one credential mode:
+
+```bash
+CANON_API_KEY=agk_live_...
+```
+
+or profile mode:
+
+```bash
+CANON_AGENT=leonardo-2
+CANON_AGENTS_JSON_BOOTSTRAP='{"leonardo-2":{"apiKey":"...","agentId":"...","agentName":"Leonardo 2","clientType":"hermes"}}'
+```
+
+Profile mode reads `~/.canon/agents.json`. On Railway, set `HOME=/data` so the
+profile file lives at `/data/.canon/agents.json` on the persistent volume.
+`CANON_AGENTS_JSON_BOOTSTRAP` can seed a fresh volume and is merged without
+overwriting existing profiles.
+
+`CANON_API_KEY` has highest priority when both modes are present.
+
+## Optional Settings
+
+- `CANON_BASE_URL` overrides the Canon REST API base URL.
+- `CANON_STREAM_URL` overrides the Canon SSE stream URL.
+- `CANON_HOME_CHANNEL` sets the default conversation for cron/send-message
+  delivery.
+- `CANON_ALLOWED_USERS` restricts inbound users. Use this for owner/contact
+  deployments, for example `CANON_ALLOWED_USERS=canon_user_id_1,canon_user_id_2`.
+- `CANON_ALLOW_ALL_USERS=1` allows any Canon user to talk to the agent.
+
+When `CANON_ALLOWED_USERS` is set, unlisted direct-message senders are ignored
+instead of receiving pairing codes, unless you explicitly configure Canon's
+platform `unauthorized_dm_behavior` back to `pair`.
+
+## Deployment Note
+
+Normal Canon Hermes should enable only the `canon-platform` plugin. Priority
+deployments should compose the same runtime with the external Priority Hermes
+pack; Priority skills do not belong in this runtime's global `skills/` tree.
