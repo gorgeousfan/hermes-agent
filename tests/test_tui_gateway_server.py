@@ -2247,6 +2247,218 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     assert len(server._sessions["sid"]["attached_images"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# image.attach_bytes
+# ---------------------------------------------------------------------------
+
+
+def _make_png(width=4, height=4):
+    """Tiny valid PNG (no PIL needed)."""
+    import struct
+    import zlib
+
+    sig = b"\x89PNG\r\n\x1a\n"
+
+    def chunk(tag, data):
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = b""
+    for _ in range(height):
+        raw += b"\x00" + (b"\xff\x00\x00" * width)
+    idat = zlib.compress(raw)
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def test_image_attach_bytes_accepts_raw_base64(tmp_path, monkeypatch):
+    import base64
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    server._sessions["sid"] = _session()
+    png = _make_png()
+    b64 = base64.b64encode(png).decode()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "sid", "content_base64": b64},
+        }
+    )
+
+    assert resp["result"]["attached"] is True
+    assert resp["result"]["bytes"] == len(png)
+    assert resp["result"]["path"].endswith(".png")
+    assert Path(resp["result"]["path"]).read_bytes() == png
+    assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_image_attach_bytes_strips_data_url_prefix(tmp_path, monkeypatch):
+    import base64
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    server._sessions["sid"] = _session()
+    png = _make_png()
+    data_url = "data:image/png;base64," + base64.b64encode(png).decode()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "sid", "content_base64": data_url},
+        }
+    )
+
+    assert resp["result"]["attached"] is True
+
+
+def test_image_attach_bytes_rejects_invalid_base64(monkeypatch):
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png"}
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    server._sessions["sid"] = _session()
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "sid", "content_base64": "not-base64!!!"},
+        }
+    )
+    assert resp["error"]["code"] == 4017
+
+
+def test_image_attach_bytes_rejects_oversized(tmp_path, monkeypatch):
+    import base64
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png"}
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    server._sessions["sid"] = _session()
+    huge = base64.b64encode(b"\x00" * (26 * 1024 * 1024)).decode()
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {"session_id": "sid", "content_base64": huge},
+        }
+    )
+    assert resp["error"]["code"] == 4018
+
+
+# ---------------------------------------------------------------------------
+# pdf.attach
+# ---------------------------------------------------------------------------
+
+
+def _make_pdf():
+    """Tiny valid 1-page PDF that pdftoppm can render."""
+    return (
+        b"%PDF-1.4\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R>>endobj\n"
+        b"4 0 obj<</Length 23>>stream\nBT /F1 24 Tf 100 700 Td (hi) Tj ET\nendstream endobj\n"
+        b"xref\n0 5\n0000000000 65535 f \n0000000009 00000 n \n0000000052 00000 n \n"
+        b"0000000098 00000 n \n0000000160 00000 n \n"
+        b"trailer<</Size 5/Root 1 0 R>>\nstartxref\n230\n%%EOF\n"
+    )
+
+
+def test_pdf_attach_renders_pages_when_pdftoppm_available(tmp_path, monkeypatch):
+    import shutil
+
+    if shutil.which("pdftoppm") is None:
+        import pytest
+        pytest.skip("pdftoppm not installed; integration-test only")
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._resolve_attachment_path = lambda raw: Path(raw)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(_make_pdf())
+
+    server._sessions["sid"] = _session()
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {"session_id": "sid", "path": str(pdf)},
+        }
+    )
+
+    assert resp["result"]["attached"] is True
+    assert resp["result"]["pages_attached"] >= 1
+    for page in resp["result"]["pages"]:
+        assert page["path"].endswith(".png")
+        assert Path(page["path"]).is_file()
+
+
+def test_pdf_attach_rejects_non_pdf_payload(monkeypatch):
+    import base64
+
+    fake_cli = types.ModuleType("cli")
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    server._sessions["sid"] = _session()
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {
+                "session_id": "sid",
+                "content_base64": base64.b64encode(b"not a pdf").decode(),
+            },
+        }
+    )
+    # Either 4017 (bad magic bytes) or 5028 (no pdftoppm) is fine — both refuse cleanly.
+    assert "error" in resp
+
+
+def test_pdf_attach_rejects_oversized_page_range(tmp_path, monkeypatch):
+    import shutil
+
+    if shutil.which("pdftoppm") is None:
+        import pytest
+        pytest.skip("pdftoppm not installed")
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._resolve_attachment_path = lambda raw: Path(raw)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(_make_pdf())
+
+    server._sessions["sid"] = _session()
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "pdf.attach",
+            "params": {
+                "session_id": "sid",
+                "path": str(pdf),
+                "first_page": 1,
+                "last_page": 100,
+            },
+        }
+    )
+    assert resp["error"]["code"] == 4019
+
+
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     monkeypatch.setattr(
         server,
