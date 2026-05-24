@@ -360,6 +360,7 @@ def run_conversation(
     # They are initialized in __init__ and must persist across run_conversation
     # calls so that nudge logic accumulates correctly in CLI mode.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    agent._emergency_compression_count = 0
 
     # Log conversation turn start for debugging/observability
     _preview_text = _summarize_user_message_for_log(user_message)
@@ -652,6 +653,34 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
+        
+        # Emergency compression: if budget is nearly exhausted but context is
+        # still large, compress and reset the budget to allow more iterations.
+        # This prevents max_iterations from killing the agent before compression
+        # has a chance to trigger (e.g. when tool outputs are small per iteration
+        # but accumulated context is large, or when the provider doesn't return
+        # usage data and should_compress(0) never fires).  Limits to 3 emergency
+        # compressions per conversation turn to avoid infinite loops.
+        if (not agent._budget_grace_call
+                and agent.iteration_budget.remaining <= 1
+                and agent.compression_enabled
+                and agent._emergency_compression_count < 3):
+            _est_tokens = estimate_messages_tokens_rough(messages)
+            if _est_tokens > agent.context_compressor.threshold_tokens:
+                agent._safe_print(
+                    '  ⟳ Emergency compression '
+                    f'(budget: {agent.iteration_budget.remaining} remaining, '
+                    f'~{_est_tokens:,} tokens > {agent.context_compressor.threshold_tokens:,} threshold)'
+                )
+                messages, active_system_prompt = agent._compress_context(
+                    messages, system_message,
+                    approx_tokens=_est_tokens,
+                    task_id=effective_task_id,
+                )
+                agent.iteration_budget.reset()
+                conversation_history = None  # New session after compression
+                agent._emergency_compression_count += 1
+                continue
         
         api_call_count += 1
         agent._api_call_count = api_call_count

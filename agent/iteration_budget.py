@@ -48,6 +48,11 @@ class IterationBudget:
             if self._used > 0:
                 self._used -= 1
 
+    def reset(self) -> None:
+        """Reset the iteration counter (e.g. after emergency compression)."""
+        with self._lock:
+            self._used = 0
+
     @property
     def used(self) -> int:
         with self._lock:
