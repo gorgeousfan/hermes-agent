@@ -525,6 +525,49 @@ def _get_session_platform() -> str:
         return ""
 
 
+def _gateway_identity_fingerprint() -> tuple[str, str, str, str, str]:
+    """Return active gateway identity for local restricted-skill filtering."""
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+        chat_id = (get_session_env("HERMES_SESSION_CHAT_ID", "") or "").strip()
+        user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip()
+        chat_name = (get_session_env("HERMES_SESSION_CHAT_NAME", "") or "").strip()
+        user_name = (get_session_env("HERMES_SESSION_USER_NAME", "") or "").strip()
+    except Exception:
+        return ("", "", "", "", "")
+    return (platform, chat_id, user_id, chat_name, user_name)
+
+
+def _identity_allowed(values: Any, platform: str, identities: tuple[str, ...]) -> bool:
+    if not platform or not isinstance(values, dict):
+        return False
+    allowed = {str(v).strip() for v in values.get(platform, []) if str(v).strip()}
+    return any(identity in allowed for identity in identities if identity)
+
+
+def _is_skill_access_restricted(name: str) -> bool:
+    try:
+        from hermes_cli.config import load_config
+
+        ac = load_config().get("skills", {}).get("access_control", {}) or {}
+    except Exception:
+        return False
+    if name not in set(ac.get("restricted_skills") or []):
+        return False
+    platform, chat_id, user_id, chat_name, user_name = _gateway_identity_fingerprint()
+    if not platform:
+        return False
+    identities = tuple(x for x in (user_id, chat_id, user_name, chat_name) if x)
+    skill_allowed = ac.get("skill_allowed_identities", {}) or {}
+    if _identity_allowed(skill_allowed, platform, identities):
+        return False
+    if _identity_allowed(ac.get("allowed_identities"), platform, identities):
+        return False
+    return True
+
+
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
     """Check if a skill is disabled in config.
 
@@ -590,6 +633,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if name in seen_names:
                     continue
                 if name in disabled:
+                    continue
+                if _is_skill_access_restricted(name):
                     continue
 
                 description = frontmatter.get("description", "")
@@ -1104,8 +1149,16 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        # Check if the skill is disabled by the user
+        # Check if the skill is disabled/restricted for the active identity
         resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
+        if _is_skill_access_restricted(resolved_name):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Skill '{resolved_name}' is restricted for this sender.",
+                },
+                ensure_ascii=False,
+            )
         if _is_skill_disabled(resolved_name):
             return json.dumps(
                 {
