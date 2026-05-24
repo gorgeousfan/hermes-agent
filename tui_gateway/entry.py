@@ -187,6 +187,30 @@ def _log_exit(reason: str) -> None:
 def main():
     _install_sidecar_publisher()
 
+    # Register shell hooks and Python plugins so hook events fire on
+    # TUI turns. Without this, every ``invoke_hook(...)`` call in
+    # ``tui_gateway.server`` (e.g. ``platform="tui"`` session boundary
+    # events) reaches an empty dispatcher — observability integrations,
+    # security guardrails, approval hooks, and custom transforms all
+    # silently no-op in the TUI surface.
+    #
+    # Mirrors the equivalent bootstrap in ``hermes_cli/main.py`` (CLI
+    # entry, calls ``register_from_config`` with ``--accept-hooks``) and
+    # ``gateway/run.py`` (Gateway entry, calls it with
+    # ``accept_hooks=False`` and lets env/config resolve consent). The
+    # TUI has no equivalent of ``--accept-hooks``, so we follow the
+    # gateway pattern: ``HERMES_ACCEPT_HOOKS=1`` or
+    # ``hooks_auto_accept: true`` in ``cli-config.yaml`` opts in.
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+        from hermes_cli.plugins import discover_plugins
+
+        register_from_config(load_config(), accept_hooks=False)
+        discover_plugins()
+    except Exception:
+        pass
+
     # MCP tool discovery — inline is safe here: TUI entry is a plain
     # sync loop with no asyncio event loop to block.  Previously ran as
     # a model_tools.py module-level side effect; moved to explicit
