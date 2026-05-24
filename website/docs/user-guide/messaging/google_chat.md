@@ -93,13 +93,17 @@ After creation, the topic's detail page has a **Subscriptions** tab. Create one:
 
 ## Step 5: IAM binding on the topic (critical)
 
-On the **topic** (not the subscription), add an IAM principal:
+On the **topic** (not the subscription), add the **Google Chat app service
+account** shown in the Chat app's connection settings page as a principal.
+It usually looks like:
 
-- Principal: `chat-api-push@system.gserviceaccount.com`
+- Principal: `service-<number>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`
 - Role: `Pub/Sub Publisher`
 
-Without this, Google Chat cannot publish events to your topic and your bot will
-never receive anything.
+Do **not** hardcode `chat-api-push@system.gserviceaccount.com` here. Use the
+service account that Google generated for *your* Chat app. Without this, Google
+Chat cannot publish events to your topic and your bot will never receive
+anything.
 
 ---
 
@@ -293,8 +297,10 @@ evicts only that user's cache. Users don't disrupt each other.
    If it does, Hermes isn't authenticated — verify `GOOGLE_CHAT_SERVICE_ACCOUNT_JSON`
    and that the SA is listed as `Pub/Sub Subscriber` on the subscription.
 2. If the subscription has zero messages, Google Chat isn't publishing.
-   Double-check the IAM binding on the **topic**:
-   `chat-api-push@system.gserviceaccount.com` must have `Pub/Sub Publisher`.
+   Double-check the IAM binding on the **topic**: the Chat app's generated
+   service account from the connection settings page (for example
+   `service-<number>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`) must have
+   `Pub/Sub Publisher`.
 3. Check `hermes gateway` logs for `[GoogleChat] Connected`. If you see
    `[GoogleChat] Config validation failed`, the error message tells you which
    env var to fix.
