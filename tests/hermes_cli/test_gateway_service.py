@@ -1,6 +1,8 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,6 +40,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -450,6 +456,14 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    @pytest.fixture(autouse=True)
+    def _sandbox_launchd_home(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "launchd-test"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
@@ -554,10 +568,1459 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    def test_launchd_start_recovery_boots_out_after_final_kickstart_failure(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd and cmd[0] == "launchctl":
+                calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
+                raise gateway_cli.subprocess.CalledProcessError(113, cmd, stderr="Could not find service")
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 2:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_start()
+
+        assert calls == [
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootout", target],
+        ]
+
+    def test_launchd_refresh_rewrites_old_python_plist_to_profile_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text(
+            f"""
+<plist version="1.0">
+<dict>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_path}</string>
+        <string>-m</string>
+        <string>hermes_cli.main</string>
+        <string>--profile</string>
+        <string>mybot</string>
+        <string>gateway</string>
+        <string>run</string>
+        <string>--replace</string>
+    </array>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        updated = plist_path.read_text(encoding="utf-8")
+        assert f"<string>{wrapper}</string>" in updated
+        assert f"<string>{python_path}</string>" not in updated
+        assert "<string>-m</string>" not in updated
+        assert "<string>hermes_cli.main</string>" not in updated
+        assert calls == [
+            ["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"],
+            ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)],
+        ]
+
+    def test_launchd_old_python_plist_is_not_current_when_wrapper_available(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        old_python_plist = gateway_cli.generate_launchd_plist(prepare_paths=False, force_python=True).replace(
+            """
+        <key>HERMES_LAUNCHD_WRAPPER_FALLBACK</key>
+        <string>1</string>""",
+            "",
+        )
+        plist_path.write_text(old_python_plist, encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_refresh_refuses_symlinked_plist_path(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        target = tmp_path / "target.plist"
+        target.write_text("<plist>old content</plist>", encoding="utf-8")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.symlink_to(target)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
+        )
+
+        with pytest.raises(RuntimeError, match="Refusing to replace unsafe launchd plist path"):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.is_symlink()
+        assert target.read_text(encoding="utf-8") == "<plist>old content</plist>"
+
+    def test_launchd_plist_current_refuses_current_symlinked_plist_path(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        target = tmp_path / "target.plist"
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        target.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        plist_path.symlink_to(target)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        with pytest.raises(RuntimeError, match="Refusing to replace unsafe launchd plist path"):
+            gateway_cli.launchd_plist_is_current()
+
+    def test_launchd_refresh_keeps_old_plist_retryable_when_bootout_fails(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootout failed")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert calls == [
+            ["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"],
+        ]
+
+    def test_launchd_refresh_restores_wrapper_when_bootout_fails_after_generation(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        (profile_dir / "node" / "bin").mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_python_path = tmp_path / "old-venv" / "bin" / "python"
+        old_python_path.parent.mkdir(parents=True)
+        old_python_path.write_text("")
+        new_python_path = tmp_path / "new-venv" / "bin" / "python"
+        new_python_path.parent.mkdir(parents=True)
+        new_python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(old_python_path))
+        old_plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(old_plist.encode("utf-8"))
+        required_path = str((profile_dir / "node" / "bin").resolve())
+        path_entries = parsed["EnvironmentVariables"]["PATH"].split(":")
+        assert required_path in path_entries
+        old_path = parsed["EnvironmentVariables"]["PATH"]
+        stale_path = ":".join(path for path in path_entries if path != required_path)
+        old_plist = old_plist.replace(
+            gateway_cli._plist_string(old_path),
+            gateway_cli._plist_string(stale_path),
+            1,
+        )
+        plist_path.write_text(old_plist, encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        old_wrapper = wrapper.read_bytes()
+        old_mode = stat.S_IMODE(wrapper.stat().st_mode)
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd[1] == "bootout":
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootout failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(new_python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert wrapper.read_bytes() == old_wrapper
+        assert stat.S_IMODE(wrapper.stat().st_mode) == old_mode
+        assert calls == [
+            ["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"],
+        ]
+
+    def test_launchd_refresh_restores_wrapper_parent_mode_when_bootout_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper_parent = profile_dir / "bin"
+        wrapper_parent.mkdir()
+        wrapper_parent.chmod(0o777)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootout":
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootout failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        try:
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+            assert stat.S_IMODE(wrapper_parent.stat().st_mode) == 0o777
+            assert not (wrapper_parent / "hermes-gateway-mybot").exists()
+        finally:
+            wrapper_parent.chmod(0o755)
+
+    def test_launchd_refresh_preserves_wrapper_parent_mode_changed_after_secure_step(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper_parent = profile_dir / "bin"
+        wrapper_parent.mkdir()
+        wrapper_parent.chmod(0o777)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootout":
+                wrapper_parent.chmod(0o700)
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootout failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        try:
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+            assert stat.S_IMODE(wrapper_parent.stat().st_mode) == 0o700
+        finally:
+            wrapper_parent.chmod(0o755)
+
+    def test_launchd_refresh_preserves_group_writable_wrapper_parent_changed_after_secure_step(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper_parent = profile_dir / "bin"
+        wrapper_parent.mkdir()
+        wrapper_parent.chmod(0o777)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootout":
+                wrapper_parent.chmod(0o775)
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootout failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        try:
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+            assert stat.S_IMODE(wrapper_parent.stat().st_mode) == 0o775
+        finally:
+            wrapper_parent.chmod(0o755)
+
+    def test_launchd_refresh_reloads_previous_plist_when_bootout_times_out(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootout":
+                raise gateway_cli.subprocess.TimeoutExpired(cmd, timeout=90)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.TimeoutExpired):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_refresh_rolls_back_when_bootstrap_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        old_wrapper = b"#!/bin/sh\nexec /old/python -m hermes_cli.main \"$@\"\n"
+        wrapper.write_bytes(old_wrapper)
+        wrapper.chmod(0o700)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert wrapper.read_bytes() == old_wrapper
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o700
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_refresh_warns_when_previous_reload_fails(self, tmp_path, monkeypatch, caplog):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with caplog.at_level("WARNING", logger=gateway_cli.logger.name):
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+        assert "Could not reload previous launchd service definition" in caplog.text
+
+    def test_launchd_refresh_does_not_reload_previous_when_plist_changed_after_write(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        user_content = "<plist>user content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    plist_path.write_text(user_content, encoding="utf-8")
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with caplog.at_level("WARNING", logger=gateway_cli.logger.name):
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == user_content
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+        assert "Skipping previous launchd service reload because the previous plist could not be restored" in caplog.text
+
+    def test_launchd_refresh_does_not_reload_previous_when_plist_replaced_during_restore(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        user_content = "<plist>user content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootstrap_attempts = 0
+        race_during_restore = {"enabled": False}
+        real_replace = gateway_cli.os.replace
+
+        def replace_plist_before_quarantine(src, dst):
+            if race_during_restore["enabled"] and (Path(src) == plist_path or Path(dst) == plist_path):
+                race_during_restore["enabled"] = False
+                plist_path.write_text(user_content, encoding="utf-8")
+            real_replace(src, dst)
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    race_during_restore["enabled"] = True
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.os, "replace", replace_plist_before_quarantine)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with caplog.at_level("WARNING", logger=gateway_cli.logger.name):
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == user_content
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+        assert "Skipping previous launchd service reload because the previous plist could not be restored" in caplog.text
+
+    def test_launchd_refresh_uses_stale_registration_recovery_when_reloading_previous(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+                if bootstrap_attempts == 2:
+                    raise gateway_cli.subprocess.CalledProcessError(
+                        5,
+                        cmd,
+                        stderr="Bootstrap failed: 5: Input/output error",
+                    )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_refresh_rolls_back_when_bootstrap_times_out(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        old_wrapper = b"#!/bin/sh\nexec /old/python -m hermes_cli.main \"$@\"\n"
+        wrapper.write_bytes(old_wrapper)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.TimeoutExpired(cmd, timeout=30)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.TimeoutExpired):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert wrapper.read_bytes() == old_wrapper
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_refresh_snapshots_wrapper_before_bootout(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_snapshot_launchd_gateway_wrapper",
+            lambda: (_ for _ in ()).throw(PermissionError("unreadable wrapper")),
+        )
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+
+        with pytest.raises(PermissionError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert calls == []
+
+    def test_launchd_refresh_removes_new_wrapper_when_bootstrap_fails_without_prior_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+
+    def test_launchd_refresh_does_not_reload_previous_when_prior_wrapper_was_missing(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        old_plist = f"<plist><dict><key>ProgramArguments</key><array><string>{wrapper}</string></array></dict></plist>"
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with caplog.at_level("WARNING", logger=gateway_cli.logger.name):
+            with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+                gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert not wrapper.exists()
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+        assert "Skipping previous launchd service reload because the previous wrapper could not be restored" in caplog.text
+
+    def test_launchd_force_install_rolls_back_when_bootstrap_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        old_wrapper = b"#!/bin/sh\nexec /old/python -m hermes_cli.main \"$@\"\n"
+        wrapper.write_bytes(old_wrapper)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install(force=True)
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert wrapper.read_bytes() == old_wrapper
+
+    def test_launchd_force_install_reloads_previous_plist_when_bootout_times_out(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_content = "<plist>old content</plist>"
+        plist_path.write_text(old_content, encoding="utf-8")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootout":
+                raise gateway_cli.subprocess.TimeoutExpired(cmd, timeout=90)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.TimeoutExpired):
+            gateway_cli.launchd_install(force=True)
+
+        assert plist_path.read_text(encoding="utf-8") == old_content
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_force_install_replaces_binary_existing_plist(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_bytes(b"\xff\xfe")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_install(force=True)
+
+        assert plist_path.read_text(encoding="utf-8").startswith("<?xml")
+        assert calls == [
+            ["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"],
+            ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)],
+        ]
+
+    def test_launchd_install_repairs_binary_existing_plist_without_force(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_bytes(b"\xff\xfe")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_install()
+
+        assert plist_path.read_text(encoding="utf-8").startswith("<?xml")
+        assert calls == [
+            ["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"],
+            ["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)],
+        ]
+
+    def test_launchd_install_recovers_missing_plist_stale_registration(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootstrap_kwargs = []
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap":
+                bootstrap_kwargs.append(kwargs)
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="service already loaded")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_install()
+
+        assert plist_path.exists()
+        assert (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+        assert bootstrap_kwargs == [
+            {"capture_output": True, "text": True, "timeout": 30},
+            {"capture_output": True, "text": True, "timeout": 30},
+        ]
+
+    def test_launchd_force_install_reloads_previous_after_stale_registration_retry_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootout_attempts = 0
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootout_attempts, bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootout":
+                bootout_attempts += 1
+                if bootout_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(113, cmd, stderr="not loaded")
+            if cmd[1] == "bootstrap" and check:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="service already loaded")
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install(force=True)
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_install_does_not_bootout_on_already_exists_bootstrap_failure(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap":
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="file already exists")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install()
+
+        assert not plist_path.exists()
+        assert calls == [
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_fresh_install_rolls_back_when_bootstrap_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install()
+
+        assert not plist_path.exists()
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+
+    def test_launchd_fresh_install_preserves_files_created_after_snapshot_on_rollback(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                plist_path.write_text("user plist", encoding="utf-8")
+                wrapper.write_bytes(b"#!/bin/sh\nexec /custom/python -m hermes_cli.main \"$@\"\n")
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install()
+
+        assert plist_path.read_text(encoding="utf-8") == "user plist"
+        assert wrapper.read_bytes() == b"#!/bin/sh\nexec /custom/python -m hermes_cli.main \"$@\"\n"
+
+    def test_launchd_fresh_install_preserves_path_only_plist_changes_on_rollback(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        expected_plist = {"content": None}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                original = plist_path.read_text(encoding="utf-8")
+                parsed = plistlib.loads(original.encode("utf-8"))
+                original_path = parsed["EnvironmentVariables"]["PATH"]
+                updated = original.replace(
+                    gateway_cli._plist_string(original_path),
+                    gateway_cli._plist_string(f"{original_path}:/custom/bin"),
+                    1,
+                )
+                assert gateway_cli._normalize_launchd_plist_for_comparison(
+                    updated
+                ) == gateway_cli._normalize_launchd_plist_for_comparison(original)
+                plist_path.write_text(updated, encoding="utf-8")
+                expected_plist["content"] = updated
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install()
+
+        assert plist_path.read_text(encoding="utf-8") == expected_plist["content"]
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+
+    def test_launchd_fresh_install_preserves_chmodded_wrapper_created_after_snapshot_on_rollback(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        expected_wrapper = {"content": None}
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                expected_wrapper["content"] = wrapper.read_bytes()
+                wrapper.chmod(0o700)
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install()
+
+        assert not plist_path.exists()
+        assert wrapper.read_bytes() == expected_wrapper["content"]
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o700
+
+    def test_launchd_install_preserves_existing_files_modified_after_write_on_rollback(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        old_wrapper = b"#!/bin/sh\nexec /old/python -m hermes_cli.main \"$@\"\n"
+        user_wrapper = b"#!/bin/sh\nexec /user/python -m hermes_cli.main \"$@\"\n"
+        wrapper.write_bytes(old_wrapper)
+        wrapper.chmod(0o700)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        user_plist = "<plist>user content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                plist_path.write_text(user_plist, encoding="utf-8")
+                wrapper.write_bytes(user_wrapper)
+                wrapper.chmod(0o600)
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_install(force=True)
+
+        assert plist_path.read_text(encoding="utf-8") == user_plist
+        assert wrapper.read_bytes() == user_wrapper
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o600
+
+    def test_launchd_fresh_install_boots_out_uncertain_bootstrap_before_rollback(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.TimeoutExpired(cmd, timeout=30)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.TimeoutExpired):
+            gateway_cli.launchd_install()
+
+        assert not plist_path.exists()
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+        ]
+
+    def test_launchd_install_refuses_broken_plist_symlink_without_bootout(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.symlink_to(tmp_path / "missing.plist")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+
+        with pytest.raises(RuntimeError, match="Refusing to replace unsafe launchd plist path"):
+            gateway_cli.launchd_install(force=True)
+
+        assert calls == []
+
+    def test_launchd_install_refuses_symlinked_plist_parent_without_writing(self, tmp_path, monkeypatch):
+        launch_agents = tmp_path / "LaunchAgents"
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        launch_agents.symlink_to(redirected, target_is_directory=True)
+        plist_path = launch_agents / "ai.hermes.gateway.plist"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+
+        with pytest.raises(RuntimeError, match="Refusing to use unsafe launchd"):
+            gateway_cli.launchd_install()
+
+        assert not (redirected / "ai.hermes.gateway.plist").exists()
+        assert calls == []
+
+    def test_launchd_install_refuses_symlinked_plist_ancestor_without_writing(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        (home / "Library").symlink_to(redirected, target_is_directory=True)
+        plist_path = home / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+
+        with pytest.raises(RuntimeError, match="Refusing to use unsafe launchd directory"):
+            gateway_cli.launchd_install()
+
+        assert not (redirected / "LaunchAgents" / "ai.hermes.gateway.plist").exists()
+        assert calls == []
+
+    def test_launchd_start_refuses_group_writable_plist_without_bootstrap(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        calls = []
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        plist_path.chmod(0o664)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+
+        try:
+            with pytest.raises(RuntimeError, match="Refusing to use insecure launchd plist path"):
+                gateway_cli.launchd_start()
+        finally:
+            plist_path.chmod(0o644)
+
+        assert calls == []
+
+    def test_launchd_start_missing_plist_rolls_back_when_bootstrap_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_start()
+
+        assert not plist_path.exists()
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+
+    def test_launchd_start_missing_plist_boots_out_after_kickstart_failure(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "kickstart":
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_start()
+
+        assert not plist_path.exists()
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+        ]
+
+    @pytest.mark.parametrize(
+        "bootstrap_stderr",
+        [
+            "service already loaded",
+            "Bootstrap failed: 5: Input/output error",
+        ],
+    )
+    def test_launchd_start_missing_plist_recovers_stale_registration(self, tmp_path, monkeypatch, bootstrap_stderr):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap":
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr=bootstrap_stderr)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_start()
+
+        assert plist_path.exists()
+        assert (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+        ]
+
+    def test_launchd_start_refuses_broken_plist_symlink_without_bootout(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.symlink_to(tmp_path / "missing.plist")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+
+        with pytest.raises(RuntimeError, match="Refusing to replace unsafe launchd plist path"):
+            gateway_cli.launchd_start()
+
+        assert calls == []
+
+    def test_launchd_start_rolls_back_refresh_when_kickstart_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "kickstart":
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_start()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_start_rolls_back_refresh_when_kickstart_oserror(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "kickstart":
+                raise OSError("launchctl unavailable")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(OSError):
+            gateway_cli.launchd_start()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_start_rolls_back_refresh_when_recovery_kickstart_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        kickstart_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal kickstart_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "kickstart":
+                kickstart_attempts += 1
+                returncode = 113 if kickstart_attempts == 1 else 5
+                raise gateway_cli.subprocess.CalledProcessError(returncode, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_start()
+
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootout", target], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", target], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", target], True),
+            (["launchctl", "bootout", target], True),
+            (["launchctl", "bootout", target], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
+        monkeypatch.setattr(gateway_cli, "_refresh_launchd_plist_if_needed", lambda: gateway_cli.LaunchdRefreshResult(False))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
@@ -580,9 +2043,155 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", "-k", target],
         ]
 
+    def test_launchd_restart_refreshes_stale_plist_before_kickstart(self, monkeypatch):
+        calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_refresh_launchd_plist_if_needed",
+            lambda: calls.append("refresh") or gateway_cli.LaunchdRefreshResult(True),
+        )
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: (_ for _ in ()).throw(AssertionError("stale plist should use launchctl restart")),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == ["refresh", ["launchctl", "kickstart", "-k", target]]
+
+    def test_launchd_restart_refreshes_stale_plist_for_running_gateway(self, monkeypatch):
+        calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_refresh_launchd_plist_if_needed",
+            lambda: calls.append("refresh") or gateway_cli.LaunchdRefreshResult(True),
+        )
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: (_ for _ in ()).throw(AssertionError("stale plist should not use self restart")),
+        )
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == ["refresh", ("term", 321, False), ["launchctl", "kickstart", "-k", target]]
+
+    def test_launchd_restart_rolls_back_refresh_when_kickstart_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[:3] == ["launchctl", "kickstart", "-k"]:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_restart()
+
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", "-k", target], True),
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_restart_rolls_back_refresh_when_recovery_kickstart_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        old_plist = "<plist>old content</plist>"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        calls = []
+        kickstart_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal kickstart_attempts
+            calls.append((cmd, check))
+            if cmd[:3] == ["launchctl", "kickstart", "-k"]:
+                raise gateway_cli.subprocess.CalledProcessError(113, cmd, stderr="not loaded")
+            if cmd[1] == "kickstart":
+                kickstart_attempts += 1
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_restart()
+
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        assert kickstart_attempts == 1
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert calls == [
+            (["launchctl", "bootout", target], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", "-k", target], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+            (["launchctl", "kickstart", target], True),
+            (["launchctl", "bootout", target], True),
+            (["launchctl", "bootout", target], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []
 
+        monkeypatch.setattr(gateway_cli, "_refresh_launchd_plist_if_needed", lambda: gateway_cli.LaunchdRefreshResult(False))
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
@@ -603,6 +2212,38 @@ class TestLaunchdServiceRecovery:
         assert calls == [("self", 321)]
         assert "restart requested" in capsys.readouterr().out.lower()
 
+    def test_launchd_restart_recovery_boots_out_after_final_kickstart_failure(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_refresh_launchd_plist_if_needed", lambda: gateway_cli.LaunchdRefreshResult(False))
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(113, cmd, stderr="Could not find service")
+            if cmd == ["launchctl", "kickstart", target]:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="kickstart failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_restart()
+
+        assert calls == [
+            ["launchctl", "kickstart", "-k", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootout", target],
+        ]
+
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
         label = gateway_cli.get_launchd_label()
@@ -621,6 +2262,379 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_stop()
 
         assert calls == [["launchctl", "bootout", target]]
+
+    def test_launchd_uninstall_removes_matching_wrapper_and_broken_plist_symlink(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.symlink_to(tmp_path / "missing.plist")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        gateway_cli.generate_launchd_plist()
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+
+        gateway_cli.launchd_uninstall()
+
+        assert not plist_path.is_symlink()
+        assert not wrapper.exists()
+
+    def test_launchd_uninstall_removes_stale_hermes_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        wrapper.write_bytes(b"#!/bin/sh\nexec /old/python -m hermes_cli.main \"$@\"\n")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert not wrapper.exists()
+
+    def test_launchd_uninstall_preserves_wrapper_replaced_after_validation(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper.write_bytes(gateway_cli._launchd_gateway_wrapper_script(str(python_path)))
+        custom_wrapper = b"custom wrapper"
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        read_count = {"wrapper": 0}
+        real_read = gateway_cli._read_regular_no_follow
+
+        def replace_after_first_wrapper_read(path):
+            result = real_read(path)
+            if Path(path) == wrapper and read_count["wrapper"] == 0:
+                read_count["wrapper"] += 1
+                wrapper.write_bytes(custom_wrapper)
+            return result
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_read_regular_no_follow", replace_after_first_wrapper_read)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert wrapper.read_bytes() == custom_wrapper
+
+    def test_launchd_uninstall_preserves_wrapper_replaced_during_final_removal(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper.write_bytes(gateway_cli._launchd_gateway_wrapper_script(str(python_path)))
+        wrapper.chmod(0o755)
+        custom_wrapper = b"custom wrapper"
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        real_unlink = Path.unlink
+        real_replace = gateway_cli.os.replace
+
+        def replace_wrapper_before_unlink(path, *args, **kwargs):
+            if Path(path) == wrapper:
+                wrapper.write_bytes(custom_wrapper)
+            return real_unlink(path, *args, **kwargs)
+
+        def replace_wrapper_before_quarantine(src, dst):
+            if Path(src) == wrapper:
+                wrapper.write_bytes(custom_wrapper)
+            real_replace(src, dst)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(Path, "unlink", replace_wrapper_before_unlink)
+        monkeypatch.setattr(gateway_cli.os, "replace", replace_wrapper_before_quarantine)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert wrapper.read_bytes() == custom_wrapper
+
+    def test_launchd_uninstall_preserves_wrapper_recreated_after_bootout(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        recreated_wrapper = gateway_cli._launchd_gateway_wrapper_script(str(python_path))
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootout":
+                wrapper.write_bytes(recreated_wrapper)
+                wrapper.chmod(0o755)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_uninstall()
+
+        assert wrapper.read_bytes() == recreated_wrapper
+
+    def test_launchd_uninstall_preserves_wrapper_directory_replaced_during_final_removal(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper.write_bytes(gateway_cli._launchd_gateway_wrapper_script(str(python_path)))
+        wrapper.chmod(0o755)
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        real_replace = gateway_cli.os.replace
+
+        def replace_wrapper_with_directory_before_quarantine(src, dst):
+            if Path(src) == wrapper:
+                wrapper.unlink()
+                wrapper.mkdir()
+            real_replace(src, dst)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.os, "replace", replace_wrapper_with_directory_before_quarantine)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert wrapper.is_dir()
+        assert not list(wrapper.iterdir())
+
+    def test_launchd_uninstall_preserves_plist_replaced_during_final_removal(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        user_content = "<plist>user content</plist>"
+        real_unlink = Path.unlink
+        real_replace = gateway_cli.os.replace
+
+        def replace_plist_before_unlink(path, *args, **kwargs):
+            if Path(path) == plist_path:
+                plist_path.write_text(user_content, encoding="utf-8")
+            return real_unlink(path, *args, **kwargs)
+
+        def replace_plist_before_quarantine(src, dst):
+            if Path(src) == plist_path:
+                plist_path.write_text(user_content, encoding="utf-8")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(Path, "unlink", replace_plist_before_unlink)
+        monkeypatch.setattr(gateway_cli.os, "replace", replace_plist_before_quarantine)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert plist_path.read_text(encoding="utf-8") == user_content
+
+    def test_launchd_uninstall_preserves_plist_directory_replaced_during_final_removal(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        real_replace = gateway_cli.os.replace
+
+        def replace_plist_with_directory_before_quarantine(src, dst):
+            if Path(src) == plist_path:
+                plist_path.unlink()
+                plist_path.mkdir()
+            real_replace(src, dst)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.os, "replace", replace_plist_with_directory_before_quarantine)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert plist_path.is_dir()
+        assert not list(plist_path.iterdir())
+
+    def test_launchd_uninstall_preserves_plist_replaced_after_bootout(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        user_content = "<plist>user content</plist>"
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[1] == "bootout":
+                plist_path.write_text(user_content, encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_uninstall()
+
+        assert plist_path.read_text(encoding="utf-8") == user_content
+
+    def test_launchd_uninstall_refuses_wrapper_parent_symlink(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        (profile_dir / "bin").symlink_to(redirected, target_is_directory=True)
+        redirected_wrapper = redirected / "hermes-gateway-mybot"
+        redirected_wrapper.write_bytes(b"#!/bin/sh\nexec /old/python -m hermes_cli.main \"$@\"\n")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        gateway_cli.launchd_uninstall()
+
+        assert redirected_wrapper.exists()
+
+    def test_launchd_uninstall_keeps_files_when_bootout_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        gateway_cli.generate_launchd_plist()
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=5, stdout="", stderr="bootout failed"),
+        )
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.launchd_uninstall()
+
+        assert plist_path.exists()
+        assert wrapper.exists()
+
+    def test_launchd_uninstall_refuses_symlinked_plist_parent(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        launch_agents = tmp_path / "LaunchAgents"
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        launch_agents.symlink_to(redirected, target_is_directory=True)
+        redirected_plist = redirected / "ai.hermes.gateway-mybot.plist"
+        redirected_plist.write_text("<plist/>", encoding="utf-8")
+        plist_path = launch_agents / "ai.hermes.gateway-mybot.plist"
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        with pytest.raises(RuntimeError, match="Refusing to use unsafe launchd"):
+            gateway_cli.launchd_uninstall()
+
+        assert redirected_plist.exists()
 
     def test_launchd_stop_tolerates_already_unloaded(self, monkeypatch, capsys):
         """launchd_stop silently handles exit codes 3/113 (job not loaded)."""
@@ -737,6 +2751,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -1630,6 +3648,896 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_uses_profile_named_gateway_wrapper(self, tmp_path, monkeypatch):
+        """Named profile services should show a profile-specific name in macOS Login Items."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        venv = tmp_path / "venv"
+        venv_bin = venv / "bin"
+        venv_bin.mkdir(parents=True)
+        python_path = venv_bin / "python"
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+
+        assert f"<string>{wrapper}</string>" in plist
+        assert wrapper.exists()
+        assert os.access(wrapper, os.X_OK)
+        assert f"exec {python_path}" in wrapper.read_text(encoding="utf-8")
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o755
+        assert "<string>-m</string>" not in plist
+        assert "<string>hermes_cli.main</string>" not in plist
+        assert "<string>--profile</string>" in plist
+        assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_uses_resolved_home_for_relative_wrapper_path(self, tmp_path, monkeypatch):
+        """Relative HERMES_HOME should not leak a relative executable path into launchd."""
+        profile_dir = Path(".hermes") / "profiles" / "mybot"
+        (tmp_path / profile_dir).mkdir(parents=True)
+        (tmp_path / profile_dir / "node" / "bin").mkdir(parents=True)
+        (tmp_path / profile_dir / "node_modules" / ".bin").mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+        resolved_profile = (tmp_path / profile_dir).resolve()
+        wrapper = resolved_profile / "bin" / "hermes-gateway-mybot"
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        path_entries = parsed["EnvironmentVariables"]["PATH"].split(":")
+
+        assert f"<string>{wrapper}</string>" in plist
+        assert f"<string>{resolved_profile}</string>" in plist
+        assert wrapper.exists()
+        assert "<string>.hermes/profiles/mybot/bin/hermes-gateway-mybot</string>" not in plist
+        assert str(resolved_profile / "node" / "bin") in path_entries
+        assert str(resolved_profile / "node_modules" / ".bin") in path_entries
+        assert ".hermes/profiles/mybot/node/bin" not in path_entries
+
+    def test_launchd_plist_current_reports_stale_without_creating_gateway_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(prepare_paths=False), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        assert not wrapper.exists()
+        assert gateway_cli.launchd_plist_is_current() is False
+        assert not wrapper.exists()
+
+        gateway_cli.generate_launchd_plist()
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_current_reports_stale_when_required_path_entry_is_missing(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        (profile_dir / "node" / "bin").mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        required_entry = str((profile_dir / "node" / "bin").resolve())
+        path_entries = parsed["EnvironmentVariables"]["PATH"].split(":")
+        assert required_entry in path_entries
+        original_path = parsed["EnvironmentVariables"]["PATH"]
+        stale_path = ":".join(path for path in path_entries if path != required_entry)
+        plist_path.write_text(
+            plist.replace(
+                gateway_cli._plist_string(original_path),
+                gateway_cli._plist_string(stale_path),
+                1,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_plist_current_ignores_shell_path_tail_changes(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        (profile_dir / "node" / "bin").mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        original_path = parsed["EnvironmentVariables"]["PATH"]
+        plist_path.write_text(
+            plist.replace(
+                gateway_cli._plist_string(original_path),
+                gateway_cli._plist_string(f"{original_path}:/custom/shell/bin"),
+                1,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_current_reports_stale_when_required_path_order_changes(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        (profile_dir / "node" / "bin").mkdir(parents=True)
+        (profile_dir / "node_modules" / ".bin").mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        first = str((profile_dir / "node" / "bin").resolve())
+        second = str((profile_dir / "node_modules" / ".bin").resolve())
+        path_entries = parsed["EnvironmentVariables"]["PATH"].split(":")
+        assert path_entries.index(first) < path_entries.index(second)
+        reordered_entries = path_entries[:]
+        first_index = reordered_entries.index(first)
+        second_index = reordered_entries.index(second)
+        reordered_entries[first_index], reordered_entries[second_index] = (
+            reordered_entries[second_index],
+            reordered_entries[first_index],
+        )
+        original_path = parsed["EnvironmentVariables"]["PATH"]
+        plist_path.write_text(
+            plist.replace(
+                gateway_cli._plist_string(original_path),
+                gateway_cli._plist_string(":".join(reordered_entries)),
+                1,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_plist_current_reports_stale_when_shell_path_precedes_required_entries(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        (profile_dir / "node" / "bin").mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        original_path = parsed["EnvironmentVariables"]["PATH"]
+        plist_path.write_text(
+            plist.replace(
+                gateway_cli._plist_string(original_path),
+                gateway_cli._plist_string(f"/shadow/bin:{original_path}"),
+                1,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_plist_current_refuses_group_writable_plist(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        plist_path.chmod(0o666)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        try:
+            with pytest.raises(RuntimeError, match="Refusing to use insecure launchd plist path"):
+                gateway_cli.launchd_plist_is_current()
+        finally:
+            plist_path.chmod(0o644)
+
+    def test_launchd_plist_escapes_xml_special_chars(self, tmp_path, monkeypatch):
+        machine_home = tmp_path / "home&space"
+        profile_dir = machine_home / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv & tools" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: machine_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+        parsed = plistlib.loads(plist.encode("utf-8"))
+        wrapper = profile_dir.resolve() / "bin" / "hermes-gateway-mybot"
+
+        assert parsed["ProgramArguments"][0] == str(wrapper)
+        assert parsed["EnvironmentVariables"]["HERMES_HOME"] == str(profile_dir.resolve())
+        assert parsed["StandardOutPath"] == str(profile_dir.resolve() / "logs" / "gateway.log")
+
+    def test_launchd_gateway_wrapper_preserves_custom_existing_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        custom_wrapper = "#!/bin/sh\nexit 1\n"
+        wrapper.write_text(custom_wrapper, encoding="utf-8")
+        wrapper.chmod(0o777)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert wrapper.read_text(encoding="utf-8") == custom_wrapper
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o777
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_gateway_wrapper_tightens_existing_hermes_generated_permissions(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper.write_bytes(gateway_cli._launchd_gateway_wrapper_script(str(python_path)))
+        wrapper.chmod(0o777)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o755
+        assert f"<string>{wrapper}</string>" in plist
+
+    def test_launchd_gateway_wrapper_rechecks_mode_after_opening_current_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper.write_bytes(gateway_cli._launchd_gateway_wrapper_script(str(python_path)))
+        wrapper.chmod(0o755)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        real_open = gateway_cli.os.open
+
+        def chmod_before_open(path, flags, *args, **kwargs):
+            if Path(path) == wrapper:
+                wrapper.chmod(0o777)
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli.os, "open", chmod_before_open)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert stat.S_IMODE(wrapper.stat().st_mode) == 0o755
+        assert f"<string>{wrapper}</string>" in plist
+
+    def test_launchd_gateway_wrapper_preserves_non_utf8_content(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        custom_wrapper = b"\xff\xfe"
+        wrapper.write_bytes(custom_wrapper)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert wrapper.read_bytes() == custom_wrapper
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_plist_current_reports_stale_for_unreadable_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        real_open = gateway_cli.os.open
+
+        def fake_open(path, flags, *args, **kwargs):
+            if Path(path) == wrapper:
+                raise PermissionError("unreadable wrapper")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli.os, "open", fake_open)
+
+        assert gateway_cli.launchd_plist_is_current() is False
+
+    def test_launchd_refresh_falls_back_without_overwriting_unreadable_regular_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.write_text("custom wrapper", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        real_open = gateway_cli.os.open
+
+        def fake_open(path, flags, *args, **kwargs):
+            if Path(path) == wrapper:
+                raise PermissionError("unreadable wrapper")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli.os, "open", fake_open)
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert wrapper.read_text(encoding="utf-8") == "custom wrapper"
+        plist = plist_path.read_text(encoding="utf-8")
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_refresh_falls_back_without_overwriting_custom_readable_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.write_text("custom wrapper", encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert wrapper.read_text(encoding="utf-8") == "custom wrapper"
+        plist = plist_path.read_text(encoding="utf-8")
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_fallback_plist_is_current_with_custom_readable_wrapper(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        wrapper.write_text("custom wrapper", encoding="utf-8")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        calls = []
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is True
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+        assert wrapper.read_text(encoding="utf-8") == "custom wrapper"
+        assert calls == []
+
+    def test_launchd_refresh_does_not_reload_previous_when_unreadable_wrapper_cannot_restore(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        wrapper.write_text("old wrapper", encoding="utf-8")
+        old_plist = plistlib.dumps({"ProgramArguments": [str(wrapper)]}).decode("utf-8")
+        plist_path.write_text(old_plist, encoding="utf-8")
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap":
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        real_open = gateway_cli.os.open
+
+        def fake_open(path, flags, *args, **kwargs):
+            if Path(path) == wrapper:
+                raise PermissionError("unreadable wrapper")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.os, "open", fake_open)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert wrapper.exists()
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_refresh_does_not_reload_previous_when_wrapper_path_becomes_unsafe(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        old_plist = f"<plist><dict><key>ProgramArguments</key><array><string>{wrapper}</string></array></dict></plist>"
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        wrapper.parent.symlink_to(redirected, target_is_directory=True)
+        calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_refresh_does_not_reload_previous_when_missing_wrapper_becomes_symlink(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        old_plist = f"<plist><dict><key>ProgramArguments</key><array><string>{wrapper}</string></array></dict></plist>"
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        plist_path.write_text(old_plist, encoding="utf-8")
+        redirected = tmp_path / "redirected-wrapper"
+        redirected.write_text("custom wrapper", encoding="utf-8")
+        calls = []
+        bootstrap_attempts = 0
+
+        def fake_run(cmd, check=False, **kwargs):
+            nonlocal bootstrap_attempts
+            calls.append((cmd, check))
+            if cmd[1] == "bootstrap" and check:
+                bootstrap_attempts += 1
+                if bootstrap_attempts == 1:
+                    wrapper.unlink()
+                    wrapper.symlink_to(redirected)
+                    raise gateway_cli.subprocess.CalledProcessError(5, cmd, stderr="bootstrap failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(gateway_cli.subprocess.CalledProcessError):
+            gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert plist_path.read_text(encoding="utf-8") == old_plist
+        assert wrapper.is_symlink()
+        assert calls == [
+            (["launchctl", "bootout", f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"], True),
+            (["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(plist_path)], True),
+        ]
+
+    def test_launchd_plist_falls_back_to_python_when_wrapper_creation_fails(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", lambda _python_path: None)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_fallback_refresh_is_noop_while_wrapper_creation_keeps_failing(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        calls = []
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", lambda _python_path: None)
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is False
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert gateway_cli.refresh_launchd_plist_if_needed() is False
+        assert calls == []
+
+    def test_launchd_fallback_plist_self_heals_after_wrapper_failure_is_cleared(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        calls = []
+        ensure_wrapper = gateway_cli._ensure_launchd_gateway_wrapper
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", lambda _python_path: None)
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", ensure_wrapper)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert gateway_cli.launchd_plist_is_current() is False
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+
+    def test_launchd_fallback_plist_self_heals_when_wrapper_becomes_available(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+        calls = []
+        ensure_wrapper = gateway_cli._ensure_launchd_gateway_wrapper
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", lambda _python_path: None)
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", ensure_wrapper)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda cmd, **kwargs: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert gateway_cli.launchd_plist_is_current() is False
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+        assert (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_fallback_currentness_does_not_chmod_wrapper_parent(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper_parent = profile_dir / "bin"
+        wrapper_parent.mkdir()
+        wrapper_parent.chmod(0o777)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        monkeypatch.setattr(gateway_cli, "_ensure_launchd_gateway_wrapper", lambda _python_path: None)
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        try:
+            assert gateway_cli.launchd_plist_is_current() is True
+            assert stat.S_IMODE(wrapper_parent.stat().st_mode) == 0o777
+        finally:
+            wrapper_parent.chmod(0o755)
+
+    def test_launchd_fallback_plist_is_current_when_wrapper_path_is_unsafe(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        wrapper.symlink_to(tmp_path / "unsafe-target")
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+        plist_path = tmp_path / "ai.hermes.gateway-mybot.plist"
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_launchd_plist_falls_back_when_wrapper_path_is_symlink(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper = profile_dir / "bin" / "hermes-gateway-mybot"
+        wrapper.parent.mkdir()
+        symlink_target = tmp_path / "do-not-touch"
+        symlink_target.write_text("keep me", encoding="utf-8")
+        wrapper.symlink_to(symlink_target)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert wrapper.is_symlink()
+        assert symlink_target.read_text(encoding="utf-8") == "keep me"
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_plist_falls_back_when_wrapper_parent_is_symlink(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        (profile_dir / "bin").symlink_to(redirected, target_is_directory=True)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert not (redirected / "hermes-gateway-mybot").exists()
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_plist_falls_back_when_hermes_home_is_group_writable(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        profile_dir.chmod(0o775)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        try:
+            plist = gateway_cli.generate_launchd_plist()
+        finally:
+            profile_dir.chmod(0o755)
+
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_plist_falls_back_when_profile_parent_is_group_writable(self, tmp_path, monkeypatch):
+        profiles_dir = tmp_path / ".hermes" / "profiles"
+        profile_dir = profiles_dir / "mybot"
+        profile_dir.mkdir(parents=True)
+        profiles_dir.chmod(0o775)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        try:
+            plist = gateway_cli.generate_launchd_plist()
+        finally:
+            profiles_dir.chmod(0o755)
+
+        assert not (profile_dir / "bin" / "hermes-gateway-mybot").exists()
+        assert f"<string>{python_path}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+
+    def test_launchd_gateway_wrapper_secures_parent_directory_permissions(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        wrapper_parent = profile_dir / "bin"
+        wrapper_parent.mkdir()
+        wrapper_parent.chmod(0o777)
+        python_path = tmp_path / "venv" / "bin" / "python"
+        python_path.parent.mkdir(parents=True)
+        python_path.write_text("")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(python_path))
+
+        gateway_cli.generate_launchd_plist()
+
+        assert stat.S_IMODE(wrapper_parent.stat().st_mode) == 0o755
+
+    def test_launchd_gateway_wrapper_restore_refuses_symlinked_parent(self, tmp_path):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        redirected = tmp_path / "redirected"
+        redirected.mkdir()
+        (profile_dir / "bin").symlink_to(redirected, target_is_directory=True)
+        redirected_wrapper = redirected / "hermes-gateway-mybot"
+        redirected_wrapper.write_text("keep me", encoding="utf-8")
+        snapshot = gateway_cli.LaunchdWrapperSnapshot(
+            path=profile_dir / "bin" / "hermes-gateway-mybot",
+            content=b"new content",
+            mode=0o755,
+        )
+
+        gateway_cli._restore_launchd_gateway_wrapper(snapshot)
+
+        assert redirected_wrapper.read_text(encoding="utf-8") == "keep me"
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

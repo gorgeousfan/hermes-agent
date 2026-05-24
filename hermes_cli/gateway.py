@@ -7,13 +7,19 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 import asyncio
 import logging
 import os
+import plistlib
+import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
+from xml.sax.saxutils import unescape as _xml_unescape
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -2105,7 +2111,7 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
-def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
+def _build_service_path_dirs(project_root: Path | None = None, hermes_home: Path | None = None) -> list[str]:
     """Build PATH directory list for service units, excluding non-existent dirs."""
     if project_root is None:
         project_root = PROJECT_ROOT
@@ -2128,7 +2134,7 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     if _is_dir(node_bin):
         candidates.append(str(node_bin))
 
-    hermes_home = get_hermes_home()
+    hermes_home = hermes_home or get_hermes_home()
     hermes_node = hermes_home / "node" / "bin"
     if _is_dir(hermes_node):
         candidates.append(str(hermes_node))
@@ -2250,20 +2256,38 @@ def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def _launchd_path_dirs_for_comparison() -> list[str]:
+    path_dirs = _build_service_path_dirs(hermes_home=get_hermes_home().resolve())
+    resolved_node = shutil.which("node")
+    if resolved_node:
+        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        if resolved_node_dir not in path_dirs:
+            path_dirs.append(resolved_node_dir)
+    return path_dirs
+
+
+def _normalize_launchd_path_for_comparison(path_text: str) -> str:
+    deterministic_entries = _launchd_path_dirs_for_comparison()
+    path_entries = _xml_unescape(path_text).split(":")
+    deterministic_prefix = path_entries[: len(deterministic_entries)]
+    return ":".join(deterministic_prefix)
+
+
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
     """Normalize launchd plist text for staleness checks.
 
     The generated plist intentionally captures a broad PATH assembled from the
     invoking shell so user-installed tools remain reachable under launchd.
-    That makes raw text comparison unstable across shells, so ignore the PATH
-    payload when deciding whether the installed plist is stale.
+    That makes raw text comparison unstable across shells, so compare only the
+    deterministic Hermes-controlled PATH entries and ignore the volatile shell
+    tail.
     """
     import re
 
     normalized = _normalize_service_definition(text)
     return re.sub(
         r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
-        r'\1__HERMES_PATH__\3',
+        lambda match: f"{match.group(1)}{_xml_escape(_normalize_launchd_path_for_comparison(match.group(2)))}{match.group(3)}",
         normalized,
         flags=re.S,
     )
@@ -2780,12 +2804,901 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
-def generate_launchd_plist() -> str:
+_LAUNCHD_WRAPPER_FALLBACK_ENV = "HERMES_LAUNCHD_WRAPPER_FALLBACK"
+
+
+def _plist_string(value: object) -> str:
+    return f"<string>{_xml_escape(str(value))}</string>"
+
+
+def _launchd_gateway_wrapper_path() -> Path:
+    return get_hermes_home().resolve() / "bin" / get_service_name()
+
+
+def _launchd_path_owner_is_trusted(path_stat: os.stat_result) -> bool:
+    return path_stat.st_uid in {0, os.getuid()}  # windows-footgun: ok — POSIX launchd helper, never invoked on Windows
+
+
+def _launchd_path_mode_is_safe(path_stat: os.stat_result) -> bool:
+    mode = stat.S_IMODE(path_stat.st_mode)
+    return mode & 0o022 == 0 or (path_stat.st_uid == 0 and bool(mode & stat.S_ISVTX))
+
+
+def _launchd_directory_path_is_safe(path: Path, *, missing_ok: bool = False) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            path_stat = current.lstat()
+        except FileNotFoundError:
+            return missing_ok
+        if stat.S_ISLNK(path_stat.st_mode) and path_stat.st_uid == 0:
+            continue
+        if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISDIR(path_stat.st_mode):
+            raise RuntimeError(f"Refusing to use unsafe launchd directory: {current}")
+        if not _launchd_path_owner_is_trusted(path_stat) or not _launchd_path_mode_is_safe(path_stat):
+            raise RuntimeError(f"Refusing to use insecure launchd directory: {current}")
+    return True
+
+
+def _launchd_gateway_wrapper_ancestors_are_safe(parent: Path) -> bool:
+    hermes_home = get_hermes_home().resolve()
+    try:
+        resolved_parent = parent.resolve()
+        relative_parts = resolved_parent.relative_to(hermes_home).parts
+    except ValueError:
+        logger.warning("Refusing launchd gateway wrapper outside Hermes home: %s", parent)
+        return False
+
+    try:
+        return _launchd_directory_path_is_safe(resolved_parent, missing_ok=False)
+    except RuntimeError as exc:
+        logger.warning("%s", exc)
+        return False
+
+
+def _launchd_gateway_wrapper_parent_is_safe(parent: Path, *, create: bool, missing_ok: bool = False) -> bool:
+    try:
+        if create and not _launchd_gateway_wrapper_ancestors_are_safe(parent.parent):
+            return False
+        if create:
+            parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        current_stat = parent.lstat()
+    except FileNotFoundError:
+        return missing_ok and _launchd_gateway_wrapper_ancestors_are_safe(parent.parent)
+    except OSError as exc:
+        logger.warning("Could not prepare launchd gateway wrapper directory at %s: %s", parent, exc)
+        return False
+
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(current_stat.st_mode):
+        logger.warning("Refusing to use unsafe launchd gateway wrapper directory: %s", parent)
+        return False
+
+    hermes_home = get_hermes_home().resolve()
+    ancestor_boundary = parent if parent == hermes_home else parent.parent
+    if not _launchd_gateway_wrapper_ancestors_are_safe(ancestor_boundary):
+        return False
+    if not _launchd_path_owner_is_trusted(current_stat):
+        logger.warning("Refusing to use untrusted launchd gateway wrapper directory: %s", parent)
+        return False
+
+    current_mode = stat.S_IMODE(current_stat.st_mode)
+    safe_mode = current_mode & ~0o022
+    if safe_mode != current_mode:
+        try:
+            parent.chmod(safe_mode)
+        except OSError as exc:
+            logger.warning("Could not secure launchd gateway wrapper directory at %s: %s", parent, exc)
+            return False
+    return True
+
+
+def _launchd_gateway_wrapper_parent_is_safe_readonly(parent: Path, *, missing_ok: bool = False) -> bool:
+    try:
+        current_stat = parent.lstat()
+    except FileNotFoundError:
+        return missing_ok and _launchd_gateway_wrapper_ancestors_are_safe(parent.parent)
+    except OSError as exc:
+        logger.warning("Could not inspect launchd gateway wrapper directory at %s: %s", parent, exc)
+        return False
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(current_stat.st_mode):
+        logger.warning("Refusing to use unsafe launchd gateway wrapper directory: %s", parent)
+        return False
+    hermes_home = get_hermes_home().resolve()
+    ancestor_boundary = parent if parent == hermes_home else parent.parent
+    if not _launchd_gateway_wrapper_ancestors_are_safe(ancestor_boundary):
+        return False
+    if not _launchd_path_owner_is_trusted(current_stat):
+        logger.warning("Refusing to use untrusted launchd gateway wrapper directory: %s", parent)
+        return False
+    return stat.S_IMODE(current_stat.st_mode) & 0o022 == 0
+
+
+def _launchd_gateway_wrapper_script(python_path: str) -> bytes:
+    return f"#!/bin/sh\nexec {shlex.quote(python_path)} -m hermes_cli.main \"$@\"\n".encode("utf-8")
+
+
+def _launchd_gateway_wrapper_for_plist(python_path: str, *, prepare_paths: bool) -> Path | None:
+    if prepare_paths:
+        return _ensure_launchd_gateway_wrapper(python_path)
+
+    wrapper_path = _launchd_gateway_wrapper_path()
+    if not _launchd_gateway_wrapper_parent_is_safe_readonly(wrapper_path.parent, missing_ok=True):
+        return None
+    try:
+        current_stat = wrapper_path.lstat()
+    except FileNotFoundError:
+        return wrapper_path
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
+        return None
+    return wrapper_path
+
+
+def _launchd_gateway_wrapper_can_be_prepared_without_writing(python_path: str) -> bool:
+    wrapper_path = _launchd_gateway_wrapper_path()
+    parent = wrapper_path.parent
+    if not _launchd_gateway_wrapper_parent_is_safe_readonly(parent, missing_ok=True):
+        return False
+    if parent.exists():
+        writable_parent = os.access(parent, os.W_OK | os.X_OK)
+    else:
+        nearest = parent.parent
+        while not nearest.exists() and nearest != nearest.parent:
+            nearest = nearest.parent
+        writable_parent = os.access(nearest, os.W_OK | os.X_OK)
+    try:
+        current_stat = wrapper_path.lstat()
+    except FileNotFoundError:
+        return writable_parent
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
+        return False
+    current = _read_regular_no_follow(wrapper_path)
+    if current is None:
+        return False
+    if current.content == _launchd_gateway_wrapper_script(python_path) and current.mode == 0o755:
+        return True
+    if not (
+        current.content.startswith(b"#!/bin/sh\nexec ")
+        and current.content.endswith(b' -m hermes_cli.main "$@"\n')
+    ):
+        return False
+    return writable_parent
+
+
+@dataclass(frozen=True)
+class LaunchdWrapperSnapshot:
+    path: Path
+    content: bytes | None
+    mode: int = 0
+    existed: bool = True
+    reload_safe: bool = True
+
+
+@dataclass(frozen=True)
+class LaunchdWrapperParentSnapshot:
+    path: Path
+    mode: int = 0
+    secured_mode: int | None = None
+    device: int | None = None
+    inode: int | None = None
+    existed: bool = True
+
+
+@dataclass(frozen=True)
+class LaunchdPlistSnapshot:
+    path: Path
+    content: bytes | None
+    mode: int = 0
+    device: int | None = None
+    inode: int | None = None
+
+    def text(self) -> str | None:
+        if self.content is None:
+            return None
+        try:
+            return self.content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+
+@dataclass(frozen=True)
+class LaunchdRefreshRollback:
+    plist_path: Path
+    plist_snapshot: LaunchdPlistSnapshot | None
+    wrapper_snapshot: LaunchdWrapperSnapshot | None
+    wrapper_parent_snapshot: LaunchdWrapperParentSnapshot | None
+    reload_previous: bool
+
+
+@dataclass(frozen=True)
+class LaunchdRefreshResult:
+    refreshed: bool
+    rollback: LaunchdRefreshRollback | None = None
+
+
+@dataclass
+class LaunchdBootstrapRecoveryState:
+    unloaded_stale_registration: bool = False
+
+
+@dataclass(frozen=True)
+class LaunchdRegularFileRead:
+    content: bytes
+    mode: int
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class LaunchdPlistRemovalCandidate:
+    path: Path
+    content: LaunchdPlistSnapshot | None = None
+    path_stat: os.stat_result | None = None
+
+
+@dataclass(frozen=True)
+class LaunchdWrapperRemovalCandidate:
+    path: Path
+    content: LaunchdRegularFileRead
+
+
+_LaunchdWrittenArtifact = tuple[int, int, int, bytes]
+
+_launchd_written_plist_artifacts: dict[Path, _LaunchdWrittenArtifact] = {}
+_launchd_written_wrapper_artifacts: dict[Path, _LaunchdWrittenArtifact] = {}
+
+
+def _launchd_file_state_tuple(
+    state: LaunchdRegularFileRead | LaunchdPlistSnapshot | None,
+) -> _LaunchdWrittenArtifact | None:
+    if state is None or state.content is None or state.device is None or state.inode is None:
+        return None
+    return (state.device, state.inode, state.mode, state.content)
+
+
+def _launchd_file_state_matches(
+    current: LaunchdRegularFileRead | LaunchdPlistSnapshot | None,
+    expected: LaunchdRegularFileRead | LaunchdPlistSnapshot,
+) -> bool:
+    return _launchd_file_state_tuple(current) == _launchd_file_state_tuple(expected)
+
+
+def _launchd_stat_identity(path_stat: os.stat_result) -> tuple[int, int, int]:
+    return (path_stat.st_dev, path_stat.st_ino, path_stat.st_mode)
+
+
+def _launchd_unlinked_temp_path(path: Path, *, prefix: str) -> Path:
+    fd, temp_name = tempfile.mkstemp(prefix=prefix, dir=str(path.parent))
+    os.close(fd)
+    os.unlink(temp_name)
+    return Path(temp_name)
+
+
+def _quarantine_launchd_path(path: Path) -> Path:
+    quarantine_path = _launchd_unlinked_temp_path(
+        path,
+        prefix=f".{path.name}.quarantine.",
+    )
+    os.replace(path, quarantine_path)
+    return quarantine_path
+
+
+def _restore_launchd_quarantined_path(path: Path, quarantine_path: Path, description: str) -> bool:
+    try:
+        quarantine_stat = quarantine_path.lstat()
+        if stat.S_ISLNK(quarantine_stat.st_mode):
+            os.symlink(os.readlink(quarantine_path), path)
+        elif stat.S_ISDIR(quarantine_stat.st_mode):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                os.rename(quarantine_path, path)
+            else:
+                raise FileExistsError
+        else:
+            os.link(quarantine_path, path)
+    except FileExistsError:
+        logger.warning(
+            "Leaving quarantined %s at %s because %s already exists",
+            description,
+            quarantine_path,
+            path,
+        )
+        return False
+    except OSError as exc:
+        logger.warning("Could not restore quarantined %s from %s to %s: %s", description, quarantine_path, path, exc)
+        return False
+    try:
+        os.unlink(quarantine_path)
+    except FileNotFoundError:
+        pass
+    return True
+
+
+def _write_launchd_file_if_absent(path: Path, content: bytes, mode: int) -> None:
+    temp_name = None
+    fd = None
+    try:
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=str(path.parent),
+        )
+        with os.fdopen(fd, "wb") as fh:
+            fd = None
+            fh.write(content)
+            fh.flush()
+            os.fchmod(fh.fileno(), mode)
+        os.link(temp_name, path)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+
+
+def _remove_launchd_file_if_current(path: Path, expected: LaunchdRegularFileRead | LaunchdPlistSnapshot, read_current, description: str) -> bool:
+    try:
+        quarantine_path = _quarantine_launchd_path(path)
+    except FileNotFoundError:
+        return False
+    try:
+        current = read_current(quarantine_path)
+    except (OSError, RuntimeError) as exc:
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        logger.warning("Skipping %s removal because %s changed before removal: %s", description, path, exc)
+        return False
+    if not _launchd_file_state_matches(current, expected):
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        logger.warning("Skipping %s removal because %s changed before removal", description, path)
+        return False
+    os.unlink(quarantine_path)
+    return True
+
+
+def _remove_launchd_path_if_lstat_matches(path: Path, expected_stat: os.stat_result, description: str) -> bool:
+    try:
+        quarantine_path = _quarantine_launchd_path(path)
+    except FileNotFoundError:
+        return False
+    try:
+        quarantine_stat = quarantine_path.lstat()
+    except FileNotFoundError:
+        logger.warning("Skipping %s removal because %s changed before removal", description, path)
+        return False
+    if _launchd_stat_identity(quarantine_stat) != _launchd_stat_identity(expected_stat):
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        logger.warning("Skipping %s removal because %s changed before removal", description, path)
+        return False
+    os.unlink(quarantine_path)
+    return True
+
+
+def _replace_launchd_file_if_current(
+    path: Path,
+    content: bytes,
+    mode: int,
+    expected: LaunchdRegularFileRead | LaunchdPlistSnapshot,
+    read_current,
+    description: str,
+) -> bool:
+    try:
+        quarantine_path = _quarantine_launchd_path(path)
+    except FileNotFoundError:
+        logger.warning("Skipping %s replacement because %s disappeared before replacement", description, path)
+        return False
+    try:
+        current = read_current(quarantine_path)
+    except (OSError, RuntimeError) as exc:
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        logger.warning("Skipping %s replacement because %s changed before replacement: %s", description, path, exc)
+        return False
+    if not _launchd_file_state_matches(current, expected):
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        logger.warning("Skipping %s replacement because %s changed before replacement", description, path)
+        return False
+    try:
+        _write_launchd_file_if_absent(path, content, mode)
+    except FileExistsError:
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        logger.warning("Skipping %s replacement because %s changed during replacement", description, path)
+        return False
+    except OSError:
+        _restore_launchd_quarantined_path(path, quarantine_path, description)
+        raise
+    try:
+        os.unlink(quarantine_path)
+    except FileNotFoundError:
+        pass
+    return True
+
+
+def _remember_launchd_written_artifact(
+    registry: dict[Path, _LaunchdWrittenArtifact],
+    path: Path,
+    content: bytes,
+) -> None:
+    try:
+        current_stat = path.lstat()
+    except OSError:
+        return
+    registry[path] = (
+        current_stat.st_dev,
+        current_stat.st_ino,
+        stat.S_IMODE(current_stat.st_mode),
+        content,
+    )
+
+
+def _launchd_current_artifact_matches(
+    registry: dict[Path, _LaunchdWrittenArtifact],
+    path: Path,
+    device: int | None,
+    inode: int | None,
+    mode: int,
+    current_content: bytes,
+) -> bool:
+    if device is None or inode is None:
+        return False
+    remembered = registry.get(path)
+    return remembered == (device, inode, mode, current_content)
+
+
+def _read_regular_no_follow(path: Path) -> LaunchdRegularFileRead | None:
+    try:
+        current_stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
+        return None
+    if not _launchd_path_owner_is_trusted(current_stat):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        opened_stat = os.fstat(fd)
+        if (opened_stat.st_dev, opened_stat.st_ino) != (current_stat.st_dev, current_stat.st_ino):
+            return None
+        if stat.S_ISLNK(opened_stat.st_mode) or not stat.S_ISREG(opened_stat.st_mode):
+            return None
+        if not _launchd_path_owner_is_trusted(opened_stat):
+            return None
+        with os.fdopen(fd, "rb") as fh:
+            fd = None
+            content = fh.read()
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return LaunchdRegularFileRead(
+        content=content,
+        mode=stat.S_IMODE(opened_stat.st_mode),
+        device=opened_stat.st_dev,
+        inode=opened_stat.st_ino,
+    )
+
+
+def _launchd_gateway_wrapper_is_current(python_path: str) -> bool:
+    wrapper_path = _launchd_gateway_wrapper_path()
+    if not _launchd_gateway_wrapper_parent_is_safe_readonly(wrapper_path.parent):
+        return False
+    current = _read_regular_no_follow(wrapper_path)
+    if current is None:
+        return False
+    return current.content == _launchd_gateway_wrapper_script(python_path) and current.mode == 0o755
+
+
+def _launchd_gateway_wrapper_is_hermes_generated() -> bool:
+    wrapper_path = _launchd_gateway_wrapper_path()
+    if not _launchd_gateway_wrapper_parent_is_safe_readonly(wrapper_path.parent):
+        return False
+    current = _read_regular_no_follow(wrapper_path)
+    if current is None:
+        return False
+    return current.content.startswith(b"#!/bin/sh\nexec ") and current.content.endswith(
+        b' -m hermes_cli.main "$@"\n'
+    )
+
+
+def _launchd_gateway_wrapper_removal_candidate(python_path: str) -> LaunchdWrapperRemovalCandidate | None:
+    wrapper_path = _launchd_gateway_wrapper_path()
+    if not _launchd_gateway_wrapper_parent_is_safe_readonly(wrapper_path.parent):
+        return None
+    current = _read_regular_no_follow(wrapper_path)
+    if current is None:
+        return None
+    if current.content == _launchd_gateway_wrapper_script(python_path) and current.mode == 0o755:
+        return LaunchdWrapperRemovalCandidate(path=wrapper_path, content=current)
+    if current.content.startswith(b"#!/bin/sh\nexec ") and current.content.endswith(
+        b' -m hermes_cli.main "$@"\n'
+    ):
+        return LaunchdWrapperRemovalCandidate(path=wrapper_path, content=current)
+    return None
+
+
+def _remove_launchd_gateway_wrapper_candidate(candidate: LaunchdWrapperRemovalCandidate | None) -> bool:
+    if candidate is None:
+        return False
+    current = _read_regular_no_follow(candidate.path)
+    if (
+        current is None
+        or (current.device, current.inode, current.mode, current.content)
+        != (candidate.content.device, candidate.content.inode, candidate.content.mode, candidate.content.content)
+    ):
+        logger.warning("Skipping launchd gateway wrapper removal because %s changed before uninstall", candidate.path)
+        return False
+    return _remove_launchd_file_if_current(
+        candidate.path,
+        current,
+        _read_regular_no_follow,
+        "launchd gateway wrapper",
+    )
+
+
+def _remove_launchd_gateway_wrapper_if_generated(python_path: str) -> bool:
+    return _remove_launchd_gateway_wrapper_candidate(_launchd_gateway_wrapper_removal_candidate(python_path))
+
+
+def _snapshot_launchd_gateway_wrapper_parent() -> LaunchdWrapperParentSnapshot | None:
+    parent = _launchd_gateway_wrapper_path().parent
+    try:
+        current_stat = parent.lstat()
+    except FileNotFoundError:
+        if _launchd_gateway_wrapper_ancestors_are_safe(parent.parent):
+            return LaunchdWrapperParentSnapshot(path=parent, existed=False)
+        return None
+    except OSError as exc:
+        logger.warning("Could not inspect launchd gateway wrapper directory at %s: %s", parent, exc)
+        return None
+
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(current_stat.st_mode):
+        logger.warning("Refusing to snapshot unsafe launchd gateway wrapper directory: %s", parent)
+        return None
+    if not _launchd_path_owner_is_trusted(current_stat):
+        logger.warning("Refusing to snapshot untrusted launchd gateway wrapper directory: %s", parent)
+        return None
+    if not _launchd_gateway_wrapper_ancestors_are_safe(parent.parent):
+        return None
+    return LaunchdWrapperParentSnapshot(
+        path=parent,
+        mode=stat.S_IMODE(current_stat.st_mode),
+        secured_mode=stat.S_IMODE(current_stat.st_mode) & ~0o022,
+        device=current_stat.st_dev,
+        inode=current_stat.st_ino,
+    )
+
+
+def _restore_launchd_gateway_wrapper_parent(snapshot: LaunchdWrapperParentSnapshot | None) -> bool:
+    if snapshot is None or not snapshot.existed:
+        return True
+    try:
+        current_stat = snapshot.path.lstat()
+    except FileNotFoundError:
+        logger.warning("Skipping launchd gateway wrapper directory mode restore because %s no longer exists", snapshot.path)
+        return False
+    if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(current_stat.st_mode):
+        logger.warning("Skipping launchd gateway wrapper directory mode restore because %s changed after snapshot", snapshot.path)
+        return False
+    if (current_stat.st_dev, current_stat.st_ino) != (snapshot.device, snapshot.inode):
+        logger.warning("Skipping launchd gateway wrapper directory mode restore because %s changed after snapshot", snapshot.path)
+        return False
+    current_mode = stat.S_IMODE(current_stat.st_mode)
+    if current_mode == snapshot.mode:
+        return True
+    if snapshot.secured_mode is None or current_mode != snapshot.secured_mode:
+        logger.warning("Skipping launchd gateway wrapper directory mode restore because %s changed after snapshot", snapshot.path)
+        return False
+    try:
+        snapshot.path.chmod(snapshot.mode)
+    except OSError as exc:
+        logger.warning("Could not restore launchd gateway wrapper directory mode at %s: %s", snapshot.path, exc)
+        return False
+    return True
+
+
+def _snapshot_launchd_gateway_wrapper() -> LaunchdWrapperSnapshot | None:
+    wrapper_path = _launchd_gateway_wrapper_path()
+    parent_is_reload_safe = _launchd_gateway_wrapper_parent_is_safe_readonly(wrapper_path.parent, missing_ok=True)
+    if not parent_is_reload_safe and _snapshot_launchd_gateway_wrapper_parent() is None:
+        return None
+    current = _read_regular_no_follow(wrapper_path)
+    if current is None:
+        try:
+            current_stat = wrapper_path.lstat()
+        except FileNotFoundError:
+            return LaunchdWrapperSnapshot(path=wrapper_path, content=None, existed=False, reload_safe=parent_is_reload_safe)
+        if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
+            return None
+        return None
+    return LaunchdWrapperSnapshot(
+        path=wrapper_path,
+        content=current.content,
+        mode=current.mode,
+        reload_safe=parent_is_reload_safe,
+    )
+
+
+def _restore_launchd_gateway_wrapper(snapshot: LaunchdWrapperSnapshot | None) -> bool:
+    if snapshot is None:
+        return True
+    if not _launchd_gateway_wrapper_parent_is_safe(
+        snapshot.path.parent,
+        create=snapshot.content is not None,
+        missing_ok=snapshot.content is None and not snapshot.existed,
+    ):
+        return False
+    if snapshot.content is None:
+        try:
+            current_stat = snapshot.path.lstat()
+        except FileNotFoundError:
+            return not snapshot.existed
+        if stat.S_ISREG(current_stat.st_mode) and not stat.S_ISLNK(current_stat.st_mode):
+            current = _read_regular_no_follow(snapshot.path)
+            if current is not None and _launchd_current_artifact_matches(
+                _launchd_written_wrapper_artifacts,
+                snapshot.path,
+                current.device,
+                current.inode,
+                current.mode,
+                current.content,
+            ):
+                removed = _remove_launchd_file_if_current(
+                    snapshot.path,
+                    current,
+                    _read_regular_no_follow,
+                    "launchd gateway wrapper",
+                )
+                _launchd_written_wrapper_artifacts.pop(snapshot.path, None)
+                if not removed:
+                    return False
+            else:
+                _launchd_written_wrapper_artifacts.pop(snapshot.path, None)
+                logger.warning("Skipping launchd gateway wrapper removal because %s changed after snapshot", snapshot.path)
+                return False
+        else:
+            _launchd_written_wrapper_artifacts.pop(snapshot.path, None)
+            logger.warning("Skipping launchd gateway wrapper removal because %s changed after snapshot", snapshot.path)
+            return False
+        return not snapshot.existed
+
+    current = _read_regular_no_follow(snapshot.path)
+    if current is not None and current.content == snapshot.content and current.mode == snapshot.mode:
+        _launchd_written_wrapper_artifacts.pop(snapshot.path, None)
+        return True
+    if not (
+        current is not None
+        and _launchd_current_artifact_matches(
+            _launchd_written_wrapper_artifacts,
+            snapshot.path,
+            current.device,
+            current.inode,
+            current.mode,
+            current.content,
+        )
+    ):
+        _launchd_written_wrapper_artifacts.pop(snapshot.path, None)
+        logger.warning("Skipping launchd gateway wrapper restore because %s changed after snapshot", snapshot.path)
+        return False
+
+    snapshot.path.parent.mkdir(parents=True, exist_ok=True)
+    restored = _replace_launchd_file_if_current(
+        snapshot.path,
+        snapshot.content,
+        snapshot.mode,
+        current,
+        _read_regular_no_follow,
+        "launchd gateway wrapper",
+    )
+    _launchd_written_wrapper_artifacts.pop(snapshot.path, None)
+    return restored
+
+
+def _ensure_launchd_gateway_wrapper(python_path: str) -> Path | None:
+    """Create the profile-scoped executable that launchd shows in macOS Login Items."""
+    wrapper_path = _launchd_gateway_wrapper_path()
+    script_bytes = _launchd_gateway_wrapper_script(python_path)
+    current = None
+    try:
+        if not _launchd_gateway_wrapper_parent_is_safe(wrapper_path.parent, create=True):
+            return None
+        try:
+            current_stat = wrapper_path.lstat()
+        except FileNotFoundError:
+            current_stat = None
+        if current_stat is not None:
+            if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
+                logger.warning("Refusing to replace unsafe launchd gateway wrapper path: %s", wrapper_path)
+                return None
+            if not _launchd_path_owner_is_trusted(current_stat):
+                logger.warning("Refusing to replace untrusted launchd gateway wrapper path: %s", wrapper_path)
+                return None
+            current = _read_regular_no_follow(wrapper_path)
+            if current is None:
+                logger.warning("Could not read existing launchd gateway wrapper at %s", wrapper_path)
+                return None
+            if current.content == script_bytes and current.mode == 0o755:
+                return wrapper_path
+            if not (
+                current.content.startswith(b"#!/bin/sh\nexec ")
+                and current.content.endswith(b' -m hermes_cli.main "$@"\n')
+            ):
+                logger.warning("Refusing to replace custom launchd gateway wrapper at %s", wrapper_path)
+                return None
+
+        if current is None:
+            _write_launchd_file_if_absent(wrapper_path, script_bytes, 0o755)
+        elif not _replace_launchd_file_if_current(
+            wrapper_path,
+            script_bytes,
+            0o755,
+            current,
+            _read_regular_no_follow,
+            "launchd gateway wrapper",
+        ):
+            return None
+        _remember_launchd_written_artifact(
+            _launchd_written_wrapper_artifacts,
+            wrapper_path,
+            script_bytes,
+        )
+        return wrapper_path
+    except OSError as exc:
+        logger.warning("Could not prepare launchd gateway wrapper at %s: %s", wrapper_path, exc)
+        return None
+
+
+def _validate_launchd_plist_path(plist_path: Path, current_stat: os.stat_result | None) -> None:
+    if current_stat is not None:
+        if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISREG(current_stat.st_mode):
+            raise RuntimeError(f"Refusing to replace unsafe launchd plist path: {plist_path}")
+        if not _launchd_path_owner_is_trusted(current_stat):
+            raise RuntimeError(f"Refusing to use untrusted launchd plist path: {plist_path}")
+        if stat.S_IMODE(current_stat.st_mode) & 0o022:
+            raise RuntimeError(f"Refusing to use insecure launchd plist path: {plist_path}")
+
+
+def _validate_launchd_plist_parent(plist_path: Path, *, create: bool, missing_ok: bool = False) -> bool:
+    parent = plist_path.parent
+    if create:
+        _launchd_directory_path_is_safe(parent.parent, missing_ok=False)
+    else:
+        return _launchd_directory_path_is_safe(parent, missing_ok=missing_ok)
+    try:
+        if create:
+            parent.mkdir(mode=0o755, exist_ok=True)
+        parent_stat = parent.lstat()
+    except FileNotFoundError:
+        if missing_ok:
+            return False
+        raise
+
+    if stat.S_ISLNK(parent_stat.st_mode) or not stat.S_ISDIR(parent_stat.st_mode):
+        raise RuntimeError(f"Refusing to use unsafe launchd plist directory: {parent}")
+    if not _launchd_path_owner_is_trusted(parent_stat):
+        raise RuntimeError(f"Refusing to use untrusted launchd plist directory: {parent}")
+
+    current_mode = stat.S_IMODE(parent_stat.st_mode)
+    safe_mode = current_mode & ~0o022
+    if safe_mode != current_mode:
+        parent.chmod(safe_mode)
+    return True
+
+
+def _read_launchd_plist(plist_path: Path) -> str | None:
+    snapshot = _snapshot_launchd_plist(plist_path)
+    return None if snapshot is None else snapshot.text()
+
+
+def _snapshot_launchd_plist(plist_path: Path) -> LaunchdPlistSnapshot | None:
+    if not _validate_launchd_plist_parent(plist_path, create=False, missing_ok=True):
+        return LaunchdPlistSnapshot(path=plist_path, content=None)
+    try:
+        current_stat = plist_path.lstat()
+    except FileNotFoundError:
+        return LaunchdPlistSnapshot(path=plist_path, content=None)
+    _validate_launchd_plist_path(plist_path, current_stat)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = None
+    try:
+        fd = os.open(plist_path, flags)
+        opened_stat = os.fstat(fd)
+        if (opened_stat.st_dev, opened_stat.st_ino) != (current_stat.st_dev, current_stat.st_ino):
+            raise RuntimeError(f"Refusing to use launchd plist path that changed while opening: {plist_path}")
+        _validate_launchd_plist_path(plist_path, opened_stat)
+        with os.fdopen(fd, "rb") as fh:
+            fd = None
+            content = fh.read()
+    finally:
+        if fd is not None:
+            os.close(fd)
+    return LaunchdPlistSnapshot(
+        path=plist_path,
+        content=content,
+        mode=stat.S_IMODE(opened_stat.st_mode),
+        device=opened_stat.st_dev,
+        inode=opened_stat.st_ino,
+    )
+
+
+def _launchd_plist_missing(plist_path: Path) -> bool:
+    if not _validate_launchd_plist_parent(plist_path, create=False, missing_ok=True):
+        return True
+    try:
+        current_stat = plist_path.lstat()
+    except FileNotFoundError:
+        return True
+    _validate_launchd_plist_path(plist_path, current_stat)
+    return False
+
+
+def _launchd_plist_removal_candidate(plist_path: Path) -> LaunchdPlistRemovalCandidate | None:
+    if not _validate_launchd_plist_parent(plist_path, create=False, missing_ok=True):
+        return None
+    try:
+        current_stat = plist_path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISREG(current_stat.st_mode):
+        current = _snapshot_launchd_plist(plist_path)
+        if current is None or current.content is None:
+            return None
+        return LaunchdPlistRemovalCandidate(path=plist_path, content=current)
+    if stat.S_ISLNK(current_stat.st_mode):
+        return LaunchdPlistRemovalCandidate(path=plist_path, path_stat=current_stat)
+    raise RuntimeError(f"Refusing to remove unsafe launchd plist path: {plist_path}")
+
+
+def _remove_launchd_plist_candidate(candidate: LaunchdPlistRemovalCandidate) -> bool:
+    if candidate.content is not None:
+        return _remove_launchd_file_if_current(
+            candidate.path,
+            candidate.content,
+            _snapshot_launchd_plist,
+            "launchd plist",
+        )
+    if candidate.path_stat is not None:
+        return _remove_launchd_path_if_lstat_matches(candidate.path, candidate.path_stat, "launchd plist")
+    return False
+
+
+def _write_launchd_plist(plist_path: Path, content: str) -> None:
+    """Atomically write a launchd plist without following unsafe existing paths."""
+    _validate_launchd_plist_parent(plist_path, create=True)
+    current = _snapshot_launchd_plist(plist_path)
+    content_bytes = content.encode("utf-8")
+    if current is None or current.content is None:
+        try:
+            _write_launchd_file_if_absent(plist_path, content_bytes, 0o644)
+        except FileExistsError as exc:
+            raise RuntimeError(f"Refusing to replace launchd plist path that changed while writing: {plist_path}") from exc
+    elif not _replace_launchd_file_if_current(
+        plist_path,
+        content_bytes,
+        0o644,
+        current,
+        _snapshot_launchd_plist,
+        "launchd plist",
+    ):
+        raise RuntimeError(f"Refusing to replace launchd plist path that changed while writing: {plist_path}")
+    _remember_launchd_written_artifact(
+        _launchd_written_plist_artifacts,
+        plist_path,
+        content_bytes,
+    )
+
+
+def generate_launchd_plist(*, prepare_paths: bool = True, force_python: bool = False) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    hermes_home_path = get_hermes_home().resolve()
+    hermes_home = str(hermes_home_path)
+    log_dir = hermes_home_path / "logs"
+    if prepare_paths:
+        log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
@@ -2797,7 +3710,7 @@ def generate_launchd_plist() -> str:
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
     # so it's explicitly in PATH even if the user's shell PATH changes later.
-    priority_dirs = _build_service_path_dirs()
+    priority_dirs = _build_service_path_dirs(hermes_home=hermes_home_path)
     resolved_node = shutil.which("node")
     if resolved_node:
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
@@ -2807,28 +3720,45 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
+    # Build ProgramArguments array, including --profile when using a named profile.
+    #
+    # macOS Background Task Management uses basename(ProgramArguments[0]) as
+    # the Login Items display name. A profile-scoped wrapper lets multiple
+    # gateway services show distinct names instead of all appearing as Python.
+    gateway_wrapper = None if force_python else _launchd_gateway_wrapper_for_plist(
+        python_path,
+        prepare_paths=prepare_paths,
+    )
+    using_wrapper_fallback = gateway_wrapper is None
+    if gateway_wrapper is not None:
+        prog_args = [_plist_string(gateway_wrapper)]
+    else:
+        prog_args = [
+            _plist_string(python_path),
+            _plist_string("-m"),
+            _plist_string("hermes_cli.main"),
+        ]
     if profile_arg:
         for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
+            prog_args.append(_plist_string(part))
     prog_args.extend([
-        "<string>gateway</string>",
-        "<string>run</string>",
-        "<string>--replace</string>",
+        _plist_string("gateway"),
+        _plist_string("run"),
+        _plist_string("--replace"),
     ])
     prog_args_xml = "\n        ".join(prog_args)
+    fallback_env_xml = ""
+    if using_wrapper_fallback:
+        fallback_env_xml = f"""
+        <key>{_LAUNCHD_WRAPPER_FALLBACK_ENV}</key>
+        {_plist_string("1")}"""
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    {_plist_string(label)}
 
     <key>ProgramArguments</key>
     <array>
@@ -2836,16 +3766,17 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    {_plist_string(working_dir)}
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
+        {_plist_string(sane_path)}
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+        {_plist_string(venv_dir)}
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        {_plist_string(hermes_home)}
+        {fallback_env_xml}
     </dict>
     
     <key>RunAtLoad</key>
@@ -2858,10 +3789,10 @@ def generate_launchd_plist() -> str:
     </dict>
     
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    {_plist_string(log_dir / "gateway.log")}
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    {_plist_string(log_dir / "gateway.error.log")}
 </dict>
 </plist>
 """
@@ -2869,15 +3800,289 @@ def generate_launchd_plist() -> str:
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""
     plist_path = get_launchd_plist_path()
-    if not plist_path.exists():
+    installed = _read_launchd_plist(plist_path)
+    if installed is None:
         return False
 
-    installed = plist_path.read_text(encoding="utf-8")
-    expected = generate_launchd_plist()
-    return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+    python_path = get_python_path()
+    gateway_wrapper = _launchd_gateway_wrapper_for_plist(python_path, prepare_paths=False)
+    expected = generate_launchd_plist(prepare_paths=False)
+    if _normalize_launchd_plist_for_comparison(installed) != _normalize_launchd_plist_for_comparison(expected):
+        fallback_expected = generate_launchd_plist(prepare_paths=False, force_python=True)
+        fallback_current = _launchd_plist_text_has_current_fallback(
+            installed,
+            gateway_wrapper,
+            python_path,
+        )
+        return fallback_current and _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(
+            fallback_expected
+        )
+    return gateway_wrapper is None or _launchd_gateway_wrapper_is_current(python_path)
 
 
-def refresh_launchd_plist_if_needed() -> bool:
+def _restore_launchd_plist(snapshot: LaunchdPlistSnapshot | None) -> bool:
+    if snapshot is None:
+        return True
+    parent_exists = _validate_launchd_plist_parent(
+        snapshot.path,
+        create=snapshot.content is not None,
+        missing_ok=snapshot.content is None,
+    )
+    if snapshot.content is None:
+        if not parent_exists:
+            return True
+        try:
+            current_stat = snapshot.path.lstat()
+        except FileNotFoundError:
+            return True
+        if stat.S_ISREG(current_stat.st_mode) and not stat.S_ISLNK(current_stat.st_mode):
+            current = _snapshot_launchd_plist(snapshot.path)
+            if (
+                current is not None
+                and current.content is not None
+                and _launchd_current_artifact_matches(
+                    _launchd_written_plist_artifacts,
+                    snapshot.path,
+                    current.device,
+                    current.inode,
+                    current.mode,
+                    current.content,
+                )
+            ):
+                removed = _remove_launchd_file_if_current(
+                    snapshot.path,
+                    current,
+                    _snapshot_launchd_plist,
+                    "launchd plist",
+                )
+                _launchd_written_plist_artifacts.pop(snapshot.path, None)
+                if not removed:
+                    return False
+            else:
+                _launchd_written_plist_artifacts.pop(snapshot.path, None)
+                logger.warning("Skipping launchd plist removal because %s changed after snapshot", snapshot.path)
+                return False
+        return True
+
+    current = _snapshot_launchd_plist(snapshot.path)
+    if current is not None and current.content == snapshot.content and current.mode == snapshot.mode:
+        _launchd_written_plist_artifacts.pop(snapshot.path, None)
+        return True
+    if not (
+        current is not None
+        and current.content is not None
+        and _launchd_current_artifact_matches(
+            _launchd_written_plist_artifacts,
+            snapshot.path,
+            current.device,
+            current.inode,
+            current.mode,
+            current.content,
+        )
+    ):
+        _launchd_written_plist_artifacts.pop(snapshot.path, None)
+        logger.warning("Skipping launchd plist restore because %s changed after snapshot", snapshot.path)
+        return False
+
+    restored = _replace_launchd_file_if_current(
+        snapshot.path,
+        snapshot.content,
+        snapshot.mode,
+        current,
+        _snapshot_launchd_plist,
+        "launchd plist",
+    )
+    _launchd_written_plist_artifacts.pop(snapshot.path, None)
+    return restored
+
+
+def _bootout_launchd_if_loaded(label: str) -> bool:
+    try:
+        subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=True, timeout=90)
+        return True
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode in {3, 113}:
+            return False
+        raise
+
+
+def _rollback_launchd_definition(
+    plist_path: Path,
+    plist_snapshot: LaunchdPlistSnapshot | None,
+    wrapper_snapshot: LaunchdWrapperSnapshot | None,
+    wrapper_parent_snapshot: LaunchdWrapperParentSnapshot | None,
+    *,
+    unload_failed: bool,
+    reload_previous: bool,
+) -> None:
+    if unload_failed:
+        try:
+            _bootout_launchd_if_loaded(get_launchd_label())
+        except (OSError, subprocess.SubprocessError) as rollback_exc:
+            logger.warning("Could not unload failed launchd service definition before rollback: %s", rollback_exc)
+    wrapper_restored = True
+    wrapper_reloadable = True
+    previous_uses_wrapper = _launchd_plist_snapshot_uses_wrapper(plist_snapshot)
+    previous_wrapper_missing = (
+        previous_uses_wrapper
+        and wrapper_snapshot is not None
+        and wrapper_snapshot.content is None
+    )
+    if previous_uses_wrapper and wrapper_snapshot is None:
+        wrapper_restored = False
+        wrapper_reloadable = False
+    elif previous_uses_wrapper and wrapper_snapshot is not None and not wrapper_snapshot.reload_safe:
+        wrapper_reloadable = False
+    try:
+        if wrapper_snapshot is not None and _launchd_gateway_wrapper_parent_is_safe_readonly(
+            wrapper_snapshot.path.parent,
+            missing_ok=wrapper_snapshot.content is None and not wrapper_snapshot.existed,
+        ):
+            wrapper_restored = _restore_launchd_gateway_wrapper(wrapper_snapshot)
+        elif wrapper_snapshot is not None:
+            wrapper_restored = False
+    except OSError as rollback_exc:
+        wrapper_restored = False
+        logger.warning("Could not restore previous launchd gateway wrapper: %s", rollback_exc)
+    if previous_wrapper_missing and wrapper_restored:
+        wrapper_restored = False
+    plist_restored = False
+    try:
+        plist_restored = _restore_launchd_plist(plist_snapshot)
+    except (OSError, RuntimeError) as rollback_exc:
+        logger.warning("Could not restore previous launchd plist at %s: %s", plist_path, rollback_exc)
+    if (
+        reload_previous
+        and wrapper_restored
+        and wrapper_reloadable
+        and plist_restored
+        and plist_snapshot is not None
+        and plist_snapshot.content is not None
+    ):
+        try:
+            _bootstrap_launchd_service_with_stale_registration_recovery(plist_path, get_launchd_label())
+        except (OSError, subprocess.SubprocessError) as rollback_exc:
+            logger.warning("Could not reload previous launchd service definition: %s", rollback_exc)
+    elif reload_previous and not wrapper_restored:
+        logger.warning("Skipping previous launchd service reload because the previous wrapper could not be restored")
+    elif reload_previous and not wrapper_reloadable:
+        logger.warning("Skipping previous launchd service reload because the previous wrapper directory was not safe")
+    elif reload_previous and not plist_restored:
+        logger.warning("Skipping previous launchd service reload because the previous plist could not be restored")
+    _restore_launchd_gateway_wrapper_parent(wrapper_parent_snapshot)
+
+
+def _launchd_plist_snapshot_uses_wrapper(snapshot: LaunchdPlistSnapshot | None) -> bool:
+    if snapshot is None or snapshot.content is None:
+        return False
+    try:
+        parsed = plistlib.loads(snapshot.content)
+    except (plistlib.InvalidFileException, ValueError, TypeError, OSError, UnicodeDecodeError):
+        text = snapshot.text()
+        return (
+            text is not None
+            and _LAUNCHD_WRAPPER_FALLBACK_ENV not in text
+            and str(_launchd_gateway_wrapper_path()) in text
+        )
+    program_arguments = parsed.get("ProgramArguments") if isinstance(parsed, dict) else None
+    environment = parsed.get("EnvironmentVariables") if isinstance(parsed, dict) else None
+    if isinstance(environment, dict) and environment.get(_LAUNCHD_WRAPPER_FALLBACK_ENV) == "1":
+        return False
+    return (
+        isinstance(program_arguments, list)
+        and bool(program_arguments)
+        and program_arguments[0] == str(_launchd_gateway_wrapper_path())
+    )
+
+
+def _launchd_plist_text_has_fallback_marker(plist_text: str) -> bool:
+    try:
+        parsed = plistlib.loads(plist_text.encode("utf-8"))
+    except (plistlib.InvalidFileException, ValueError, TypeError, OSError, UnicodeDecodeError):
+        return _LAUNCHD_WRAPPER_FALLBACK_ENV in plist_text
+    environment = parsed.get("EnvironmentVariables") if isinstance(parsed, dict) else None
+    return isinstance(environment, dict) and environment.get(_LAUNCHD_WRAPPER_FALLBACK_ENV) == "1"
+
+
+def _launchd_plist_text_has_current_fallback(
+    plist_text: str,
+    gateway_wrapper: Path | None,
+    python_path: str,
+) -> bool:
+    if not _launchd_plist_text_has_fallback_marker(plist_text):
+        return False
+    if gateway_wrapper is None:
+        return True
+    return not _launchd_gateway_wrapper_can_be_prepared_without_writing(python_path)
+
+
+def _bootstrap_launchd_service(plist_path: Path) -> None:
+    subprocess.run(
+        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def _launchd_bootstrap_error_indicates_stale_registration(exc: subprocess.CalledProcessError) -> bool:
+    text = " ".join(str(part or "") for part in (getattr(exc, "stderr", ""), getattr(exc, "stdout", ""), exc)).lower()
+    return "already loaded" in text or (
+        exc.returncode == 5 and "bootstrap failed" in text and "input/output error" in text
+    )
+
+
+def _bootstrap_launchd_service_with_stale_registration_recovery(
+    plist_path: Path,
+    label: str,
+    recovery_state: LaunchdBootstrapRecoveryState | None = None,
+) -> None:
+    try:
+        _bootstrap_launchd_service(plist_path)
+    except subprocess.CalledProcessError as exc:
+        if not _launchd_bootstrap_error_indicates_stale_registration(exc):
+            raise
+        if not _bootout_launchd_if_loaded(label):
+            raise
+        if recovery_state is not None:
+            recovery_state.unloaded_stale_registration = True
+        _bootstrap_launchd_service(plist_path)
+
+
+def _kickstart_launchd_service(target: str, *, kill_existing: bool = False, timeout: int = 30) -> None:
+    cmd = ["launchctl", "kickstart"]
+    if kill_existing:
+        cmd.append("-k")
+    cmd.append(target)
+    subprocess.run(cmd, check=True, timeout=timeout)
+
+
+def _bootstrap_then_kickstart_launchd(plist_path: Path, target: str) -> None:
+    loaded_by_attempt = False
+    label = get_launchd_label()
+    recovery_state = LaunchdBootstrapRecoveryState()
+    try:
+        try:
+            _bootstrap_launchd_service_with_stale_registration_recovery(plist_path, label, recovery_state)
+        except subprocess.TimeoutExpired:
+            loaded_by_attempt = True
+            raise
+        except (OSError, subprocess.SubprocessError):
+            loaded_by_attempt = recovery_state.unloaded_stale_registration
+            raise
+        loaded_by_attempt = True
+        _kickstart_launchd_service(target)
+    except (OSError, subprocess.SubprocessError):
+        if loaded_by_attempt:
+            try:
+                _bootout_launchd_if_loaded(label)
+            except (OSError, subprocess.SubprocessError) as cleanup_exc:
+                logger.warning("Could not unload failed launchd recovery job: %s", cleanup_exc)
+        raise
+
+
+def _refresh_launchd_plist_if_needed() -> LaunchdRefreshResult:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
@@ -2885,22 +4090,121 @@ def refresh_launchd_plist_if_needed() -> bool:
     bootstrap to make launchd re-read the updated plist immediately.
     """
     plist_path = get_launchd_plist_path()
-    if not plist_path.exists() or launchd_plist_is_current():
-        return False
+    plist_snapshot = _snapshot_launchd_plist(plist_path)
+    if plist_snapshot is None or plist_snapshot.content is None:
+        return LaunchdRefreshResult(False)
+    installed = plist_snapshot.text()
 
-    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+    python_path = get_python_path()
+    gateway_wrapper = _launchd_gateway_wrapper_for_plist(python_path, prepare_paths=False)
+    expected = generate_launchd_plist(prepare_paths=False)
+    fallback_expected = generate_launchd_plist(prepare_paths=False, force_python=True)
+    if installed is not None:
+        if (
+            _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+            and (gateway_wrapper is None or _launchd_gateway_wrapper_is_current(python_path))
+        ) or (
+            _launchd_plist_text_has_current_fallback(
+                installed,
+                gateway_wrapper,
+                python_path,
+            )
+            and _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(
+                fallback_expected
+            )
+        ):
+            return LaunchdRefreshResult(False)
+
+    wrapper_parent_snapshot = _snapshot_launchd_gateway_wrapper_parent()
+    wrapper_snapshot = _snapshot_launchd_gateway_wrapper()
+    expected = generate_launchd_plist()
+    if installed is not None and _normalize_launchd_plist_for_comparison(
+        installed
+    ) == _normalize_launchd_plist_for_comparison(expected):
+        return LaunchdRefreshResult(False)
+
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
+    # Bootout/bootstrap so launchd picks up the new definition. Keep the old
+    # plist and wrapper on disk if bootout fails so the refresh stays retryable.
+    try:
+        was_loaded = _bootout_launchd_if_loaded(label)
+    except subprocess.TimeoutExpired:
+        _rollback_launchd_definition(
+            plist_path,
+            plist_snapshot,
+            wrapper_snapshot,
+            wrapper_parent_snapshot,
+            unload_failed=False,
+            reload_previous=True,
+        )
+        raise
+    except (OSError, subprocess.SubprocessError):
+        _rollback_launchd_definition(
+            plist_path,
+            plist_snapshot,
+            wrapper_snapshot,
+            wrapper_parent_snapshot,
+            unload_failed=False,
+            reload_previous=False,
+        )
+        raise
+    loaded_by_attempt = False
+    recovery_state = LaunchdBootstrapRecoveryState()
+    try:
+        _write_launchd_plist(plist_path, expected)
+        try:
+            _bootstrap_launchd_service_with_stale_registration_recovery(plist_path, label, recovery_state)
+        except subprocess.TimeoutExpired:
+            loaded_by_attempt = True
+            raise
+        except (OSError, subprocess.SubprocessError):
+            loaded_by_attempt = recovery_state.unloaded_stale_registration
+            raise
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        _rollback_launchd_definition(
+            plist_path,
+            plist_snapshot,
+            wrapper_snapshot,
+            wrapper_parent_snapshot,
+            unload_failed=loaded_by_attempt,
+            reload_previous=was_loaded or recovery_state.unloaded_stale_registration,
+        )
+        raise
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
-    return True
+    return LaunchdRefreshResult(
+        True,
+        LaunchdRefreshRollback(
+            plist_path=plist_path,
+            plist_snapshot=plist_snapshot,
+            wrapper_snapshot=wrapper_snapshot,
+            wrapper_parent_snapshot=wrapper_parent_snapshot,
+            reload_previous=was_loaded or recovery_state.unloaded_stale_registration,
+        ),
+    )
+
+
+def refresh_launchd_plist_if_needed() -> bool:
+    return _refresh_launchd_plist_if_needed().refreshed
+
+
+def _rollback_launchd_refresh_after_followup_failure(refresh: LaunchdRefreshResult) -> None:
+    if refresh.rollback is None:
+        return
+    _rollback_launchd_definition(
+        refresh.rollback.plist_path,
+        refresh.rollback.plist_snapshot,
+        refresh.rollback.wrapper_snapshot,
+        refresh.rollback.wrapper_parent_snapshot,
+        unload_failed=True,
+        reload_previous=refresh.rollback.reload_previous,
+    )
 
 
 def launchd_install(force: bool = False):
     plist_path = get_launchd_plist_path()
+    plist_missing = _launchd_plist_missing(plist_path)
     
-    if plist_path.exists() and not force:
+    if not plist_missing and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
             refresh_launchd_plist_if_needed()
@@ -2910,11 +4214,54 @@ def launchd_install(force: bool = False):
         print("Use --force to reinstall")
         return
     
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(generate_launchd_plist())
-    
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+    plist_snapshot = (
+        LaunchdPlistSnapshot(path=plist_path, content=None)
+        if plist_missing
+        else _snapshot_launchd_plist(plist_path)
+    )
+    wrapper_parent_snapshot = _snapshot_launchd_gateway_wrapper_parent()
+    wrapper_snapshot = _snapshot_launchd_gateway_wrapper()
+    was_loaded = False
+    if plist_snapshot is not None and plist_snapshot.content is not None:
+        try:
+            was_loaded = _bootout_launchd_if_loaded(get_launchd_label())
+        except subprocess.TimeoutExpired:
+            _rollback_launchd_definition(
+                plist_path,
+                plist_snapshot,
+                wrapper_snapshot,
+                wrapper_parent_snapshot,
+                unload_failed=False,
+                reload_previous=True,
+            )
+            raise
+    loaded_by_attempt = False
+    recovery_state = LaunchdBootstrapRecoveryState()
+    try:
+        _write_launchd_plist(plist_path, generate_launchd_plist())
+        try:
+            _bootstrap_launchd_service_with_stale_registration_recovery(
+                plist_path,
+                get_launchd_label(),
+                recovery_state,
+            )
+        except subprocess.TimeoutExpired:
+            loaded_by_attempt = True
+            raise
+        except (OSError, subprocess.SubprocessError):
+            loaded_by_attempt = recovery_state.unloaded_stale_registration
+            raise
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        _rollback_launchd_definition(
+            plist_path,
+            plist_snapshot,
+            wrapper_snapshot,
+            wrapper_parent_snapshot,
+            unload_failed=loaded_by_attempt,
+            reload_previous=was_loaded or recovery_state.unloaded_stale_registration,
+        )
+        raise
     
     print()
     print("✓ Service installed and loaded!")
@@ -2927,11 +4274,18 @@ def launchd_install(force: bool = False):
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+    plist_removal_candidate = _launchd_plist_removal_candidate(plist_path)
+    python_path = get_python_path()
+    wrapper_removal_candidate = _launchd_gateway_wrapper_removal_candidate(python_path)
+    result = subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+    if result.returncode not in {0, 3, 113}:
+        raise subprocess.CalledProcessError(result.returncode, ["launchctl", "bootout", f"{_launchd_domain()}/{label}"])
     
-    if plist_path.exists():
-        plist_path.unlink()
+    if plist_removal_candidate is not None and _remove_launchd_plist_candidate(plist_removal_candidate):
         print(f"✓ Removed {plist_path}")
+
+    if _remove_launchd_gateway_wrapper_candidate(wrapper_removal_candidate):
+        print(f"✓ Removed {_launchd_gateway_wrapper_path()}")
     
     print("✓ Service uninstalled")
 
@@ -2940,24 +4294,53 @@ def launchd_start():
     label = get_launchd_label()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
-    if not plist_path.exists():
+    if _launchd_plist_missing(plist_path):
         print("↻ launchd plist missing; regenerating service definition")
-        plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        wrapper_parent_snapshot = _snapshot_launchd_gateway_wrapper_parent()
+        wrapper_snapshot = _snapshot_launchd_gateway_wrapper()
+        loaded_by_attempt = False
+        recovery_state = LaunchdBootstrapRecoveryState()
+        try:
+            _write_launchd_plist(plist_path, generate_launchd_plist())
+            try:
+                _bootstrap_launchd_service_with_stale_registration_recovery(plist_path, label, recovery_state)
+            except subprocess.TimeoutExpired:
+                loaded_by_attempt = True
+                raise
+            except (OSError, subprocess.SubprocessError):
+                loaded_by_attempt = recovery_state.unloaded_stale_registration
+                raise
+            loaded_by_attempt = True
+            _kickstart_launchd_service(f"{_launchd_domain()}/{label}")
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            _rollback_launchd_definition(
+                plist_path,
+                LaunchdPlistSnapshot(path=plist_path, content=None),
+                wrapper_snapshot,
+                wrapper_parent_snapshot,
+                unload_failed=loaded_by_attempt,
+                reload_previous=False,
+            )
+            raise
         print("✓ Service started")
         return
 
-    refresh_launchd_plist_if_needed()
+    refresh = _refresh_launchd_plist_if_needed()
     try:
         subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
+            _rollback_launchd_refresh_after_followup_failure(refresh)
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        try:
+            _bootstrap_then_kickstart_launchd(plist_path, f"{_launchd_domain()}/{label}")
+        except (OSError, subprocess.SubprocessError):
+            _rollback_launchd_refresh_after_followup_failure(refresh)
+            raise
+    except (OSError, subprocess.SubprocessError):
+        _rollback_launchd_refresh_after_followup_failure(refresh)
+        raise
     print("✓ Service started")
 
 def launchd_stop():
@@ -3032,9 +4415,12 @@ def launchd_restart():
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
+    refresh = LaunchdRefreshResult(False)
     try:
+        refresh = _refresh_launchd_plist_if_needed()
+        refreshed = refresh.refreshed
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
+        if pid is not None and not refreshed and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             return
         if pid is not None:
@@ -3050,13 +4436,20 @@ def launchd_restart():
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in {3, 113}:
+            _rollback_launchd_refresh_after_followup_failure(refresh)
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        try:
+            _bootstrap_then_kickstart_launchd(plist_path, target)
+        except (OSError, subprocess.SubprocessError):
+            _rollback_launchd_refresh_after_followup_failure(refresh)
+            raise
         print("✓ Service restarted")
+    except (OSError, subprocess.SubprocessError):
+        _rollback_launchd_refresh_after_followup_failure(refresh)
+        raise
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
