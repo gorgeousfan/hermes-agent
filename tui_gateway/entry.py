@@ -62,6 +62,22 @@ def _shutdown_grace_seconds() -> float:
     return value if value > 0 else _DEFAULT_SHUTDOWN_GRACE_S
 
 
+def _emit_stderr(line: str) -> None:
+    """Write a forensic line to stderr, swallowing pipe-closed errors.
+
+    By the time ``_log_exit`` / ``_log_signal`` runs the parent dashboard may
+    already have torn down our stdio pipes (issue #21440 — SIGHUP racing the
+    handshake).  An unguarded ``print(..., flush=True)`` then raises
+    ``BrokenPipeError`` and *replaces* the real failure trace with a useless
+    pipe-error trace.  The crash log is the durable record; stderr is only a
+    convenience.
+    """
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except (BrokenPipeError, OSError):
+        pass
+
+
 def _log_signal(signum: int, frame) -> None:
     """Capture WHICH thread and WHERE a termination signal hit us.
 
@@ -106,7 +122,7 @@ def _log_signal(signum: int, frame) -> None:
                 f.write("".join(traceback.format_stack(sys._current_frames().get(tid))))
     except Exception:
         pass
-    print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
+    _emit_stderr(f"[gateway-signal] {name}")
 
     import threading as _threading
 
@@ -181,7 +197,7 @@ def _log_exit(reason: str) -> None:
             )
     except Exception:
         pass
-    print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
+    _emit_stderr(f"[gateway-exit] {reason}")
 
 
 def main():

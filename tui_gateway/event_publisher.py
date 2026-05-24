@@ -23,6 +23,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Optional
 
 try:
@@ -35,6 +36,16 @@ _log = logging.getLogger(__name__)
 _DRAIN_STOP = object()
 
 _QUEUE_MAX = 256
+
+# Connect retries cushion the dashboard ↔ sidecar startup race (issue #21440):
+# when the gateway subprocess wins the spawn race, the dashboard's WS endpoint
+# may still be binding, causing the first ``ws_connect`` to refuse / hang past
+# its open timeout.  A short exponential backoff (0.25s → 0.5s → 1s) covers the
+# observed bind delay on WSL2 without meaningfully extending startup latency
+# in the happy path.
+# 4 attempts ≈ 1.75s total backoff (0.25 + 0.5 + 1.0) — N attempts → N-1 sleeps.
+_CONNECT_ATTEMPTS = 4
+_CONNECT_BACKOFF_S = 0.25
 
 
 class WsPublisherTransport:
@@ -53,10 +64,20 @@ class WsPublisherTransport:
 
             return
 
-        try:
-            self._ws = ws_connect(url, open_timeout=connect_timeout, max_size=None)
-        except Exception as exc:
-            _log.debug("event publisher connect failed: %s", exc)
+        last_exc: Optional[BaseException] = None
+        delay = _CONNECT_BACKOFF_S
+        for attempt in range(_CONNECT_ATTEMPTS):
+            try:
+                self._ws = ws_connect(url, open_timeout=connect_timeout, max_size=None)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _CONNECT_ATTEMPTS - 1:
+                    time.sleep(delay)
+                    delay *= 2
+        if last_exc is not None:
+            _log.debug("event publisher connect failed after retries: %s", last_exc)
             self._dead = True
             self._ws = None
 
