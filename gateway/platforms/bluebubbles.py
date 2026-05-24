@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -25,6 +26,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
@@ -52,6 +54,12 @@ _TAPBACK_REMOVED = {
     3000: "love", 3001: "like", 3002: "dislike",
     3003: "laugh", 3004: "emphasize", 3005: "question",
 }
+
+# Grace period (seconds) after gateway startup — messages created within this
+# window after startup are still considered live. Any message whose dateCreated
+# is earlier than `_gateway_started_at - _GATEWAY_GRACE` is dropped, preventing
+# responses to stale replayed webhook events after restart / reconnect.
+_GATEWAY_GRACE = 5.0
 
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
@@ -129,6 +137,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._seen_message_guids: Dict[str, float] = {}  # guid -> timestamp
+        self._DEDUP_TTL = 120.0  # seconds (was 30s — too short for late updated-message events)
+        self._gateway_started_at: Optional[float] = None  # set on connect
 
     # ------------------------------------------------------------------
     # API helpers
@@ -204,6 +215,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Register webhook with BlueBubbles server
         # This is required for the server to know where to send events
         await self._register_webhook()
+
+        # Mark startup time — any message created before this is dropped
+        self._gateway_started_at = time.time()
+        logger.info(
+            "[bluebubbles] gateway started at %s (grace period: %.0fs)",
+            self._gateway_started_at, _GATEWAY_GRACE,
+        )
 
         return True
 
@@ -638,6 +656,137 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
+    async def send_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        reaction: str,
+        part_index: int = 0,
+    ) -> bool:
+        """Send a tapback reaction to a message.
+
+        Requires Private API helper to be connected.
+
+        Args:
+            chat_id: The chat address (email/phone) or GUID.
+            message_id: The GUID of the message to react to.
+            reaction: One of "love", "like", "dislike", "laugh",
+                      "emphasize", "question". Prefix with "-" to remove
+                      (e.g. "-like").
+            part_index: The part index of the message (default 0).
+
+        Returns:
+            True if the reaction was sent successfully, False otherwise.
+        """
+        if not self._private_api_enabled or not self._helper_connected or not self.client:
+            logger.warning(
+                "[bluebubbles] cannot send reaction — Private API not available"
+            )
+            return False
+        valid = {"love", "like", "dislike", "laugh", "emphasize", "question"}
+        clean = reaction.lstrip("-")
+        if clean not in valid:
+            logger.warning(
+                "[bluebubbles] invalid tapback reaction: %s (valid: %s)",
+                reaction, ", ".join(sorted(valid)),
+            )
+            return False
+        try:
+            guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                logger.warning(
+                    "[bluebubbles] cannot send reaction — chat not found: %s", chat_id
+                )
+                return False
+            payload = {
+                "chatGuid": guid,
+                "selectedMessageGuid": message_id,
+                "reaction": reaction,
+                "partIndex": part_index,
+            }
+            await self._api_post("/api/v1/message/react", payload)
+            logger.info(
+                "[bluebubbles] sent reaction %s to %s", reaction, message_id
+            )
+            return True
+        except Exception as exc:
+            logger.error(
+                "[bluebubbles] failed to send reaction %s: %s", reaction, exc
+            )
+            return False
+
+    # ------------------------------------------------------------------
+    # Processing lifecycle hooks
+    # ------------------------------------------------------------------
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """When message processing finishes, swap the ❓ tapback for 👍.
+
+        Uses sequential await (not fire-and-forget create_task) so that
+        removing ❓ completes before adding 👍 — eliminating the race
+        condition where the 👍 request arrived before or during the
+        ❓ removal and one of them dropped silently.
+        """
+        msg_guid = event.message_id
+        chat_id = event.source.chat_id
+        if not msg_guid or not chat_id:
+            return
+
+        await self.send_reaction(
+            chat_id=chat_id,
+            message_id=msg_guid,
+            reaction="-question",
+        )
+        await self.send_reaction(
+            chat_id=chat_id,
+            message_id=msg_guid,
+            reaction="like",
+        )
+
+    # ------------------------------------------------------------------
+    # Message editing (via Private API)
+    # ------------------------------------------------------------------
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a previously sent iMessage via the BlueBubbles Private API.
+
+        POST /api/v1/message/{messageGuid}/edit
+
+        Requires Private API helper to be connected.  Apple limits
+        edits to within 15 minutes of sending with up to ~5 revisions.
+        ``finalize`` is accepted for compatibility but has no special
+        meaning on iMessage — an edit is an edit.
+        """
+        if not self._private_api_enabled or not self._helper_connected or not self.client:
+            return SendResult(success=False, error="Private API not available")
+        if not message_id or not content:
+            return SendResult(success=False, error="message_id and content are required")
+        try:
+            encoded = quote(message_id, safe="")
+            payload = {
+                "editedMessage": content,
+                "backwardsCompatibilityMessage": content,
+                "partIndex": 0,
+            }
+            res = await self._api_post(f"/api/v1/message/{encoded}/edit", payload)
+            data = res.get("data") or {}
+            new_id = data.get("guid") or data.get("messageGuid") or message_id
+            logger.info("[bluebubbles] edited message %s", message_id)
+            return SendResult(success=True, message_id=str(new_id), raw_response=res)
+        except Exception as exc:
+            logger.warning("[bluebubbles] edit_message failed for %s: %s", message_id, exc)
+            return SendResult(success=False, error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Chat info
+    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------
@@ -818,6 +967,53 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_REMOVED,
         }:
             return web.Response(text="ok")
+
+        # --- Staleness check: skip messages created before gateway started ---
+        if self._gateway_started_at is not None:
+            date_created_ms = record.get("dateCreated") or record.get("date_created")
+            if isinstance(date_created_ms, (int, float)):
+                cutoff = self._gateway_started_at - _GATEWAY_GRACE
+                if (date_created_ms / 1000.0) < cutoff:
+                    logger.debug(
+                        "[bluebubbles] dropping stale message (dateCreated %.3f < cutoff %.3f)",
+                        date_created_ms / 1000.0, cutoff,
+                    )
+                    return web.Response(text="ok")
+
+        # --- Dedup: BB fires multiple webhooks per message ---
+        msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        now = time.time()
+        self._seen_message_guids = {
+            k: v for k, v in self._seen_message_guids.items()
+            if now - v < self._DEDUP_TTL
+        }
+        if msg_guid and msg_guid in self._seen_message_guids:
+            return web.Response(text="ok")
+        if msg_guid:
+            self._seen_message_guids[msg_guid] = now
+
+        # --- Acknowledgment tapback: immediately react to indicate "seen" ---
+        _seen_chat_guid = self._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        if not _seen_chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                _seen_chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        if _seen_chat_guid:
+            asyncio.create_task(self.send_reaction(
+                chat_id=_seen_chat_guid,
+                message_id=msg_guid,
+                reaction="question",
+            ))
 
         text = (
             self._value(

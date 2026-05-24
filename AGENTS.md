@@ -1130,3 +1130,24 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+--- 
+
+## Research (automatic)
+
+**Delegate heavy research.** When a task requires multi-step browser navigation OR parallel memory searches (hindsight + session + wiki), spin up `delegate_task` subagents rather than chaining calls in my own context.
+
+## Wiki Ingestion (automatic)
+
+**Trigger conditions — always do this without being asked:**
+- User shares a link to **documentation** → ingest into wiki immediately
+- User shares a link to an **article or news story** → ingest into wiki immediately
+- User says "research", "look up", "investigate", or starts a research session → treat as a research task, file findings back to wiki
+
+**How to ingest (llm-wiki skill workflow):**
+@/media/agent-wiki/AGENTS.md
+
+**Research sessions:**
+When a research task requires multiple searches, use `delegate_task` subagents with browser/search tools in parallel, then synthesize and file results back to the wiki. Don't chain sequential calls in my own context.
+
+**Discussion gate:** Before writing synthesis pages or making structural wiki changes, briefly confirm scope with the user unless it's a trivial lookup.
