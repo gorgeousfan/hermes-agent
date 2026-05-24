@@ -85,6 +85,21 @@ const TranscriptPane = memo(function TranscriptPane({
     [transcript.historyItems]
   )
 
+  // Inline mode renders into the host terminal's primary screen — no
+  // ScrollBox viewport culling, no virtual-scroll spacers. The historical
+  // virtualHistory.start/end + topSpacer/bottomSpacer combo only makes
+  // sense when ScrollBox has a height ceiling (alt-screen). In inline
+  // mode it produces a multi-thousand-row empty <Box> on resume that
+  // log-update flushes one CR+LF per row, blanking xterm.js scrollback
+  // in the dashboard PTY. Slice the most recent INLINE_MAX_ITEMS items
+  // directly so the rendered tree has bounded height — the host
+  // terminal's native scrollback still captures rows that scroll off
+  // the top as new turns arrive.
+  const INLINE_MAX_ITEMS = 200
+  const visibleRows = INLINE_MODE
+    ? transcript.virtualRows.slice(Math.max(0, transcript.virtualRows.length - INLINE_MAX_ITEMS))
+    : transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
+
   return (
     <>
       <ScrollBox
@@ -100,9 +115,11 @@ const TranscriptPane = memo(function TranscriptPane({
         stickyScroll
       >
         <Box flexDirection="column" paddingX={1}>
-          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+          {!INLINE_MODE && transcript.virtualHistory.topSpacer > 0 ? (
+            <Box height={transcript.virtualHistory.topSpacer} />
+          ) : null}
 
-          {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
+          {visibleRows.map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
@@ -134,7 +151,9 @@ const TranscriptPane = memo(function TranscriptPane({
             </Box>
           ))}
 
-          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
+          {!INLINE_MODE && transcript.virtualHistory.bottomSpacer > 0 ? (
+            <Box height={transcript.virtualHistory.bottomSpacer} />
+          ) : null}
 
           <StreamingAssistant
             cols={composer.cols}
