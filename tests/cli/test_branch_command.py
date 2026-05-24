@@ -87,6 +87,54 @@ class TestBranchCommandCLI:
         messages = session_db.get_messages_as_conversation(cli_instance.session_id)
         assert len(messages) == 4  # All 4 messages copied
 
+    def test_branch_preserves_assistant_replay_metadata(self, cli_instance, session_db):
+        """Branching should preserve provider replay metadata in the DB copy."""
+        from cli import HermesCLI
+
+        cli_instance.conversation_history = [
+            {"role": "user", "content": "use the shell tool"},
+            {
+                "role": "assistant",
+                "content": "I'll inspect the repo.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                    }
+                ],
+                "finish_reason": "tool_calls",
+                "reasoning": "Need to inspect the working directory first.",
+                "reasoning_content": "Inspect cwd before editing.",
+                "reasoning_details": [{"type": "summary", "text": "inspect cwd"}],
+                "codex_reasoning_items": [{"id": "r1", "type": "reasoning"}],
+                "codex_message_items": [{"id": "m1", "type": "message"}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "tool_name": "terminal",
+                "content": "{\"cwd\":\"/repo\"}",
+            },
+        ]
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        messages = session_db.get_messages_as_conversation(cli_instance.session_id)
+        assert len(messages) == 3
+        assistant = messages[1]
+        tool = messages[2]
+        assert assistant["tool_calls"][0]["id"] == "call_1"
+        assert assistant["finish_reason"] == "tool_calls"
+        assert assistant["reasoning"] == "Need to inspect the working directory first."
+        assert assistant["reasoning_content"] == "Inspect cwd before editing."
+        assert assistant["reasoning_details"] == [{"type": "summary", "text": "inspect cwd"}]
+        assert assistant["codex_reasoning_items"] == [{"id": "r1", "type": "reasoning"}]
+        assert assistant["codex_message_items"] == [{"id": "m1", "type": "message"}]
+        assert tool["role"] == "tool"
+        assert tool["tool_call_id"] == "call_1"
+        assert tool["tool_name"] == "terminal"
+
     def test_branch_preserves_parent_link(self, cli_instance, session_db):
         """The new session should reference the original as parent."""
         from cli import HermesCLI

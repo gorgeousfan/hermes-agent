@@ -2413,6 +2413,94 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
     )
 
 
+def test_session_branch_preserves_replay_metadata(monkeypatch):
+    append_calls = []
+    init_calls = {}
+
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return "Current Session"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, *args, **kwargs):
+            init_calls["create"] = (args, kwargs)
+
+        def append_message(self, **kwargs):
+            append_calls.append(kwargs)
+
+        def set_session_title(self, session_id, title):
+            init_calls["title"] = (session_id, title)
+
+    history = [
+        {"role": "user", "content": "use the shell tool"},
+        {
+            "role": "assistant",
+            "content": "I'll inspect the repo.",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{\"command\":\"pwd\"}"},
+                }
+            ],
+            "finish_reason": "tool_calls",
+            "reasoning": "Need cwd before editing.",
+            "reasoning_content": "Inspect cwd before editing.",
+            "reasoning_details": [{"type": "summary", "text": "inspect cwd"}],
+            "codex_reasoning_items": [{"id": "r1", "type": "reasoning"}],
+            "codex_message_items": [{"id": "m1", "type": "message"}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "tool_name": "terminal",
+            "content": "{\"cwd\":\"/repo\"}",
+        },
+    ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_new_session_key", lambda: "branch-key")
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: None)
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: types.SimpleNamespace())
+    monkeypatch.setattr(
+        server,
+        "_init_session",
+        lambda sid, key, agent, session_history, cols=80: init_calls.setdefault(
+            "init", (sid, key, list(session_history), cols)
+        ),
+    )
+
+    server._sessions["sid"] = _session(history=history)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.branch",
+                "params": {"session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["parent"] == "session-key"
+    assert len(append_calls) == 3
+    assistant = append_calls[1]
+    tool = append_calls[2]
+    assert assistant["tool_calls"][0]["id"] == "call_1"
+    assert assistant["finish_reason"] == "tool_calls"
+    assert assistant["reasoning"] == "Need cwd before editing."
+    assert assistant["reasoning_content"] == "Inspect cwd before editing."
+    assert assistant["reasoning_details"] == [{"type": "summary", "text": "inspect cwd"}]
+    assert assistant["codex_reasoning_items"] == [{"id": "r1", "type": "reasoning"}]
+    assert assistant["codex_message_items"] == [{"id": "m1", "type": "message"}]
+    assert tool["role"] == "tool"
+    assert tool["tool_call_id"] == "call_1"
+    assert tool["tool_name"] == "terminal"
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,
