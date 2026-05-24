@@ -2274,7 +2274,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     daemon=True,
                 ).start()
             return
-        self._submit_on_loop(loop, self._handle_message_event_data(data))
+        future = asyncio.run_coroutine_threadsafe(
+            self._handle_message_event_data(data),
+            loop,
+        )
+        future.add_done_callback(self._log_background_failure)
 
     def _enqueue_pending_inbound_event(self, data: Any) -> bool:
         """Append an event to the pending-inbound queue.
@@ -2350,12 +2354,16 @@ class FeishuAdapter(BasePlatformAdapter):
                     dispatched = 0
                     requeue: List[Any] = []
                     for event in batch:
-                        if self._submit_on_loop(
-                            loop, self._handle_message_event_data(event)
-                        ):
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                self._handle_message_event_data(event),
+                                loop,
+                            )
+                            fut.add_done_callback(self._log_background_failure)
                             dispatched += 1
-                        else:
-                            # Loop closed/unavailable — requeue and poll again.
+                        except RuntimeError:
+                            # Loop closed between check and submit — requeue
+                            # and poll again.
                             requeue.append(event)
                     if requeue:
                         with self._pending_inbound_lock:
@@ -2459,10 +2467,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping drive comment event before adapter loop is ready")
             return
-        self._submit_on_loop(
-            loop,
+        future = asyncio.run_coroutine_threadsafe(
             handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
+            loop,
         )
+        future.add_done_callback(self._log_background_failure)
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
@@ -2490,7 +2499,11 @@ class FeishuAdapter(BasePlatformAdapter):
             or bool(getattr(loop, "is_closed", lambda: False)())
         ):
             return
-        self._submit_on_loop(loop, self._handle_reaction_event(event_type, data))
+        future = asyncio.run_coroutine_threadsafe(
+            self._handle_reaction_event(event_type, data),
+            loop,
+        )
+        future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Handle card-action callback from the Feishu SDK (synchronous).
@@ -2536,14 +2549,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> bool:
         """Schedule background work on the adapter loop with shared failure logging."""
-        from agent.async_utils import safe_schedule_threadsafe
-        future = safe_schedule_threadsafe(
-            coro, loop,
-            logger=logger,
-            log_message="[Feishu] Failed to schedule background callback work",
-            log_level=logging.WARNING,
-        )
-        if future is None:
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:
+            coro.close()
+            logger.warning("[Feishu] Failed to schedule background callback work", exc_info=True)
             return False
         future.add_done_callback(self._log_background_failure)
         return True
