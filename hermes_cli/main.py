@@ -8794,6 +8794,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
+            if is_fork and branch == "main":
+                _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
             _invalidate_update_cache()
             # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
