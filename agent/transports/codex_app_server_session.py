@@ -708,7 +708,13 @@ class CodexAppServerSession:
             except Exception:
                 logger.exception("approval_callback raised on exec request")
                 return "decline"
-        return "decline"  # fail-closed when no callback wired
+        try:
+            from tools.approval import noninteractive_approval_choice
+            choice = noninteractive_approval_choice(command, env_type="local")
+            return _approval_choice_to_codex_decision(choice)
+        except Exception:
+            logger.exception("non-interactive approval guard raised on exec request")
+            return "decline"
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
         if self._routing.auto_approve_apply_patch:

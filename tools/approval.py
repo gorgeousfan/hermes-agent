@@ -1420,5 +1420,37 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+def noninteractive_approval_choice(command: str, env_type: str = "local") -> str:
+    """Return a CLI-style approval choice for a headless command request.
+
+    This is used by runtimes that receive a command-approval request outside a
+    prompt_toolkit UI (notably `hermes chat -q` with codex app-server). It
+    deliberately reuses `check_all_command_guards()` so the hardline floor,
+    sudo-stdin guard, yolo/session state, and cron deny/approve policy stay the
+    single source of truth. We temporarily clear CLI/gateway approval markers
+    so the guard takes its documented non-interactive branch instead of trying
+    to prompt through an unavailable UI.
+
+    Returns `once` when the command may proceed, otherwise `deny`.
+    """
+    saved = {
+        "HERMES_INTERACTIVE": os.environ.get("HERMES_INTERACTIVE"),
+        "HERMES_EXEC_ASK": os.environ.get("HERMES_EXEC_ASK"),
+    }
+    try:
+        os.environ.pop("HERMES_INTERACTIVE", None)
+        os.environ.pop("HERMES_EXEC_ASK", None)
+        result = check_all_command_guards(
+            command, env_type, approval_callback=None
+        )
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return "once" if result.get("approved") else "deny"
+
+
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()

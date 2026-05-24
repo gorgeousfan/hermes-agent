@@ -417,6 +417,30 @@ class TestRunTurn:
 # ---- approval bridge ----
 
 class TestServerRequestRouting:
+    def test_exec_approval_no_callback_uses_noninteractive_guard_for_safe_command(self, monkeypatch):
+        """Headless codex app-server turns should not fail-closed just because
+        there is no prompt_toolkit approval callback. They should use Hermes'
+        normal non-interactive guard policy: hardline commands still block, but
+        ordinary local writes can proceed for one-shot/profile smoke tests."""
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="req-safe-write",
+            command="python -c \"open('/tmp/hermes_codex_safe.txt','w').write('ok')\"",
+            cwd="/tmp",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)  # no approval_callback wired in headless mode
+        s.run_turn("write a temp file", turn_timeout=1.0)
+        assert ("req-safe-write", {"decision": "accept"}) in client.responses
+
     def test_exec_approval_with_callback_approves_once(self):
         client = FakeClient()
         client.queue_server_request(

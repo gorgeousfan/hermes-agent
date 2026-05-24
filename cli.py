@@ -10923,6 +10923,19 @@ class HermesCLI:
         """
         import time as _time
 
+        # Direct/single-query chat (`hermes chat -q`) does not create the
+        # prompt_toolkit Application that can render and answer the approval
+        # panel below. Use Hermes' headless guard policy instead of showing an
+        # invisible prompt and timing out. Interactive TUI sessions keep the
+        # normal approval UI because self._app is set.
+        if getattr(self, "_app", None) is None:
+            try:
+                from tools.approval import noninteractive_approval_choice
+                return noninteractive_approval_choice(command, env_type="local")
+            except Exception as e:
+                logger.error("Headless approval guard failed: %s", e, exc_info=True)
+                return "deny"
+
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
