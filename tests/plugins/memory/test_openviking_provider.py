@@ -1,4 +1,5 @@
 import json
+import threading
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -420,3 +421,136 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+# ── on_memory_write mirroring tests (see #31000) ──────────────────────────
+
+
+def _patch_viking_client_and_build_provider(monkeypatch, *, post_side_effect=None):
+    """Set up a provider with a fake _VikingClient that records ``(path, payload)``.
+
+    ``threading.Thread`` is patched to run targets synchronously so callers
+    can assert on ``posts`` without worrying about background threads.
+
+    Returns ``(provider, posts)``.
+    """
+    posts: list = []
+
+    class _SyncThread:
+        """Drop-in that calls target() inline instead of starting a thread."""
+        def __init__(self, target, daemon=False, name=""):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(threading, "Thread", _SyncThread)
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            if callable(post_side_effect):
+                result = post_side_effect(len(posts), payload)
+                if isinstance(result, BaseException):
+                    raise result
+            return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "plugins.memory.openviking._VikingClient", _FakeClient
+    )
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://test"
+    provider._api_key = ""
+    provider._account = "test"
+    provider._user = "test"
+    provider._agent = "hermes"
+    provider._client = _FakeClient()
+    provider._session_id = "test-session"
+    return provider, posts
+
+
+def test_on_memory_write_add_mirrors(monkeypatch):
+    provider, posts = _patch_viking_client_and_build_provider(monkeypatch)
+    provider.on_memory_write("add", "memory", "add-test-content")
+    assert len(posts) == 1
+    path, payload = posts[0]
+    assert path == "/api/v1/content/write"
+    assert payload["content"] == "add-test-content"
+    assert payload["mode"] == "create"
+    assert "memories/patterns/" in payload["uri"]
+
+
+def test_on_memory_write_replace_mirrors(monkeypatch):
+    provider, posts = _patch_viking_client_and_build_provider(monkeypatch)
+    provider.on_memory_write("replace", "memory", "replace-content")
+    assert len(posts) == 1
+    assert posts[0][1]["content"] == "replace-content"
+
+
+def test_on_memory_write_remove_skipped(monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    provider, posts = _patch_viking_client_and_build_provider(monkeypatch)
+    provider.on_memory_write("remove", "memory", "gone")
+    assert len(posts) == 0
+    assert "remove" in caplog.text.lower()
+    assert "skipped" in caplog.text.lower()
+
+
+def test_on_memory_write_empty_content_skipped(monkeypatch):
+    provider, posts = _patch_viking_client_and_build_provider(monkeypatch)
+    provider.on_memory_write("add", "memory", "")
+    assert len(posts) == 0
+
+
+def test_on_memory_write_no_client_skipped(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = None
+    provider.on_memory_write("add", "memory", "irrelevant")
+    # No crash → pass
+
+
+def test_on_memory_write_busy_retry_then_success(monkeypatch):
+    call_count = 0
+
+    def failing_then_ok(n, _payload):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("INVALID_ARGUMENT: resource is busy")
+        return None
+
+    provider, posts = _patch_viking_client_and_build_provider(
+        monkeypatch, post_side_effect=failing_then_ok
+    )
+    provider.on_memory_write("add", "memory", "retry-me")
+    # Two calls: first fails (busy), second succeeds
+    assert len(posts) == 2
+    assert posts[1][1]["content"] == "retry-me"
+
+
+def test_on_memory_write_non_busy_error_no_retry(monkeypatch, caplog):
+    def raise_other(_n, _payload):
+        raise RuntimeError("INTERNAL: something else broke")
+
+    provider, posts = _patch_viking_client_and_build_provider(
+        monkeypatch, post_side_effect=raise_other
+    )
+    provider.on_memory_write("add", "memory", "fail")
+    assert len(posts) == 1
+    assert "something else broke" in caplog.text
+
+
+def test_on_memory_write_network_exception_logs_warning(monkeypatch, caplog):
+    def raise_network(_n, _payload):
+        raise ConnectionError("refused")
+
+    provider, posts = _patch_viking_client_and_build_provider(
+        monkeypatch, post_side_effect=raise_network
+    )
+    provider.on_memory_write("add", "memory", "net-fail")
+    assert len(posts) == 1
+    assert "refused" in caplog.text
