@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.cmux_integration import rename_cmux_workspace_for_goal
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
@@ -4913,6 +4914,11 @@ def _(rid, params: dict) -> dict:
             state = mgr.set(arg)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
+
+        rename_cmux_workspace_for_goal(
+            state.goal,
+            config=_load_cfg(),
+        )
 
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"

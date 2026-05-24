@@ -154,6 +154,7 @@ def realign_markdown_tables(*args, **kwargs):
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
 # needed when the user runs `/limits`. Lazy-imported inside the handler below.
 from hermes_cli.banner import _format_context_length, format_banner_version_label
+from hermes_cli.cmux_integration import rename_cmux_workspace_for_goal
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -9029,6 +9030,11 @@ class HermesCLI:
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
+
+        rename_cmux_workspace_for_goal(
+            state.goal,
+            config=getattr(self, "config", None),
+        )
 
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
         _cprint(

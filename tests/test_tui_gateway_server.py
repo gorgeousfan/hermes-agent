@@ -2379,6 +2379,50 @@ def test_skills_reload_runs_in_gateway_process(monkeypatch):
     assert "42 skill(s) available" in resp["result"]["output"]
 
 
+def test_command_dispatch_goal_updates_cmux_workspace_title(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli import goals
+
+    goals._DB_CACHE.clear()
+    server._sessions["sid"] = _session(session_key="session-key-cmux-title")
+    config = {
+        "cmux": {
+            "auto_rename_workspace_on_goal": True,
+            "goal_title_prefix": "Goal: ",
+            "goal_title_max_chars": 60,
+        }
+    }
+    monkeypatch.setattr(server, "_load_cfg", lambda: config)
+    calls = []
+
+    def _rename(goal, *, config=None):
+        calls.append((goal, config))
+        return "Goal: Improve cmux workspace titles"
+
+    monkeypatch.setattr(server, "rename_cmux_workspace_for_goal", _rename)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {
+                    "arg": "Improve cmux workspace titles",
+                    "name": "goal",
+                    "session_id": "sid",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+        goals._DB_CACHE.clear()
+
+    assert resp["result"]["type"] == "send"
+    assert resp["result"]["message"] == "Improve cmux workspace titles"
+    assert calls == [("Improve cmux workspace titles", config)]
+
+
 def test_snapshot_restore_is_blocked_from_tui_worker():
     server._sessions["sid"] = _session()
     try:
