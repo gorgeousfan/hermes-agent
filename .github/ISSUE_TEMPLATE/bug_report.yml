@@ -60,7 +60,7 @@ body:
       multiple: true
       options:
         - CLI (interactive chat)
-        - Gateway (Telegram/Discord/Slack/WhatsApp)
+        - Gateway (Telegram/Discord/Slack/WhatsApp/YuanBao)
         - Setup / Installation
         - Tools (terminal, file ops, web, code execution, etc.)
         - Skills (skill loading, skill hub, skill guard)
@@ -82,6 +82,7 @@ body:
         - Discord
         - Slack
         - WhatsApp
+        - YuanBao
 
   - type: textarea
     id: debug-report
