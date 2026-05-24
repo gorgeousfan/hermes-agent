@@ -885,6 +885,12 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  
+  # Subagent resource limits (post-hoc diagnostics for context explosion)
+  # max_context_tokens: 100000                # Post-hoc limit on context window size (default: 100000)
+                                              # Subagents exceeding this are marked as failed after completion
+  # context_growth_ratio: 2.5                 # Post-hoc context growth ratio check (default: 2.5)
+                                              # If output_tokens / input_tokens > ratio, subagent marked as failed
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
