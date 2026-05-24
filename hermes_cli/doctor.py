@@ -1306,8 +1306,10 @@ def run_doctor(args):
     if _npm_bin:
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
         ]
+        whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")
+        if whatsapp_enabled:
+            npm_dirs.append((PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"))
         for npm_dir, label in npm_dirs:
             if not (npm_dir / "node_modules").exists():
                 continue
@@ -1789,6 +1791,19 @@ def run_doctor(args):
         
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
+
+        enabled_toolsets_for_doctor = set()
+        try:
+            import yaml as _yaml
+            from hermes_cli.tools_config import _platform_toolset_summary
+            _cfg_path = HERMES_HOME / "config.yaml"
+            if _cfg_path.exists():
+                with open(_cfg_path) as _f:
+                    _doctor_cfg = _yaml.safe_load(_f) or {}
+                for _toolsets in _platform_toolset_summary(_doctor_cfg).values():
+                    enabled_toolsets_for_doctor.update(_toolsets)
+        except Exception:
+            enabled_toolsets_for_doctor = set()
         
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
@@ -1802,8 +1817,12 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
-        api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
+        # Count enabled tools with API key requirements
+        api_disabled = [
+            u for u in unavailable
+            if (u.get("missing_vars") or u.get("env_vars"))
+            and (not enabled_toolsets_for_doctor or u.get("name") in enabled_toolsets_for_doctor)
+        ]
         if api_disabled:
             issues.append("Run 'hermes setup' to configure missing API keys for full tool access")
     except Exception as e:

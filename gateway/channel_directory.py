@@ -53,6 +53,50 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
     return f"{base_name} / {topic_label}"
 
 
+def _build_telegram(adapter=None) -> List[Dict[str, str]]:
+    """Build Telegram targets from sessions plus configured forum topic metadata."""
+    channels = _build_from_sessions("telegram")
+    by_id = {str(ch.get("id")): dict(ch) for ch in channels if ch.get("id")}
+
+    config_extra: Dict[str, Any] = {}
+    try:
+        if adapter is not None and getattr(adapter, "config", None):
+            config_extra = getattr(adapter.config, "extra", {}) or {}
+        else:
+            from gateway.config import Platform, load_gateway_config
+
+            gw_cfg = load_gateway_config()
+            platforms = getattr(gw_cfg, "platforms", None) or {}
+            telegram_cfg = platforms.get(Platform.TELEGRAM) or platforms.get("telegram")
+            config_extra = getattr(telegram_cfg, "extra", {}) or {}
+    except Exception as e:
+        logger.debug("Channel directory: failed to load Telegram config metadata: %s", e)
+
+    for chat_entry in config_extra.get("group_topics", []) or []:
+        chat_id = chat_entry.get("chat_id")
+        if chat_id is None:
+            continue
+        chat_name = chat_entry.get("chat_name") or chat_entry.get("name") or str(chat_id)
+        for topic in chat_entry.get("topics", []) or []:
+            thread_id = topic.get("thread_id")
+            if thread_id is None:
+                continue
+            entry_id = f"{chat_id}:{thread_id}"
+            topic_name = topic.get("name") or f"topic {thread_id}"
+            existing = by_id.get(entry_id, {})
+            existing.update(
+                {
+                    "id": entry_id,
+                    "name": f"{chat_name} / {topic_name}",
+                    "type": existing.get("type") or "group",
+                    "thread_id": str(thread_id),
+                }
+            )
+            by_id[entry_id] = existing
+
+    return list(by_id.values())
+
+
 # ---------------------------------------------------------------------------
 # Build / refresh
 # ---------------------------------------------------------------------------
@@ -73,13 +117,15 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.TELEGRAM:
+                platforms["telegram"] = _build_telegram(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Platforms that don't support direct channel enumeration get session-based
     # discovery automatically.  Skip infrastructure entries that aren't messaging
     # platforms — everything else falls through to _build_from_sessions().
-    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook", "telegram"})
     for plat in Platform:
         plat_name = plat.value
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
@@ -95,6 +141,11 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms[entry.name] = _build_from_sessions(entry.name)
     except Exception:
         pass
+
+    # Preserve Telegram topic metadata even when the adapter is not part of
+    # the current build pass (for example in tool/list contexts).
+    if "telegram" not in platforms:
+        platforms["telegram"] = _build_telegram()
 
     directory = {
         "updated_at": datetime.now().isoformat(),

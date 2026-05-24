@@ -899,6 +899,40 @@ class SessionStore:
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
+                    # Refresh cached origin metadata when the newest message
+                    # source is more informative than the existing session
+                    # entry. This keeps forum-topic labels durable instead of
+                    # leaving sessions stuck on generic/no-topic metadata.
+                    if entry.origin:
+                        origin_changed = False
+                        if source.chat_name and source.chat_name != entry.origin.chat_name:
+                            entry.origin.chat_name = source.chat_name
+                            origin_changed = True
+                        if source.chat_type and source.chat_type != entry.origin.chat_type:
+                            entry.origin.chat_type = source.chat_type
+                            origin_changed = True
+                        if source.thread_id and source.thread_id != entry.origin.thread_id:
+                            entry.origin.thread_id = source.thread_id
+                            origin_changed = True
+                        if source.chat_topic and source.chat_topic != entry.origin.chat_topic:
+                            entry.origin.chat_topic = source.chat_topic
+                            origin_changed = True
+                        if source.user_name and source.user_name != entry.origin.user_name:
+                            entry.origin.user_name = source.user_name
+                            origin_changed = True
+                        if source.user_id and source.user_id != entry.origin.user_id:
+                            entry.origin.user_id = source.user_id
+                            origin_changed = True
+                        if source.chat_id and source.chat_id != entry.origin.chat_id:
+                            entry.origin.chat_id = source.chat_id
+                            origin_changed = True
+                        if source.platform and source.platform != entry.origin.platform:
+                            entry.origin.platform = source.platform
+                            origin_changed = True
+                        if origin_changed:
+                            logger.debug("Refreshed session origin metadata for %s", session_key)
+                    else:
+                        entry.origin = source
                     entry.updated_at = now
                     self._save()
                     return entry
