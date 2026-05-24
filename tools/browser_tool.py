@@ -73,7 +73,12 @@ from hermes_cli.config import cfg_get
 try:
     from tools.website_policy import check_website_access
 except Exception:
-    check_website_access = lambda url: None  # noqa: E731 — fail-open if policy module unavailable
+    # SECURITY: fail-closed — if the policy module is unavailable, deny
+    # all browser access rather than allowing it.  The operator should fix
+    # the import issue rather than silently allowing unrestricted browsing.
+    # See code-review 2026-05-07.
+    def check_website_access(url):  # type: ignore[misc]
+        return "Browser access denied: website policy module unavailable"
 
 try:
     from tools.url_safety import (
