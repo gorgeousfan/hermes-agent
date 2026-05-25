@@ -20,6 +20,7 @@ from hermes_constants import get_hermes_home
 # Curses-based interactive picker (same pattern as hermes tools)
 # ---------------------------------------------------------------------------
 
+
 def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
     """Interactive single-select with arrow keys.
 
@@ -27,12 +28,12 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
     Returns selected index, or default on escape/quit.
     """
     from hermes_cli.curses_ui import curses_radiolist
+
     # Format (label, desc) tuples into display strings
-    display_items = [
-        f"{label}  {desc}" if desc else label
-        for label, desc in items
-    ]
-    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
+    display_items = [f"{label}  {desc}" if desc else label for label, desc in items]
+    return curses_radiolist(
+        title, display_items, selected=default, cancel_returns=default
+    )
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -56,6 +57,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
+
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
@@ -70,6 +72,7 @@ def _install_dependencies(provider_name: str) -> None:
 
     try:
         import yaml
+
         with open(yaml_path, encoding="utf-8") as f:
             meta = yaml.safe_load(f) or {}
     except Exception:
@@ -102,6 +105,7 @@ def _install_dependencies(provider_name: str) -> None:
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
     import shutil
+
     uv_path = shutil.which("uv")
     if not uv_path:
         print(f"  ⚠ uv not found — cannot install dependencies")
@@ -111,8 +115,10 @@ def _install_dependencies(provider_name: str) -> None:
 
     try:
         subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
-            check=True, timeout=120,
+            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"]
+            + missing,
+            check=True,
+            timeout=120,
             capture_output=True,
         )
         print(f"  ✓ Installed {', '.join(missing)}")
@@ -121,10 +127,14 @@ def _install_dependencies(provider_name: str) -> None:
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(
+            f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}"
+        )
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(
+            f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}"
+        )
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -150,6 +160,7 @@ def _get_available_providers() -> list:
     """
     try:
         from plugins.memory import discover_memory_providers, load_memory_provider
+
         raw = discover_memory_providers()
     except Exception:
         raw = []
@@ -163,7 +174,11 @@ def _get_available_providers() -> list:
         except Exception:
             continue
 
-        schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+        schema = (
+            provider.get_config_schema()
+            if hasattr(provider, "get_config_schema")
+            else []
+        )
         has_secrets = any(f.get("secret") for f in schema)
         has_non_secrets = any(not f.get("secret") for f in schema)
         if has_secrets and has_non_secrets:
@@ -182,6 +197,7 @@ def _get_available_providers() -> list:
 # ---------------------------------------------------------------------------
 # Setup wizard
 # ---------------------------------------------------------------------------
+
 
 def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
@@ -224,6 +240,9 @@ def cmd_setup(args) -> None:
     from hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
+    config = load_config()
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
 
     if not providers:
         print("\n  No memory provider plugins detected.")
@@ -237,11 +256,14 @@ def cmd_setup(args) -> None:
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
-    selected = _curses_select("Memory provider setup", items, default=builtin_idx)
-
-    config = load_config()
-    if not isinstance(config.get("memory"), dict):
-        config["memory"] = {}
+    default_idx = builtin_idx
+    saved_provider = config["memory"].get("provider")
+    if saved_provider:
+        for idx, (name, _, _) in enumerate(providers):
+            if name == saved_provider:
+                default_idx = idx
+                break
+    selected = _curses_select("Memory provider setup", items, default=default_idx)
 
     # Built-in only
     if selected >= len(providers) or selected < 0:
@@ -263,7 +285,9 @@ def cmd_setup(args) -> None:
         provider.post_setup(hermes_home, config)
         return
 
-    schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+    schema = (
+        provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
+    )
 
     provider_config = config["memory"].get(name, {})
     if not isinstance(provider_config, dict):
@@ -312,7 +336,9 @@ def cmd_setup(args) -> None:
                 existing = os.environ.get(env_var, "") if env_var else ""
                 if existing:
                     masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
-                    val = _prompt(f"{desc} (current: {masked}, blank to keep)", secret=True)
+                    val = _prompt(
+                        f"{desc} (current: {masked}, blank to keep)", secret=True
+                    )
                 else:
                     hint = f"  Get yours at {url}" if url else ""
                     if hint:
@@ -324,7 +350,9 @@ def cmd_setup(args) -> None:
                 # Regular text prompt
                 current = provider_config.get(key)
                 effective_default = current or default
-                val = _prompt(desc, default=str(effective_default) if effective_default else None)
+                val = _prompt(
+                    desc, default=str(effective_default) if effective_default else None
+                )
                 if val:
                     provider_config[key] = val
                     # Also write to .env if this field has an env_var
@@ -391,6 +419,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 # Status
 # ---------------------------------------------------------------------------
 
+
 def cmd_status(args) -> None:
     """Show current memory provider config."""
     from hermes_cli.config import load_config
@@ -420,7 +449,11 @@ def cmd_status(args) -> None:
                         print(f"  Status:    available ✓")
                     else:
                         print(f"  Status:    not available ✗")
-                        schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
+                        schema = (
+                            p.get_config_schema()
+                            if hasattr(p, "get_config_schema")
+                            else []
+                        )
                         # Check all fields that have env_var (both secret and non-secret)
                         required_fields = [f for f in schema if f.get("env_var")]
                         if required_fields:
@@ -437,7 +470,9 @@ def cmd_status(args) -> None:
                     break
         else:
             print(f"\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            print(
+                f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/"
+            )
 
     providers = _get_available_providers()
     if providers:
@@ -452,6 +487,7 @@ def cmd_status(args) -> None:
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
+
 
 def memory_command(args) -> None:
     """Route memory subcommands."""
