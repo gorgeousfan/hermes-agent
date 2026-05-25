@@ -4786,7 +4786,7 @@ class DiscordAdapter(BasePlatformAdapter):
             _backfill_enabled = self._discord_history_backfill()
             if _needed_mention and _backfill_enabled:
                 _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
+                    effective_channel, before=message,
                 )
                 if _backfill_text:
                     _channel_context = _backfill_text
