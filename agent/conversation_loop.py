@@ -127,6 +127,29 @@ def _ra():
     return run_agent
 
 
+def _emit_synthesized_final_delta(agent: Any, final_response: str) -> None:
+    """Stream final text synthesized outside the normal model delta path.
+
+    A few recovery paths assign ``final_response`` from already-available
+    text and then break out of the loop without another model stream event.
+    Gateway/SSE clients only see streamed deltas, so emit that synthesized
+    final answer before the loop closes.
+    """
+    if not final_response:
+        return
+    agent._safe_print(f"\n{final_response}\n")
+    if not getattr(agent, "stream_delta_callback", None):
+        return
+    try:
+        agent.stream_delta_callback(final_response)
+    except Exception:
+        logger.debug("synthesized stream final callback error", exc_info=True)
+    try:
+        agent.stream_delta_callback(None)
+    except Exception:
+        logger.debug("synthesized stream close callback error", exc_info=True)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -3484,19 +3507,7 @@ def run_conversation(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
                     messages.append({"role": "assistant", "content": final_response})
-                    # Emit the halt message to the client so it's not
-                    # indistinguishable from a crash.  The stream display
-                    # was flushed (callback(None)) before tool execution,
-                    # but the callback is still alive — fire the text
-                    # through it so SSE/TUI clients see the explanation.
-                    if final_response:
-                        agent._safe_print(f"\n{final_response}\n")
-                        if agent.stream_delta_callback:
-                            try:
-                                agent.stream_delta_callback(final_response)
-                                agent.stream_delta_callback(None)
-                            except Exception:
-                                pass
+                    _emit_synthesized_final_delta(agent, final_response)
                     break
 
                 # Reset per-turn retry counters after successful tool
@@ -3603,6 +3614,7 @@ def run_conversation(
                         )
                         final_response = _recovered
                         agent._response_was_previewed = True
+                        _emit_synthesized_final_delta(agent, final_response)
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -3629,6 +3641,7 @@ def run_conversation(
                         # fallback text as the final response and break.
                         final_response = agent._strip_think_blocks(fallback).strip()
                         agent._response_was_previewed = True
+                        _emit_synthesized_final_delta(agent, final_response)
                         break
 
                     # ── Post-tool-call empty response nudge ───────────
