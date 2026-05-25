@@ -14,6 +14,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -1256,6 +1257,8 @@ def _windows_gateway_should_absorb_console_controls() -> bool:
 
 _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_SIGNAL_SERVICE_BASE = "hermes-signal-cli-daemon"
+_SIGNAL_LAUNCHD_BASE = "ai.hermes.signal-cli-daemon"
 
 
 def _profile_suffix() -> str:
@@ -1324,6 +1327,204 @@ def get_service_name() -> str:
     if not suffix:
         return _SERVICE_BASE
     return f"{_SERVICE_BASE}-{suffix}"
+
+
+def get_signal_service_name() -> str:
+    """Return the managed signal-cli daemon service name for this profile."""
+    suffix = _profile_suffix()
+    if not suffix:
+        return _SIGNAL_SERVICE_BASE
+    return f"{_SIGNAL_SERVICE_BASE}-{suffix}"
+
+
+def get_signal_systemd_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / f"{get_signal_service_name()}.service"
+
+
+def get_signal_launchd_label() -> str:
+    suffix = _profile_suffix()
+    return f"{_SIGNAL_LAUNCHD_BASE}-{suffix}" if suffix else _SIGNAL_LAUNCHD_BASE
+
+
+def get_signal_launchd_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{get_signal_launchd_label()}.plist"
+
+
+def _signal_http_endpoint_from_url(url: str) -> str | None:
+    """Return ``host:port`` for local Signal daemon URLs the wizard can manage."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    if parsed.scheme != "http":
+        return None
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        return None
+    if parsed.path not in {"", "/"}:
+        return None
+
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        return None
+
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        return None
+
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{host}:{port}"
+
+
+def _signal_service_path_dirs() -> list[str]:
+    path_entries = _build_service_path_dirs()
+    resolved_signal = shutil.which("signal-cli")
+    if resolved_signal:
+        resolved_signal_dir = str(Path(resolved_signal).resolve().parent)
+        if resolved_signal_dir not in path_entries:
+            path_entries.append(resolved_signal_dir)
+    path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
+    for path in ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]:
+        if path not in path_entries:
+            path_entries.append(path)
+    return path_entries
+
+
+def generate_signal_systemd_unit(signal_cli_path: str, endpoint: str) -> str:
+    sane_path = ":".join(_signal_service_path_dirs())
+    return f"""[Unit]
+Description=Hermes Signal CLI Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={signal_cli_path} daemon --http {endpoint} --no-receive-stdout
+WorkingDirectory={Path.home()}
+Environment="HOME={Path.home()}"
+Environment="PATH={sane_path}"
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def generate_signal_launchd_plist(signal_cli_path: str, endpoint: str) -> str:
+    log_dir = get_hermes_home() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    sane_path = ":".join(
+        dict.fromkeys(_signal_service_path_dirs() + [p for p in os.environ.get("PATH", "").split(":") if p])
+    )
+    label = get_signal_launchd_label()
+    home_dir = str(Path.home())
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{signal_cli_path}</string>
+        <string>daemon</string>
+        <string>--http</string>
+        <string>{endpoint}</string>
+        <string>--no-receive-stdout</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{home_dir}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{home_dir}</string>
+        <key>PATH</key>
+        <string>{sane_path}</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{log_dir}/signal-cli-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/signal-cli-daemon.log</string>
+</dict>
+</plist>
+"""
+
+
+def _signal_launchd_plist_is_current(signal_cli_path: str, endpoint: str) -> bool:
+    plist_path = get_signal_launchd_plist_path()
+    if not plist_path.exists():
+        return False
+    installed = plist_path.read_text(encoding="utf-8")
+    expected = generate_signal_launchd_plist(signal_cli_path, endpoint)
+    return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
+
+
+def _signal_systemd_unit_is_current(signal_cli_path: str, endpoint: str) -> bool:
+    unit_path = get_signal_systemd_unit_path()
+    if not unit_path.exists():
+        return False
+    installed = unit_path.read_text(encoding="utf-8")
+    expected = generate_signal_systemd_unit(signal_cli_path, endpoint)
+    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+
+
+def ensure_signal_cli_daemon_service(url: str, *, force: bool = False) -> tuple[bool, str]:
+    """Install or refresh a managed local signal-cli daemon service for ``url``."""
+    signal_cli_path = shutil.which("signal-cli")
+    if not signal_cli_path:
+        return False, "signal-cli not found on PATH."
+
+    endpoint = _signal_http_endpoint_from_url(url)
+    if endpoint is None:
+        return False, "Automatic setup only supports local http://127.0.0.1:<port> or http://localhost:<port> Signal URLs."
+
+    if supports_systemd_services():
+        unit_path = get_signal_systemd_unit_path()
+        unit_path.parent.mkdir(parents=True, exist_ok=True)
+        if force or not _signal_systemd_unit_is_current(signal_cli_path, endpoint):
+            unit_path.write_text(generate_signal_systemd_unit(signal_cli_path, endpoint), encoding="utf-8")
+        try:
+            _preflight_user_systemd(auto_enable_linger=True)
+            _run_systemctl(["daemon-reload"], system=False, check=True, timeout=30)
+            _run_systemctl(["enable", get_signal_service_name()], system=False, check=True, timeout=30)
+            _run_systemctl(["restart", get_signal_service_name()], system=False, check=True, timeout=90)
+        except (RuntimeError, OSError, UserSystemdUnavailableError) as exc:
+            return False, str(exc)
+        return True, f"Installed and started managed Signal daemon service ({get_signal_service_name()})."
+
+    if is_macos():
+        plist_path = get_signal_launchd_plist_path()
+        label = get_signal_launchd_label()
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        if force or not _signal_launchd_plist_is_current(signal_cli_path, endpoint):
+            plist_path.write_text(generate_signal_launchd_plist(signal_cli_path, endpoint), encoding="utf-8")
+        try:
+            subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+            subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+        except (FileNotFoundError, subprocess.SubprocessError, OSError) as exc:
+            return False, str(exc)
+        return True, f"Installed and started managed Signal daemon service ({label})."
+
+    return False, "Automatic Signal daemon service setup is only supported on macOS and Linux systemd hosts."
 
 
 
@@ -4603,6 +4804,7 @@ def _setup_qqbot():
 def _setup_signal():
     """Interactive setup for Signal messenger."""
     import shutil
+    import time
 
     print()
     print(color("  ─── 📡 Signal Setup ───", Colors.CYAN))
@@ -4642,20 +4844,40 @@ def _setup_signal():
         print("\n  Setup cancelled.")
         return
 
+    def _probe_signal_http(signal_url: str) -> tuple[bool, str]:
+        import httpx
+
+        try:
+            resp = httpx.get(f"{signal_url.rstrip('/')}/api/v1/check", timeout=10.0)
+        except Exception as exc:
+            return False, str(exc)
+        if resp.status_code == 200:
+            return True, ""
+        return False, f"status {resp.status_code}"
+
     # Test connectivity
     print_info("  Testing connection...")
-    try:
-        import httpx
-        resp = httpx.get(f"{url.rstrip('/')}/api/v1/check", timeout=10.0)
-        if resp.status_code == 200:
-            print_success("  signal-cli daemon is reachable!")
-        else:
-            print_warning(f"  signal-cli responded with status {resp.status_code}.")
-            if not prompt_yes_no("  Continue anyway?", False):
-                return
-    except Exception as e:
-        print_warning(f"  Could not reach signal-cli at {url}: {e}")
-        if not prompt_yes_no("  Save this URL anyway? (you can start signal-cli later)", True):
+    reachable, probe_detail = _probe_signal_http(url)
+    if reachable:
+        print_success("  signal-cli daemon is reachable!")
+    else:
+        print_warning(f"  Could not reach signal-cli at {url}: {probe_detail}")
+        if shutil.which("signal-cli") and _signal_http_endpoint_from_url(url):
+            if prompt_yes_no("  Install and start a persistent signal-cli daemon service for this URL now?", True):
+                installed, message = ensure_signal_cli_daemon_service(url)
+                if installed:
+                    print_success(f"  {message}")
+                    deadline = time.monotonic() + 15.0
+                    while time.monotonic() < deadline:
+                        reachable, probe_detail = _probe_signal_http(url)
+                        if reachable:
+                            print_success("  signal-cli daemon is reachable!")
+                            break
+                        time.sleep(0.5)
+                else:
+                    print_warning(f"  Could not install the managed Signal daemon service: {message}")
+
+        if not reachable and not prompt_yes_no("  Save this URL anyway? (you can start signal-cli later)", True):
             return
 
     save_env_value("SIGNAL_HTTP_URL", url)
