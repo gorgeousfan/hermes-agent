@@ -1766,18 +1766,26 @@ class TestResponsesStreaming:
                 assert resp.status == 200
                 body = await resp.text()
 
-                # SSE events: reasoning item.added/done present, with full text
+                # SSE events: reasoning streams per-chunk (delta) with explicit
+                # in_progress open + final completed close
                 assert '"type": "reasoning"' in body
                 assert "Step 1: parse the question." in body
                 assert "Step 2: pick the answer." in body
                 assert '"type": "summary_text"' in body
                 assert '"type": "reasoning_text"' in body
+                assert '"type": "response.reasoning_text.delta"' in body
+                assert '"type": "response.reasoning_text.done"' in body
 
-                # Walk the SSE stream to validate ordering and final envelope
+                # Walk the SSE stream to validate ordering + delta sequence
                 completed_envelope = None
+                reasoning_added_seen = False
                 reasoning_done_seen = False
                 message_done_seen = False
                 reasoning_before_message = False
+                delta_count = 0
+                delta_done_seen = False
+                added_before_delta = True
+                delta_before_done = True
                 for line in body.splitlines():
                     if not line.startswith("data: "):
                         continue
@@ -1785,19 +1793,37 @@ class TestResponsesStreaming:
                         payload = json.loads(line[len("data: "):])
                     except json.JSONDecodeError:
                         continue
-                    if payload.get("type") == "response.output_item.done":
+                    p_type = payload.get("type")
+                    if p_type == "response.output_item.added" and payload.get("item", {}).get("type") == "reasoning":
+                        reasoning_added_seen = True
+                        assert payload["item"]["status"] == "in_progress"
+                    elif p_type == "response.reasoning_text.delta":
+                        if not reasoning_added_seen:
+                            added_before_delta = False
+                        delta_count += 1
+                        if delta_done_seen:
+                            delta_before_done = False
+                    elif p_type == "response.reasoning_text.done":
+                        delta_done_seen = True
+                    elif p_type == "response.output_item.done":
                         item_type = payload.get("item", {}).get("type")
                         if item_type == "reasoning":
                             reasoning_done_seen = True
+                            assert payload["item"]["status"] == "completed"
                             if not message_done_seen:
                                 reasoning_before_message = True
                         elif item_type == "message":
                             message_done_seen = True
-                    elif payload.get("type") == "response.completed":
+                    elif p_type == "response.completed":
                         completed_envelope = payload["response"]
 
+                assert reasoning_added_seen, "reasoning output_item.added event missing"
                 assert reasoning_done_seen, "reasoning output_item.done event missing"
                 assert reasoning_before_message, "reasoning must precede message in stream order"
+                assert added_before_delta, "delta must come after the opening added event"
+                assert delta_count >= 2, f"expected ≥2 reasoning deltas, got {delta_count}"
+                assert delta_done_seen, "response.reasoning_text.done event missing"
+                assert delta_before_done, "no delta should arrive after the done event"
 
                 # Final envelope keeps reasoning in output[] for GET /v1/responses/{id}
                 assert completed_envelope is not None
