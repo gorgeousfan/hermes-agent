@@ -860,6 +860,33 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _build_models_dashboard_bootstrap() -> dict:
+    """Best-effort data for the Models dashboard first paint.
+
+    The SPA still refreshes via API after load, but embedding the initial data
+    avoids a blank/partial first paint when a mobile browser or reverse proxy
+    transiently fails the runtime fetch.
+    """
+    data: dict = {}
+    try:
+        data["models30"] = _build_models_analytics(30)
+    except Exception as exc:
+        data["models_error"] = str(exc)
+    try:
+        data["auxiliary"] = _build_auxiliary_models()
+    except Exception as exc:
+        data["aux_error"] = str(exc)
+    try:
+        cfg = _normalize_config_for_web(load_config())
+        dashboard = cfg.get("dashboard") if isinstance(cfg, dict) else {}
+        data["show_token_analytics"] = (
+            isinstance(dashboard, dict) and dashboard.get("show_token_analytics") is True
+        )
+    except Exception:
+        data["show_token_analytics"] = False
+    return data
+
+
 @app.get("/api/config")
 async def get_config():
     config = _normalize_config_for_web(load_config())
@@ -1005,6 +1032,34 @@ def get_model_options():
         raise HTTPException(status_code=500, detail="Failed to list model options")
 
 
+def _build_auxiliary_models() -> dict:
+    cfg = load_config()
+    aux_cfg = cfg.get("auxiliary", {})
+    if not isinstance(aux_cfg, dict):
+        aux_cfg = {}
+
+    tasks = []
+    for slot in _AUX_TASK_SLOTS:
+        slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+        tasks.append({
+            "task": slot,
+            "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+            "model": str(slot_cfg.get("model", "") or ""),
+            "base_url": str(slot_cfg.get("base_url", "") or ""),
+        })
+
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        main = {
+            "provider": str(model_cfg.get("provider", "") or ""),
+            "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+        }
+    else:
+        main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
+
+    return {"tasks": tasks, "main": main}
+
+
 @app.get("/api/model/auxiliary")
 def get_auxiliary_models():
     """Return current auxiliary task assignments.
@@ -1019,31 +1074,7 @@ def get_auxiliary_models():
       }
     """
     try:
-        cfg = load_config()
-        aux_cfg = cfg.get("auxiliary", {})
-        if not isinstance(aux_cfg, dict):
-            aux_cfg = {}
-
-        tasks = []
-        for slot in _AUX_TASK_SLOTS:
-            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
-            tasks.append({
-                "task": slot,
-                "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""),
-                "base_url": str(slot_cfg.get("base_url", "") or ""),
-            })
-
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, dict):
-            main = {
-                "provider": str(model_cfg.get("provider", "") or ""),
-                "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
-            }
-        else:
-            main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
-
-        return {"tasks": tasks, "main": main}
+        return _build_auxiliary_models()
     except Exception:
         _log.exception("GET /api/model/auxiliary failed")
         raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
@@ -3181,13 +3212,8 @@ async def get_usage_analytics(days: int = 30):
         db.close()
 
 
-@app.get("/api/analytics/models")
-async def get_models_analytics(days: int = 30):
-    """Rich per-model analytics for the Models dashboard page.
-
-    Returns token/cost/session breakdown per model plus capability metadata
-    from models.dev (context window, vision, tools, reasoning, etc.).
-    """
+def _build_models_analytics(days: int = 30) -> dict:
+    """Rich per-model analytics for the Models dashboard page."""
     from hermes_state import SessionDB
 
     db = SessionDB()
@@ -3272,6 +3298,12 @@ async def get_models_analytics(days: int = 30):
         }
     finally:
         db.close()
+
+
+@app.get("/api/analytics/models")
+async def get_models_analytics(days: int = 30):
+    """Return token/cost/session breakdown per model plus capabilities."""
+    return _build_models_analytics(days)
 
 
 # ---------------------------------------------------------------------------
@@ -3727,10 +3759,12 @@ def mount_spa(application: FastAPI):
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
+        bootstrap_json = json.dumps(_build_models_dashboard_bootstrap(), ensure_ascii=False).replace("</", "<\\/")
         token_script = (
             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
+            f'window.__HERMES_BASE_PATH__="{prefix}";'
+            f"window.__HERMES_BOOTSTRAP__={bootstrap_json};</script>"
         )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the

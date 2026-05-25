@@ -25,6 +25,13 @@ declare global {
   interface Window {
     __HERMES_SESSION_TOKEN__?: string;
     __HERMES_BASE_PATH__?: string;
+    __HERMES_BOOTSTRAP__?: {
+      models30?: ModelsAnalyticsResponse;
+      auxiliary?: AuxiliaryModelsResponse;
+      show_token_analytics?: boolean;
+      models_error?: string;
+      aux_error?: string;
+    };
   }
 }
 let _sessionToken: string | null = null;
