@@ -559,6 +559,7 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     return stripped
 
 
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
@@ -1535,21 +1536,6 @@ class MCPServerTask:
                 "this warning.",
                 self.name,
             )
-
-        # Validate remote URL once, up front.  Raising here (rather than
-        # letting it blow up inside the SDK's httpx layer on every retry)
-        # means a typo in config.yaml fails fast with a clear error — and
-        # critically, no reconnect-backoff burn.  (Ported from
-        # anomalyco/opencode#25019.)
-        if self._is_http():
-            try:
-                _validate_remote_mcp_url(self.name, config.get("url"))
-            except InvalidMcpUrlError as exc:
-                logger.warning("%s", exc)
-                self._error = exc
-                self._ready.set()
-                return
-
         retries = 0
         initial_retries = 0
         backoff = 1.0

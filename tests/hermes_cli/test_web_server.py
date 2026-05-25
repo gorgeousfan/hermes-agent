@@ -125,6 +125,73 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
+        """Session rows without persisted cwd must not inherit TERMINAL_CWD.
+
+        /api/sessions should reflect per-session DB state, not process/global
+        cwd settings, so workspace grouping stays stable and deterministic.
+        """
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("TERMINAL_CWD", "/tmp/global-default")
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="session-no-cwd", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+
+        rows = resp.json()["sessions"]
+        row = next(s for s in rows if s["id"] == "session-no-cwd")
+        assert row["cwd"] is None
+
+    def test_audio_transcription_endpoint(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        captured = {}
+
+        def fake_transcribe_audio(path):
+            captured["path"] = path
+            return {
+                "success": True,
+                "transcript": "hello from voice mode",
+                "provider": "test",
+            }
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "transcript": "hello from voice mode",
+            "provider": "test",
+        }
+        assert captured["path"].endswith(".webm")
+        assert not Path(captured["path"]).exists()
+
+    def test_audio_transcription_rejects_invalid_base64(self):
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,not base64",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "base64" in resp.json()["detail"]
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server
@@ -300,6 +367,82 @@ class TestWebServerEndpoints:
         )
 
         assert resp.status_code == 200
+
+    def test_get_messaging_platforms(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        telegram = next(platform for platform in platforms if platform["id"] == "telegram")
+        assert telegram["name"] == "Telegram"
+        assert telegram["enabled"] is False
+        assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
+
+    def test_messaging_catalog_covers_gateway_platforms(self):
+        """Catalog is derived from the Platform enum, so every built-in shows up."""
+        from gateway.config import Platform
+
+        resp = self.client.get("/api/messaging/platforms")
+        platforms = {entry["id"] for entry in resp.json()["platforms"]}
+
+        for member in Platform.__members__.values():
+            if member.value == "local":
+                continue
+            assert member.value in platforms, f"Missing gateway platform {member.value} from /api/messaging/platforms"
+
+    def test_messaging_catalog_includes_plugin_platforms(self, monkeypatch):
+        """Plugin-registered adapters appear in the catalog without per-platform code."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        entry = PlatformEntry(
+            name="ircfake",
+            label="IRC (test)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            required_env=["IRC_SERVER"],
+            install_hint="Connect to IRC.",
+            source="plugin",
+        )
+        platform_registry.register(entry)
+        try:
+            resp = self.client.get("/api/messaging/platforms")
+            ids = {row["id"]: row for row in resp.json()["platforms"]}
+            assert "ircfake" in ids
+            assert ids["ircfake"]["name"] == "IRC (test)"
+            assert any(field["key"] == "IRC_SERVER" and field["required"] for field in ids["ircfake"]["env_vars"])
+        finally:
+            platform_registry.unregister("ircfake")
+
+    def test_update_messaging_platform_saves_env_and_enablement(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={
+                "enabled": False,
+                "env": {"TELEGRAM_BOT_TOKEN": "1234567890abcdef"},
+            },
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["TELEGRAM_BOT_TOKEN"] == "1234567890abcdef"
+        assert load_config()["platforms"]["telegram"]["enabled"] is False
+
+        status = self.client.get("/api/messaging/platforms").json()["platforms"]
+        telegram = next(platform for platform in status if platform["id"] == "telegram")
+        assert telegram["enabled"] is False
+
+    def test_messaging_platform_test_reports_missing_required_setup(self):
+        resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
+        assert resp.status_code == 200
+
+        resp = self.client.post("/api/messaging/platforms/discord/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["state"] == "not_configured"
+        assert "DISCORD_BOT_TOKEN" in data["message"]
 
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
@@ -2375,3 +2518,23 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
+    import hermes_cli.main as cli_main
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(
+        cli_main,
+        "_make_tui_argv",
+        lambda *_args, **_kwargs: (["node", "fake-tui.js"], Path("/tmp")),
+    )
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+
+    _argv, _cwd, env = ws._resolve_chat_argv()
+
+    assert env is not None
+    gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
+    assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
+    assert "token=" in gateway_url

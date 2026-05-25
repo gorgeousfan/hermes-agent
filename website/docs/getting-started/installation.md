@@ -10,15 +10,25 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 
 ## Quick Install
 
-### One-Line Installer (Linux / macOS / WSL2)
+### Desktop App (macOS + Windows)
+
+Prefer a native installer? Use the desktop release channel that matches your risk tolerance:
+
+- **Stable (recommended):** [GitHub Releases](https://github.com/NousResearch/hermes-agent/releases/latest)
+- **Nightly (rolling prerelease):** [desktop-nightly](https://github.com/NousResearch/hermes-agent/releases/tag/desktop-nightly)
+
+Stable desktop builds ship signed/notarized macOS artifacts and Windows installers with checksum files.
+
+### One-Line CLI Installer (Linux / macOS / WSL2)
 
 For a git-based install that tracks `main` and gives you the latest changes immediately:
+>>>>>>> main
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-### Windows (native, PowerShell) — Early Beta
+### Windows CLI (native, PowerShell) — Early Beta
 
 :::warning Early BETA
 Native Windows support is **early beta**. It installs and works for the common paths, but hasn't been road-tested as broadly as our POSIX installers. Please [file issues](https://github.com/NousResearch/hermes-agent/issues) when you hit rough edges. For the most battle-tested setup on Windows today, use the Linux/macOS one-liner above inside **WSL2** instead.
@@ -60,19 +70,6 @@ The installer detects Termux automatically and switches to a tested Android flow
 - skips the untested browser / WhatsApp bootstrap by default
 
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
-
-:::note Windows Feature Parity (Early Beta)
-
-Native Windows is in **early beta**. Everything except the browser-based dashboard chat terminal runs natively on Windows:
-- **CLI (`hermes chat`, `hermes setup`, `hermes gateway`, …)** — native, uses your default terminal
-- **Gateway (Telegram, Discord, Slack, …)** — native, runs as a background PowerShell process
-- **Cron scheduler** — native
-- **Browser tool** — native (Chromium via Node.js)
-- **MCP servers** — native (stdio and HTTP transports both supported)
-- **Dashboard `/chat` terminal pane** — **WSL2 only** (uses a POSIX PTY; native Windows has no equivalent).  The rest of the dashboard (sessions, jobs, metrics) works natively — only the embedded PTY terminal tab is gated.
-
-Set `HERMES_DISABLE_WINDOWS_UTF8=1` in your environment if you hit an encoding-related bug and want to fall back to the legacy cp1252 stdio path (useful for bisecting).
-:::
 
 ### What the Installer Does
 

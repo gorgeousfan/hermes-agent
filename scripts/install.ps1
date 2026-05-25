@@ -87,6 +87,55 @@ $InstallStageProtocolVersion = 1
 
 # ============================================================================
 # Helper functions
+
+# Return the real OS processor architecture as a lowercase string suitable for
+# Node.js / electron download URL slugs: "arm64", "x64", or "x86".
+#
+# Why not just trust [Environment]::Is64BitOperatingSystem or
+# [RuntimeInformation]::OSArchitecture?  On Windows on ARM, when this script
+# is invoked from Windows PowerShell 5.1 (the default `powershell.exe`) or
+# any x64 PowerShell host, the process runs under Prism x64 emulation and
+# BOTH of those APIs report `X64` -- they describe the emulated view, not
+# the real OS.  We've seen this concretely on Snapdragon X1 hardware: an
+# ARM64-based Surface Laptop returns OSArchitecture=X64 from an emulated
+# PowerShell session.
+#
+# Win32_Processor.Architecture is invariant to emulation.  Values:
+#   0=x86, 5=ARM, 9=AMD64/x64, 12=ARM64.  We fall back to
+#   PROCESSOR_ARCHITEW6432 (set on WoW64 with the real OS arch) and then
+#   PROCESSOR_ARCHITECTURE so we still produce a sensible answer if CIM
+#   isn't available (locked-down WMI, container, etc.).
+function Get-WindowsArch {
+    try {
+        $proc = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop |
+            Select-Object -First 1
+        switch ([int]$proc.Architecture) {
+            12 { return "arm64" }
+            9  { return "x64" }
+            0  { return "x86" }
+            5  { return "arm" }
+        }
+    } catch {
+        # CIM unavailable -- fall through to env-var path
+    }
+
+    $envArch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+    switch ($envArch) {
+        "ARM64" { return "arm64" }
+        "AMD64" { return "x64" }
+        "x86"   { return "x86" }
+        default {
+            # Last-resort: respect 64-bitness so we don't ship a 32-bit
+            # toolchain to anyone.
+            if ([Environment]::Is64BitOperatingSystem) { return "x64" } else { return "x86" }
+        }
+    }
+}
+
 # ============================================================================
 
 function Write-Banner {
@@ -525,17 +574,18 @@ function Install-Git {
     Write-Info "(no admin rights required; isolated from any system Git install)"
 
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) {
-            # Detect ARM64 vs x64 explicitly; PortableGit ships separate assets.
-            if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
-                "arm64"
-            } else {
-                "64-bit"
-            }
+        $arch = Get-WindowsArch
+        if ($arch -eq 'arm64') {
+            $assetTag = 'arm64'
+            $downloadIsZip = $false
+        } elseif ($arch -eq 'x64') {
+            $assetTag = '64-bit'
+            $downloadIsZip = $false
         } else {
-            # PortableGit does not ship a 32-bit build -- fall back to MinGit 32-bit
-            # with a warning that bash-based features will be unavailable.
-            "32-bit-mingit"
+            # PortableGit does not ship 32-bit / arm builds -- fall back to MinGit
+            # 32-bit with a warning that bash-based features will be unavailable.
+            $assetTag = '32-bit-mingit'
+            $downloadIsZip = $true
         }
 
         # Pinned git-for-windows release. We deliberately do NOT hit
@@ -721,7 +771,7 @@ function Test-Node {
     Write-Info "Downloading portable Node.js $NodeVersion to $HermesHome\node\ ..."
     Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
-        $arch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+        $arch = Get-WindowsArch
         $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
         $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
@@ -783,7 +833,19 @@ function Test-Node {
             # check the post-condition.  See the long comment in Install-Uv
             # for the same pattern.
             $ErrorActionPreference = "Continue"
-            winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
+            # On ARM64, force winget to fetch the ARM64 installer.  Without
+            # the explicit override, winget on WoW64 sometimes still resolves
+            # to x64 manifests, leaving us with an emulated Node toolchain
+            # even after a "successful" install.  The OpenJS manifest does
+            # publish an arm64 installer, so this is safe.
+            $wingetArgs = @(
+                'install','OpenJS.NodeJS.LTS','--silent',
+                '--accept-package-agreements','--accept-source-agreements'
+            )
+            if ((Get-WindowsArch) -eq 'arm64') {
+                $wingetArgs += @('--architecture','arm64')
+            }
+            winget @wingetArgs 2>&1 | Out-Null
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
@@ -856,22 +918,57 @@ function Install-SystemPackages {
     # Try winget first (most common on modern Windows)
     if ($hasWinget) {
         Write-Info "Installing $description via winget..."
+        # Per-package log paths -- key the lookup by package id so we can
+        # decide AFTER the post-install Get-Command check whether to keep
+        # the log (still missing -> keep as breadcrumb) or delete it (now
+        # present -> happy path, no clutter).
+        $pkgLogs = @{}
         foreach ($pkg in $wingetPkgs) {
+            $log = "$env:TEMP\hermes-winget-$($pkg -replace '[^A-Za-z0-9]','_')-$(Get-Random).log"
+            $pkgLogs[$pkg] = $log
+            # --source winget pins us to the github-backed source.  Without this,
+            # a broken msstore source (cert validation failures like 0x8a15005e
+            # are common on Windows-on-ARM and some corporate networks) makes
+            # winget bail with "please specify --source" *before* attempting any
+            # install -- and it exits 0, so the surrounding try/catch never fires.
+            # We don't ship anything from msstore, so pinning is safe.
             try {
-                winget install $pkg --silent --accept-package-agreements --accept-source-agreements 2>&1 | Out-Null
-            } catch { }
+                $output = winget install --exact --id $pkg --source winget --silent `
+                    --accept-package-agreements --accept-source-agreements 2>&1
+                $output | Out-File -FilePath $log -Encoding utf8
+                "winget exit: $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+            } catch {
+                $_ | Out-File -FilePath $log -Encoding utf8 -Append
+                "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
+            }
         }
-        # Refresh PATH and recheck
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        # Refresh PATH from both env-var hives AND winget's alias shim directory.
+        # winget exposes packages via "command line aliases" in %LOCALAPPDATA%\
+        # Microsoft\WinGet\Links, which is added to PATH by the AppExecutionAlias
+        # machinery only in *newly-spawned* shells -- not the current process.
+        # Without this addition, Get-Command rg below would falsely return null
+        # immediately after a successful install.
+        $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+        $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if (Test-Path $wingetLinks) {
+            $envPath = "$envPath;$wingetLinks"
+        }
+        $env:Path = $envPath
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
             $needRipgrep = $false
+            Remove-Item -Path $pkgLogs["BurntSushi.ripgrep.MSVC"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("BurntSushi.ripgrep.MSVC")) {
+            Write-Warn "winget could not install ripgrep; details: $($pkgLogs['BurntSushi.ripgrep.MSVC'])"
         }
         if ($needFfmpeg -and (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             Write-Success "ffmpeg installed"
             $script:HasFfmpeg = $true
             $needFfmpeg = $false
+            Remove-Item -Path $pkgLogs["Gyan.FFmpeg"] -ErrorAction SilentlyContinue
+        } elseif ($pkgLogs.ContainsKey("Gyan.FFmpeg")) {
+            Write-Warn "winget could not install ffmpeg; details: $($pkgLogs['Gyan.FFmpeg'])"
         }
         if (-not $needRipgrep -and -not $needFfmpeg) { return }
     }
