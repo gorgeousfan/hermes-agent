@@ -528,6 +528,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    model_validate = entry.get("model_validate")
+                    if isinstance(model_validate, bool):
+                        result["model_validate"] = model_validate
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
@@ -556,6 +559,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
+                        model_validate = entry.get("model_validate")
+                        if isinstance(model_validate, bool):
+                            result["model_validate"] = model_validate
                         extra_body = entry.get("extra_body")
                         if isinstance(extra_body, dict):
                             result["extra_body"] = dict(extra_body)
@@ -611,6 +617,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        model_validate = entry.get("model_validate")
+        if isinstance(model_validate, bool):
+            result["model_validate"] = model_validate
         return result
 
     return None
@@ -699,6 +708,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        # Propagate model_validate so callers know whether to skip validation
+        if "model_validate" in custom_provider:
+            pool_result["model_validate"] = custom_provider["model_validate"]
         request_overrides = _custom_provider_request_overrides(custom_provider)
         if request_overrides:
             pool_result["request_overrides"] = {
@@ -736,6 +748,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    # Propagate model_validate so callers know whether to skip validation
+    if "model_validate" in custom_provider:
+        result["model_validate"] = custom_provider["model_validate"]
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
