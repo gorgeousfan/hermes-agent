@@ -8888,6 +8888,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
+            # Try fast-forward first (no local commits ahead).
             pull_result = subprocess.run(
                 git_cmd + ["pull", "--ff-only", "origin", branch],
                 cwd=PROJECT_ROOT,
@@ -8895,24 +8896,34 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
+                # ff-only failed — local has commits ahead of origin/branch.
+                # Rebase the local commits on top instead of `reset --hard`,
+                # which would silently destroy them. If rebase hits a
+                # conflict, leave it paused so the user can resolve.
                 print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    "  ⚠ Local commits diverge from remote — rebasing on top..."
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                rebase_result = subprocess.run(
+                    git_cmd + ["rebase", f"origin/{branch}"],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                if rebase_result.returncode != 0:
+                    # Conflict mid-rebase. The repo is in an in-progress
+                    # rebase state. Do NOT auto-abort or reset — surface
+                    # the conflict and let the user choose.
+                    print(f"✗ Rebase onto origin/{branch} hit a conflict.")
+                    if rebase_result.stderr.strip():
+                        print(f"  {rebase_result.stderr.strip()}")
+                    print("  Resolve in PROJECT_ROOT, then either:")
+                    print("    git rebase --continue   # keep local commits")
+                    print("    git rebase --abort      # discard the rebase attempt")
                     print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
+                        "  To re-run a fresh, destructive reset (drops local commits),"
+                    )
+                    print(
+                        f"    use:  git fetch origin && git reset --hard origin/{branch}"
                     )
                     sys.exit(1)
 
