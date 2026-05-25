@@ -1067,6 +1067,13 @@ def init_agent(
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            # Session-boundary background review flags (issue #31597).
+            # Opt-in: when enabled, a background memory review is triggered
+            # at the corresponding session boundary in addition to the
+            # nudge_interval mid-conversation trigger.
+            agent._review_on_reset = bool(mem_config.get("review_on_reset", False))
+            agent._review_on_session_end = bool(mem_config.get("review_on_session_end", False))
+            agent._review_on_compression = bool(mem_config.get("review_on_compression", False))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(

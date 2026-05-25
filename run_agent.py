@@ -1956,6 +1956,21 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        # Session-boundary background review (issue #31597).
+        # Fires before the memory provider is torn down so the review
+        # thread can still use the provider.
+        if (
+            getattr(self, "_review_on_session_end", False)
+            and hasattr(self, "_spawn_background_review")
+        ):
+            try:
+                self._spawn_background_review(
+                    messages_snapshot=list(messages or []),
+                    review_memory=True,
+                )
+            except Exception:
+                pass  # Background review is best-effort
+
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -1980,6 +1995,21 @@ class AIAgent:
         Called when session_id rotates (e.g. /new, context compression);
         providers keep their state and continue running under the old
         session_id — they just flush pending extraction now."""
+        # Session-boundary background review (issue #31597).
+        # Fires before the memory extraction so the review sees the
+        # full pre-compression transcript.
+        if (
+            getattr(self, "_review_on_compression", False)
+            and hasattr(self, "_spawn_background_review")
+        ):
+            try:
+                self._spawn_background_review(
+                    messages_snapshot=list(messages or []),
+                    review_memory=True,
+                )
+            except Exception:
+                pass  # Background review is best-effort
+
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
