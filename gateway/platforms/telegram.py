@@ -193,6 +193,38 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _proxy_http_limits() -> Any:
+    """Bounded httpx connection limits for the Telegram pools when a proxy is set.
+
+    Through a tunneling proxy, httpcore does not reliably release the underlying
+    socket on ConnectError, so half-closed connections accumulate in the pool
+    over long flaky-proxy runs and eventually exhaust the process fd limit (see
+    #31599). Capping the pool and setting a finite ``keepalive_expiry`` lets
+    httpx evict idle/dead connections during pool maintenance instead of leaving
+    them pinned for the process lifetime. All three knobs are env-tunable so an
+    operator can widen them for high-throughput proxied deployments.
+    """
+    import httpx
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _env_float(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    return httpx.Limits(
+        max_connections=_env_int("HERMES_TELEGRAM_PROXY_MAX_CONNECTIONS", 20),
+        max_keepalive_connections=_env_int("HERMES_TELEGRAM_PROXY_MAX_KEEPALIVE", 10),
+        keepalive_expiry=_env_float("HERMES_TELEGRAM_PROXY_KEEPALIVE_EXPIRY", 30.0),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -1430,8 +1462,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                # Bound the proxied pools and set a keepalive expiry so half-closed
+                # connections leaked by httpcore's tunnel-proxy path on ConnectError
+                # are evicted instead of accumulating until fd exhaustion (#31599).
+                proxy_kwargs = {**request_kwargs, "httpx_kwargs": {"limits": _proxy_http_limits()}}
+                request = HTTPXRequest(**proxy_kwargs, proxy=proxy_url)
+                get_updates_request = HTTPXRequest(**proxy_kwargs, proxy=proxy_url)
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
