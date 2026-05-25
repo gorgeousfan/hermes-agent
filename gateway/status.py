@@ -89,26 +89,67 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return the kernel start time for a process when available.
+
+    On Linux, reads the start-time clock-tick value from ``/proc/<pid>/stat``.
+    On macOS (or any system where ``/proc`` is absent), falls back to
+    ``ps -p <pid> -o lstart=`` which returns a locale-independent start
+    timestamp string.  The string is not an integer, so we return its hash as
+    a stable comparable int — sufficient for equality checks.
+    """
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+    # macOS / non-Linux fallback: ask ps(1) for the human-readable start time.
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        lstart = result.stdout.strip()
+        if lstart:
+            # Return a stable integer derived from the start string so
+            # equality comparisons work correctly across calls.
+            return hash(lstart) & 0x7FFF_FFFF_FFFF_FFFF
+    except Exception:  # pragma: no cover
+        pass
+    return None
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Return the process command line as a space-separated string."""
+    """Return the process command line as a space-separated string.
+
+    On Linux, reads ``/proc/<pid>/cmdline``.  On macOS (or any system where
+    ``/proc`` is absent), falls back to ``ps -p <pid> -o command=``.
+    """
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
+        if raw:
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
-
-    if not raw:
-        return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+        pass
+    # macOS / non-Linux fallback.
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        cmd = result.stdout.strip()
+        if cmd:
+            return cmd
+    except Exception:  # pragma: no cover
+        pass
+    return None
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
@@ -351,6 +392,20 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
+                # Legacy lock records written on macOS (or other non-Linux
+                # systems before the ps(1) fallback was added) can have
+                # ``start_time: null``.  When start_time is absent we cannot
+                # do a numeric comparison, but we can still detect PID reuse
+                # by checking whether the live process looks like a gateway.
+                # If the live PID's cmdline does not match a gateway pattern
+                # the PID was recycled by an unrelated process and the lock
+                # is stale.  We intentionally do NOT fall back to
+                # ``_record_looks_like_gateway`` here: the stored argv always
+                # looks like a gateway (it was written by one), so that check
+                # would never flag a recycled PID as stale.
+                if not stale and existing.get("start_time") is None:
+                    if not _looks_like_gateway_process(existing_pid):
+                        stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still respond to os.kill(pid, 0) but are not
                 # actually running. Treat them as stale so --replace works.

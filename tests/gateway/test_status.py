@@ -265,6 +265,91 @@ class TestScopedLocks:
         status.release_scoped_lock("telegram-bot-token", "secret")
         assert not lock_path.exists()
 
+    def test_acquire_scoped_lock_detects_pid_reuse_via_macos_start_time(self, tmp_path, monkeypatch):
+        """macOS: lock with non-null start_time should detect PID reuse when ps returns different time."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Simulate a lock written on macOS with a hashed lstart start_time.
+        original_hash = hash("Mon May 25 01:00:00 2026") & 0x7FFF_FFFF_FFFF_FFFF
+        lock_path.write_text(json.dumps({
+            "pid": 1379,
+            "kind": "hermes-gateway",
+            "argv": ["python", "hermes_cli/main.py", "gateway", "run", "--replace"],
+            "start_time": original_hash,
+            "scope": "weixin-bot-token",
+            "metadata": {"platform": "weixin"},
+        }))
+
+        # PID 1379 is now reused by a non-gateway process - start_time differs.
+        new_hash = hash("Mon May 25 06:45:12 2026") & 0x7FFF_FFFF_FFFF_FFFF
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: new_hash)
+
+        acquired, existing = status.acquire_scoped_lock("weixin-bot-token", "secret", metadata={"platform": "weixin"})
+
+        assert acquired is True, "stale lock with reused PID should be cleared"
+
+    def test_acquire_scoped_lock_detects_pid_reuse_via_legacy_null_start_time(self, tmp_path, monkeypatch):
+        """macOS: legacy lock with start_time=null should be cleared when live PID is not a gateway.
+
+        This covers locks written before the ps(1) fallback was added - the
+        exact scenario from issue #31890 where TextInputMenuAgent reused a
+        Weixin gateway PID.
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 1379,
+            "kind": "hermes-gateway",
+            "argv": ["python", "hermes_cli/main.py", "gateway", "run", "--replace"],
+            "start_time": None,
+            "scope": "weixin-bot-token",
+            "metadata": {"platform": "weixin"},
+        }))
+
+        # PID 1379 is alive but is TextInputMenuAgent, not the gateway.
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "/System/Library/CoreServices/TextInputMenuAgent.app/Contents/MacOS/TextInputMenuAgent",
+        )
+
+        acquired, existing = status.acquire_scoped_lock("weixin-bot-token", "secret", metadata={"platform": "weixin"})
+
+        assert acquired is True, "legacy null start_time lock whose PID is reused by non-gateway should be cleared"
+
+    def test_acquire_scoped_lock_retains_live_gateway_with_null_start_time(self, tmp_path, monkeypatch):
+        """macOS: a null start_time lock should NOT be cleared when the live PID is still the gateway."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "weixin-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 1379,
+            "kind": "hermes-gateway",
+            "argv": ["python", "hermes_cli/main.py", "gateway", "run", "--replace"],
+            "start_time": None,
+            "scope": "weixin-bot-token",
+            "metadata": {"platform": "weixin"},
+        }))
+
+        # PID 1379 is alive and IS still the gateway process.
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python hermes_cli/main.py gateway run --replace",
+        )
+
+        acquired, existing = status.acquire_scoped_lock("weixin-bot-token", "secret", metadata={"platform": "weixin"})
+
+        assert acquired is False, "null start_time lock whose PID is still the gateway should block acquisition"
+        assert existing["pid"] == 1379
+
 
 class TestTakeoverMarker:
     """Tests for the --replace takeover marker.
