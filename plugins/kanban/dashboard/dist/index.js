@@ -2968,6 +2968,80 @@
     );
   }
 
+  function ArtifactList(props) {
+    const artifacts = props.artifacts || [];
+    if (!artifacts.length) {
+      return h("div", { className: "text-xs text-muted-foreground" }, "No artifact metadata");
+    }
+    return h("div", { className: "hermes-kanban-artifact-list" },
+      artifacts.map(function (a, idx) {
+        const label = a.path || a.label || a.kind || "artifact";
+        return h("div", { key: `${a.source || "artifact"}-${idx}`, className: "hermes-kanban-artifact-row" },
+          h("span", { className: "hermes-kanban-artifact-kind" }, a.kind || "artifact"),
+          h("code", { className: "hermes-kanban-artifact-path", title: a.resolved_path || label }, label),
+          h("span", { className: `hermes-kanban-artifact-state hermes-kanban-artifact-state--${a.availability || "unknown"}` }, a.availability || "unknown"),
+        );
+      }),
+    );
+  }
+
+  function BlockedSummaryPanel(props) {
+    const block = props.block;
+    if (!block || !block.is_blocked) return null;
+    return h("div", { className: "hermes-kanban-blocked-summary" },
+      h("div", { className: "hermes-kanban-blocked-summary-title" }, "Blocked — missing input needed"),
+      block.reason ? h("div", { className: "text-xs" }, block.reason) : null,
+      block.latest_relevant_comment ? h("div", { className: "text-xs text-muted-foreground" },
+        `Latest comment: ${block.latest_relevant_comment.body || ""}`) : null,
+      h("div", { className: "text-xs text-muted-foreground" }, block.comment_prompt || "Add the missing info as a comment, then unblock when ready."),
+    );
+  }
+
+  function TaskSummaryTreeSection(props) {
+    const [tree, setTree] = useState(null);
+    const [err, setErr] = useState(null);
+    const [expanded, setExpanded] = useState(true);
+    useEffect(function () {
+      let cancelled = false;
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/summary-tree?comment_limit=3`, props.boardSlug))
+        .then(function (d) { if (!cancelled) { setTree(d); setErr(null); } })
+        .catch(function (e) { if (!cancelled) setErr(String(e.message || e)); });
+      return function () { cancelled = true; };
+    }, [props.taskId, props.boardSlug]);
+
+    if (err) return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("div", { className: "hermes-kanban-section-head" }, "Summary tree"),
+      h("div", { className: "text-xs text-destructive" }, err),
+    );
+    if (!tree) return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("div", { className: "hermes-kanban-section-head" }, "Summary tree"),
+      h("div", { className: "text-xs text-muted-foreground" }, "Loading summary tree…"),
+    );
+    const nodes = (tree.order || []).map(function (id) { return tree.tasks && tree.tasks[id]; }).filter(Boolean);
+    return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-section-head hermes-kanban-summary-tree-toggle",
+        onClick: function () { setExpanded(!expanded); },
+      }, `Summary tree (${tree.stats ? tree.stats.total : nodes.length}) ${expanded ? "▾" : "▸"}`),
+      expanded ? h("div", { className: "hermes-kanban-summary-tree-list" },
+        nodes.map(function (node) {
+          const result = node.display_result || node.latest_summary || "";
+          return h("div", { key: node.id, className: "hermes-kanban-summary-node", style: { marginLeft: `${Math.min(node.depth || 0, 8) * 14}px` } },
+            h("div", { className: "hermes-kanban-summary-node-head" },
+              h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[node.status]) }),
+              h("span", { className: "font-medium" }, node.title || node.id),
+              h("span", { className: "text-xs text-muted-foreground" }, node.status),
+            ),
+            result ? h(MarkdownBlock, { source: result, enabled: props.renderMarkdown }) : null,
+            h(BlockedSummaryPanel, { block: node.block }),
+            h(ArtifactList, { artifacts: node.artifacts || [] }),
+          );
+        }),
+      ) : null,
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -3037,6 +3111,11 @@
         onRemoveParent: props.onRemoveParent,
         onAddChild: props.onAddChild,
         onRemoveChild: props.onRemoveChild,
+      }),
+      h(TaskSummaryTreeSection, {
+        taskId: t.id,
+        boardSlug: props.boardSlug,
+        renderMarkdown: props.renderMarkdown,
       }),
       t.result ? h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
