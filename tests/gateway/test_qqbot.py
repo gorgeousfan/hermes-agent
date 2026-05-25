@@ -46,6 +46,30 @@ class TestQQAdapterInit:
         assert adapter._app_id == "123"
         assert adapter._client_secret == "sec"
 
+    def test_create_task_closes_coroutine_without_running_loop(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        async def noop():
+            return None
+
+        coro = noop()
+        try:
+            result = QQAdapter._create_task(coro)
+            assert result is None
+            assert coro.cr_frame is None
+        finally:
+            coro.close()
+
+    def test_dispatch_payload_message_event_is_safe_without_running_loop(self):
+        adapter = self._make(app_id="a", client_secret="b")
+
+        async def fake_on_message(event_type, data):
+            return None
+
+        adapter._on_message = fake_on_message
+
+        adapter._dispatch_payload({"op": 0, "t": "C2C_MESSAGE_CREATE", "s": 1, "d": {}})
+
     def test_env_fallback(self):
         with mock.patch.dict(os.environ, {"QQ_APP_ID": "env_id", "QQ_CLIENT_SECRET": "env_sec"}, clear=False):
             adapter = self._make()
@@ -138,8 +162,8 @@ class TestIsVoiceContentType:
     def test_voice_content_type(self):
         assert self._fn("voice", "msg.silk") is True
 
-    def test_audio_content_type(self):
-        assert self._fn("audio/mp3", "file.mp3") is True
+    def test_plain_audio_file_is_not_voice_message(self):
+        assert self._fn("audio/mp3", "file.mp3") is False
 
     def test_voice_extension(self):
         assert self._fn("", "file.silk") is True
@@ -1894,11 +1918,10 @@ class TestProcessAttachmentsPathExposure:
     async def test_video_attachment_includes_path(self):
         adapter = self._make_adapter()
 
-        # Mock _download_and_cache to return a known path
-        async def fake_download(url, ct, original_name=""):
-            return "/tmp/cache/video_abc123.mp4"
+        async def fake_download(url, max_bytes, *, follow_redirects=False):
+            return b"fake video bytes"
 
-        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+        adapter._download_attachment_bytes = fake_download  # type: ignore[assignment]
 
         attachments = [
             {
@@ -1912,18 +1935,20 @@ class TestProcessAttachmentsPathExposure:
         assert result["image_urls"] == []
         assert result["voice_transcripts"] == []
         info = result["attachment_info"]
-        assert "[video:" in info
+        assert "[文件: my_video.mp4]" in info
+        assert "本地路径:" in info
         assert "my_video.mp4" in info
-        assert "/tmp/cache/video_abc123.mp4" in info
+        assert result["attachments"][0].kind == "media"
+        assert result["attachments"][0].local_path.endswith("my_video.mp4")
 
     @pytest.mark.asyncio
     async def test_file_attachment_includes_path(self):
         adapter = self._make_adapter()
 
-        async def fake_download(url, ct, original_name=""):
-            return "/tmp/cache/doc_abc123_report.pdf"
+        async def fake_download(url, max_bytes, *, follow_redirects=False):
+            return b"%PDF-1.4 fake pdf bytes"
 
-        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+        adapter._download_attachment_bytes = fake_download  # type: ignore[assignment]
 
         attachments = [
             {
@@ -1935,18 +1960,20 @@ class TestProcessAttachmentsPathExposure:
         result = await adapter._process_attachments(attachments)
 
         info = result["attachment_info"]
-        assert "[file:" in info
-        assert "report.pdf" in info
-        assert "/tmp/cache/doc_abc123_report.pdf" in info
+        assert "[文件: report.pdf]" in info
+        assert "本地路径:" in info
+        assert "PDF 已保存" in info
+        assert result["attachments"][0].kind == "document"
+        assert result["attachments"][0].local_path.endswith("report.pdf")
 
     @pytest.mark.asyncio
-    async def test_video_without_filename_falls_back_to_content_type(self):
+    async def test_video_without_filename_falls_back_to_url_name(self):
         adapter = self._make_adapter()
 
-        async def fake_download(url, ct, original_name=""):
-            return "/tmp/cache/video_xyz.mp4"
+        async def fake_download(url, max_bytes, *, follow_redirects=False):
+            return b"fake video bytes"
 
-        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+        adapter._download_attachment_bytes = fake_download  # type: ignore[assignment]
 
         attachments = [
             {
@@ -1958,17 +1985,19 @@ class TestProcessAttachmentsPathExposure:
         result = await adapter._process_attachments(attachments)
 
         info = result["attachment_info"]
-        assert "[video: video/mp4" in info
-        assert "/tmp/cache/video_xyz.mp4" in info
+        assert "[文件: vid]" in info
+        assert "本地路径:" in info
+        assert result["attachments"][0].kind == "media"
+        assert result["attachments"][0].local_path.endswith("vid")
 
     @pytest.mark.asyncio
-    async def test_download_failure_produces_no_attachment_info(self):
+    async def test_download_failure_produces_attachment_info(self):
         adapter = self._make_adapter()
 
-        async def fake_download(url, ct, original_name=""):
+        async def fake_download(url, max_bytes, *, follow_redirects=False):
             return None
 
-        adapter._download_and_cache = fake_download  # type: ignore[assignment]
+        adapter._download_attachment_bytes = fake_download  # type: ignore[assignment]
 
         attachments = [
             {
@@ -1978,7 +2007,7 @@ class TestProcessAttachmentsPathExposure:
             }
         ]
         result = await adapter._process_attachments(attachments)
-        assert result["attachment_info"] == ""
+        assert "下载失败或超过大小限制" in result["attachment_info"]
 
     @pytest.mark.asyncio
     async def test_quoted_video_includes_path_in_quote_block(self):
