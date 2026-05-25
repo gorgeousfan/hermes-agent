@@ -60,6 +60,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "openai-oauth": HermesOverlay(
+        transport="codex_responses",
+        auth_type="oauth_external",
+        base_url_override="https://chatgpt.com/backend-api/codex",
+        base_url_env_var="HERMES_OPENAI_OAUTH_BASE_URL",
+    ),
     "xai-oauth": HermesOverlay(
         transport="codex_responses",
         auth_type="oauth_external",
@@ -247,6 +253,11 @@ ALIASES: Dict[str, str] = {
     "z.ai": "zai",
     "zhipu": "zai",
 
+    # openai oauth
+    "openai-oauth": "openai-oauth",
+    "openai-subscription": "openai-oauth",
+    "chatgpt-oauth": "openai-oauth",
+
     # xai
     "x-ai": "xai",
     "x.ai": "xai",
@@ -372,6 +383,7 @@ ALIASES: Dict[str, str] = {
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
+    "openai-oauth": "OpenAI (OAuth)",
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
