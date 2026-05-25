@@ -794,6 +794,7 @@ AUTHOR_MAP = {
     "7093928+0xyg3n@users.noreply.github.com": "0xyg3n",
     "nftpoetrist@gmail.com": "nftpoetrist",  # PR #18982
     "millerc79@users.noreply.github.com": "millerc79",  # PR #19033
+    "shellybotmoyer@users.noreply.github.com": "shellybotmoyer",
     "hermes@example.com": "shellybotmoyer",  # PR #18915 (bot-committed)
     "exx@example.com": "exxmen",  # PR #19555
     "hypnosis.mda@gmail.com": "Hypn0sis",

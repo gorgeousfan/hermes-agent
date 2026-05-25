@@ -261,7 +261,12 @@ def run_conversation(
     # Installed once, transparent when streams are healthy, prevents crash on write.
     _install_safe_stdio()
 
-    agent._ensure_db_session()
+    try:
+        agent._ensure_db_session()
+    except Exception:
+        # Session DB unavailable — proceed without persistence rather than
+        # silently dropping the final response (PR #18765 / issue #18765).
+        agent._session_db = None
 
     # Tell auxiliary_client what the live main provider/model are for
     # this turn. Used by tools whose behaviour depends on the active

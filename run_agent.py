@@ -504,26 +504,19 @@ class AIAgent:
             return None
 
     def _ensure_db_session(self) -> None:
-        """Create session DB row on first use. Disables _session_db on failure."""
+        """Create session DB row on first use. Raises on failure so callers handle it explicitly."""
         if self._session_db_created or not self._session_db:
             return
-        try:
-            self._session_db.create_session(
-                session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model,
-                model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
-                user_id=None,
-                parent_session_id=self._parent_session_id,
-            )
-            self._session_db_created = True
-        except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
-            )
+        self._session_db.create_session(
+            session_id=self.session_id,
+            source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            model=self.model,
+            model_config=self._session_init_model_config,
+            system_prompt=self._cached_system_prompt,
+            user_id=None,
+            parent_session_id=self._parent_session_id,
+        )
+        self._session_db_created = True
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
