@@ -273,7 +273,11 @@ def pixel_art_video(
         )
     _ensure_ffmpeg()
 
-    base = Image.open(base_image).convert("RGB")
+    original = Image.open(base_image)
+    try:
+        base = original.convert("RGB")
+    finally:
+        original.close()
     W, H = base.size
 
     rng = random.Random(seed if seed is not None else 42)
