@@ -1455,6 +1455,9 @@ class BasePlatformAdapter(ABC):
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
+        # When True, TTS fires on ALL message types (not just voice input).
+        # Driven by voice.auto_tts_always in config.yaml.
+        self._auto_tts_always: bool = False
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -3490,16 +3493,27 @@ class BasePlatformAdapter(ABC):
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
+                        and (event.message_type == MessageType.VOICE or self._auto_tts_always)
                         and text_content
                         and not media_files):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        from gateway.session_context import set_session_vars, get_session_env
                         if check_tts_requirements():
                             import json as _json
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            # Ensure the session platform context var is set so that
+                            # text_to_speech_tool picks the correct output format.
+                            # When auto-TTS fires from the gateway send pipeline the
+                            # agent's session context is not active, so platform
+                            # detection inside the tool falls back to "" (→ MP3).
+                            # We set it explicitly here using the adapter's known platform.
+                            _platform_name = self.platform.value if hasattr(self.platform, "value") else str(self.platform).lower()
+                            _existing_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+                            if not _existing_platform:
+                                set_session_vars(platform=_platform_name)
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )
