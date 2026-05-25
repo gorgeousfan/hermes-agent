@@ -14757,6 +14757,32 @@ class GatewayRunner:
                         )
                         break
 
+                    # api_server uses SSE queues — adapter.send()/handle_message()
+                    # do not work for HTTP/SSE delivery. Push directly.
+                    if platform_name == "api_server":
+                        _api_adapter = self.adapters.get(Platform.API_SERVER)
+                        _push_fn = getattr(_api_adapter, "push_process_event", None)
+                        if _push_fn is not None:
+                            try:
+                                delivered = _push_fn({
+                                    "event": "process.completed",
+                                    "session_key": session_key,
+                                    "timestamp": time.time(),
+                                    "session_id": session_id,
+                                    "command": session.command,
+                                    "exit_code": session.exit_code,
+                                    "output": _out,
+                                })
+                                if delivered:
+                                    logger.info(
+                                        "Process %s finished — pushed api_server SSE notification for session %s",
+                                        session_id,
+                                        session_key,
+                                    )
+                            except Exception as e:
+                                logger.error("api_server SSE push error: %s", e)
+                        break
+
                     adapter = None
                     for p, a in self.adapters.items():
                         if p == source.platform:
