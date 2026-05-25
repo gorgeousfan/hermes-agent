@@ -41,6 +41,13 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# BlueBubbles addresses chats by raw chat GUID ("iMessage;-;handle" /
+# "iMessage;+;groupId" — contains ';'), email handle, or phone number.
+# Without these patterns, callers like send_message(target="bluebubbles:user@x.com")
+# fall through to channel-name resolution, which has nothing to match against
+# until the directory is populated by _build_bluebubbles.
+_BLUEBUBBLES_GUID_RE = re.compile(r"^\s*[A-Za-z0-9_+-]+;[+-];[^\s;]+\s*$")
+_EMAIL_TARGET_RE = re.compile(r"^\s*[\w.+-]+@[\w-]+(?:\.[\w-]+)+\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -390,6 +397,16 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    if platform_name == "bluebubbles":
+        target = target_ref.strip()
+        # Raw chat GUID — adapter._resolve_chat_guid returns it as-is.
+        if _BLUEBUBBLES_GUID_RE.fullmatch(target_ref):
+            return target, None, True
+        # Email handle or E.164 phone — the adapter resolves to a GUID
+        # via /api/v1/chat/query, with a private-API fallback that creates
+        # a fresh chat for the address.
+        if _EMAIL_TARGET_RE.fullmatch(target_ref) or _E164_TARGET_RE.fullmatch(target_ref):
+            return target, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
