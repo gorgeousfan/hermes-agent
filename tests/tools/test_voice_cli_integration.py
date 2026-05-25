@@ -1104,6 +1104,19 @@ class TestVoiceSpeakResponseReal:
             mock_tts.assert_not_called()
 
     @patch("cli._cprint")
+    @patch("tools.voice_mode.play_audio_file")
+    def test_policy_blocked_content_never_invokes_tts_or_playback(self, mock_play, _cp):
+        cli = _make_voice_cli(_voice_tts=True)
+        blocked = "API_KEY=hk_test_1234567890abcdef is configured in /Users/brenno/.hermes/.env"
+
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            cli._voice_speak_response(blocked)
+
+        mock_tts.assert_not_called()
+        mock_play.assert_not_called()
+        assert cli._voice_tts_done.is_set()
+
+    @patch("cli._cprint")
     @patch("cli.os.makedirs")
     @patch("tools.tts_tool.text_to_speech_tool", return_value='{"success": true}')
     def test_long_text_truncated(self, mock_tts, _mkd, _cp):

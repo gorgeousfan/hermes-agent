@@ -10689,6 +10689,41 @@ class HermesCLI:
             if not tts_text:
                 return
 
+            from gateway.ambient_voice_policy import AmbientVoicePolicy, VoiceContext
+
+            output_device = "living_room"
+            rule_profile = "living_room_default"
+            explicit_private = False
+            try:
+                from hermes_cli.config import load_config
+
+                voice_config = (load_config() or {}).get("voice") or {}
+                if isinstance(voice_config, dict):
+                    configured_device = str(voice_config.get("output_device") or "").strip().lower()
+                    configured_profile = str(voice_config.get("rule_profile") or voice_config.get("output_profile") or "").strip()
+                    if configured_device == "airpods" or configured_profile == "airpods_private":
+                        output_device = "airpods"
+                        rule_profile = "airpods_private"
+                        explicit_private = True
+            except Exception:
+                pass
+
+            decision = AmbientVoicePolicy().evaluate(
+                tts_text,
+                VoiceContext(
+                    source="cli_voice_tts",
+                    platform="cli",
+                    input_modality="voice",
+                    output_device=output_device,
+                    explicit_spoken_request=True,
+                    is_private_context=explicit_private,
+                    config_scope=rule_profile,
+                ),
+            )
+            tts_text = decision.text if decision.allowed and decision.text else ""
+            if not tts_text:
+                return
+
             # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
             # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
             os.makedirs(os.path.join(tempfile.gettempdir(), "hermes_voice"), exist_ok=True)

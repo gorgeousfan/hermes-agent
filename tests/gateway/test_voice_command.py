@@ -479,6 +479,36 @@ class TestSendVoiceReply:
         mock_tts.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_policy_blocked_text_input_all_mode_never_calls_tts(self, runner):
+        event = _make_event(message_type=MessageType.TEXT)
+        runner._voice_mode["telegram:123"] = "all"
+        assert runner._should_send_voice_reply(event, "API_KEY=hk_test_1234567890abcdef", []) is True
+
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            await runner._send_voice_reply(event, "API_KEY=hk_test_1234567890abcdef")
+
+        mock_tts.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_policy_blocked_voice_only_streaming_takeover_never_calls_tts(self, runner):
+        event = _make_event(message_type=MessageType.VOICE)
+        runner._voice_mode["telegram:123"] = "voice_only"
+        assert runner._should_send_voice_reply(
+            event,
+            "Traceback (most recent call last):\n  File \"/Users/brenno/app.py\", line 1, in <module>",
+            [],
+            already_sent=True,
+        ) is True
+
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            await runner._send_voice_reply(
+                event,
+                "Traceback (most recent call last):\n  File \"/Users/brenno/app.py\", line 1, in <module>",
+            )
+
+        mock_tts.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_tts_failure_no_crash(self, runner):
         event = _make_event()
         mock_adapter = AsyncMock()
@@ -2881,3 +2911,44 @@ class TestShouldAutoTtsForChat:
         fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
         assert fn(adapter, "chat1") is True
         assert fn(adapter, "chat2") is False
+
+
+# =====================================================================
+# BasePlatformAdapter.prepare_tts_text — ambient policy gate for auto-TTS.
+# =====================================================================
+
+class TestPrepareTtsTextAmbientPolicy:
+    def test_blocks_secret_like_text_even_when_voice_tts_is_enabled(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        adapter = SimpleNamespace(
+            platform=SimpleNamespace(value="discord"),
+            _auto_tts_default=False,
+            _auto_tts_enabled_chats={"chat1"},
+            _auto_tts_disabled_chats=set(),
+        )
+
+        assert BasePlatformAdapter._should_auto_tts_for_chat(adapter, "chat1") is True
+        assert BasePlatformAdapter.prepare_tts_text(adapter, "The token is sk-test-secret-value") == ""
+
+    def test_blocks_code_and_command_logs_before_tts(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        adapter = SimpleNamespace(platform=SimpleNamespace(value="discord"))
+
+        assert BasePlatformAdapter.prepare_tts_text(
+            adapter,
+            "$ pytest tests/gateway/test_voice_command.py -q\n"
+            "```python\nprint('do not speak code')\n```",
+        ) == ""
+
+    def test_preserves_chat_response_text_by_returning_separate_safe_tts_text(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        adapter = SimpleNamespace(platform=SimpleNamespace(value="discord"))
+        response_text = "I wrote the report to /Users/brenno/main/aegis/report.md and verified it."
+
+        assert BasePlatformAdapter.prepare_tts_text(adapter, response_text) == (
+            "I wrote the report to a local file and verified it."
+        )
+        assert response_text == "I wrote the report to /Users/brenno/main/aegis/report.md and verified it."

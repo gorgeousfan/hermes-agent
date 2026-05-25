@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import inspect
 import json
@@ -65,7 +66,50 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_GENERATED_ACK_DISPATCH_MAX_WORKERS = 2
+_GENERATED_ACK_DISPATCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_GENERATED_ACK_DISPATCH_MAX_WORKERS,
+    thread_name_prefix="generated-ack-dispatch",
+)
+_GENERATED_ACK_DISPATCH_SLOTS = threading.BoundedSemaphore(_GENERATED_ACK_DISPATCH_MAX_WORKERS)
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+
+
+def _submit_generated_ack_voice_out(message_text: str, **kwargs: Any) -> bool:
+    """Submit generated turn-start room audio work without unbounded threads.
+
+    Admission is non-blocking.  Saturation degrades to silence/no-op so the main
+    gateway path is never delayed and no unbounded executor queue builds up.
+    """
+    if not _GENERATED_ACK_DISPATCH_SLOTS.acquire(blocking=False):
+        return False
+
+    def run_publish() -> None:
+        try:
+            from gateway.pulse_voice_events import publish_generated_ack_voice_out
+
+            publish_generated_ack_voice_out(message_text, **kwargs)
+        except Exception:
+            pass
+
+    future = _GENERATED_ACK_DISPATCH_EXECUTOR.submit(run_publish)
+
+    def release_slot(_future: Any) -> None:
+        try:
+            _GENERATED_ACK_DISPATCH_SLOTS.release()
+        except ValueError:
+            pass
+
+    future.add_done_callback(release_slot)
+    return True
+
+
+def _should_submit_generated_ack_voice_out(message_type: Any) -> bool:
+    """Generated turn-start room audio is only for voice-originated turns."""
+    value = getattr(message_type, "value", message_type)
+    name = getattr(message_type, "name", "")
+    return str(value).lower() == "voice" or str(name).lower() == "voice"
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -8583,6 +8627,30 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        # Generated turn-start acknowledgement is voice-only and fire-and-forget.
+        # It publishes only a safe Pulse voice event, never platform text, and it
+        # must not mutate the session transcript or contaminate the main prompt.
+        try:
+            _ack_source_message_id = self._reply_anchor_for_event(event)
+            _ack_input_modality = "voice" if event.message_type == MessageType.VOICE else "text"
+            if _should_submit_generated_ack_voice_out(event.message_type):
+                _submit_generated_ack_voice_out(
+                    message_text,
+                    session_id=session_entry.session_id,
+                    platform=source.platform.value if source.platform else "",
+                    chat_id=source.chat_id,
+                    channel_id=source.parent_chat_id or source.chat_id,
+                    thread_id=source.thread_id,
+                    source_message_id=_ack_source_message_id,
+                    input_modality=_ack_input_modality,
+                    output_device="room_audio",
+                    config_scope="living_room_default",
+                    explicit_spoken_request=True,
+                    is_private_context=source.chat_type == "dm",
+                )
+        except Exception:
+            pass
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -11254,7 +11322,54 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event)
+            is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None) if adapter is not None else None
+            in_voice_channel = bool(guild_id and callable(is_in_voice_channel) and is_in_voice_channel(guild_id))
+            output_device = "discord_voice" if in_voice_channel else "chat_attachment"
+            rule_profile = "discord_voice" if in_voice_channel else "chat_attachment"
+
+            stripped_text = _strip_markdown_for_tts(text[:4000])
+            if not stripped_text:
+                return
+
+            # Gate every direct runner auto-TTS path through AmbientVoicePolicy
+            # before synthesis.  Use the adapter helper when available; otherwise
+            # fall back to the same policy surface locally so bare test runners and
+            # simple adapters remain protected.
+            prepare_tts_text = getattr(type(adapter), "prepare_tts_text", None) if adapter is not None else None
+            if callable(prepare_tts_text):
+                tts_text = str(prepare_tts_text(
+                    adapter,
+                    stripped_text,
+                    chat_id=event.source.chat_id,
+                    thread_id=getattr(event.source, "thread_id", None),
+                    source_message_id=getattr(event, "message_id", None),
+                    explicit_spoken_request=True,
+                    is_private_context=False,
+                    output_device=output_device,
+                    rule_profile=rule_profile,
+                ) or "")
+            else:
+                from gateway.ambient_voice_policy import AmbientVoicePolicy, VoiceContext
+
+                platform = getattr(event.source.platform, "value", event.source.platform)
+                decision = AmbientVoicePolicy().evaluate(
+                    stripped_text,
+                    VoiceContext(
+                        source="auto_tts_reply",
+                        platform=str(platform or ""),
+                        chat_id=event.source.chat_id,
+                        thread_id=getattr(event.source, "thread_id", None),
+                        source_message_id=getattr(event, "message_id", None),
+                        input_modality="voice" if event.message_type == MessageType.VOICE else "text",
+                        output_device=output_device,
+                        explicit_spoken_request=True,
+                        is_private_context=False,
+                        config_scope=rule_profile,
+                    ),
+                )
+                tts_text = decision.text if decision.allowed and decision.text else ""
             if not tts_text:
                 return
 
@@ -16417,6 +16532,20 @@ class GatewayRunner:
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
+                                    try:
+                                        from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+                                        VoiceResponsePipeline().publish_legacy_event(
+                                            "delta",
+                                            text,
+                                            VoiceContext(
+                                                session_id=session_id,
+                                                platform=platform_key,
+                                                chat_id=source.chat_id,
+                                                thread_id=source.thread_id,
+                                            ),
+                                        )
+                                    except Exception:
+                                        pass
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
@@ -16424,6 +16553,9 @@ class GatewayRunner:
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
+                # Interim/commentary text is a display concern only. The Pulse voice
+                # seam is final-only for successful turns so room audio is derived
+                # from final_response, not transient assistant progress text.
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
@@ -16905,6 +17037,11 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
+                # Voice-out is derived from generated assistant output only.
+                # Do not publish canned turn-start acknowledgements here: ambient
+                # room audio should sound like the same agent answering, not a
+                # separate status bot. Generated interim assistant commentary is
+                # handled by _interim_assistant_cb; final answers are published below.
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
                     observed_group_context,
@@ -16951,6 +17088,22 @@ class GatewayRunner:
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+                if error_msg:
+                    try:
+                        from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+                        VoiceResponsePipeline().publish_legacy_event(
+                            "error",
+                            error_msg,
+                            VoiceContext(
+                                session_id=session_id,
+                                platform=platform_key,
+                                chat_id=source.chat_id,
+                                thread_id=source.thread_id,
+                                source_message_id=event_message_id,
+                            ),
+                        )
+                    except Exception:
+                        pass
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
@@ -17012,6 +17165,21 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+
+            try:
+                from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+                VoiceResponsePipeline().publish_final_response(
+                    final_response,
+                    VoiceContext(
+                        session_id=session_id,
+                        platform=platform_key,
+                        chat_id=source.chat_id,
+                        thread_id=source.thread_id,
+                        source_message_id=event_message_id,
+                    ),
+                )
+            except Exception:
+                pass
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).

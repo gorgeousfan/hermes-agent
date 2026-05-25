@@ -1,0 +1,957 @@
+"""Best-effort local voice-out bridge for Pulse/Aegis.
+
+Aegis must not speak raw executor output.  The gateway publishes only short,
+purpose-built voice UX events to ``$HERMES_HOME/pulse/voice-out.jsonl`` and
+Aegis consumes that file/SSE stream for TTS.
+
+This is intentionally best-effort: failures must never affect chat delivery.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import os
+import re
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
+
+from hermes_constants import get_hermes_home
+from gateway.ambient_voice_policy import AmbientVoicePolicy, VoiceContext as AmbientVoiceContext
+from gateway.final_speech_summarizer import (
+    FinalSpeechSummarizer,
+    VoiceContext as FinalSpeechVoiceContext,
+)
+from gateway.generated_ack_harness import AckContext, AckGenerator, GeneratedAckHarness
+
+_LOCK = threading.Lock()
+_MAX_BYTES = 2_000_000
+_MAX_TEXT_CHARS = 180
+_ALLOWED_KINDS = {"ack", "completion", "error", "question", "progress"}
+_MEDIA_RE = re.compile(r"MEDIA:\S+")
+_DIRECTIVE_RE = re.compile(r"\[\[[^\]]+\]\]")
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`]{1,120})`")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
+_PATH_RE = re.compile(r"(?<!\w)(?:[A-Za-z]:[\\/][^\s,;:)\]'\"]+|(?:~?/|/)[^\s,;:)\]'\"]+)")
+_FILE_REF_RE = re.compile(
+    r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.(?:py|json|ya?ml|toml|md|txt|log|js|jsx|ts|tsx|css|html|sh|env)\b",
+    re.IGNORECASE,
+)
+_SECRET_RE = re.compile(
+    r"""
+    (?:
+        \b(?:bearer|authorization)\b\s*[:=]?\s+[A-Za-z0-9][A-Za-z0-9._~+/\-]{7,}
+      | \b(?:api[_ -]?key|secret(?:[_ -]?key)?|password|passwd|pwd|token|access[_ -]?key|aws[_ -]?key)\b
+        \s*(?:is|=|:)?\s+[A-Za-z0-9][A-Za-z0-9._~+/\-]{7,}
+      | \b(?:sk-[A-Za-z0-9._-]{6,}|sk-[A-Za-z0-9]{2,}\.\.\.[A-Za-z0-9]{2,}|gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b
+      | \b(?:xox[baprs]-(?:[A-Za-z0-9-]{10,}|\[REDACTED\])|hf_(?:[A-Za-z0-9]{10,}|\[REDACTED\])|glpat-(?:[A-Za-z0-9_-]{10,}|\[REDACTED\]))(?=$|\W)
+      | \b(?:AKIA|ASIA)[A-Z0-9.]{10,}\b
+      | \bhk_(?:[A-Za-z0-9._-]{10,}|\[REDACTED\])(?=$|\W)
+      | \b[a-z]{2,}_(?:test|live|prod|secret|key)_(?:[A-Za-z0-9]{10,}|\[REDACTED\])(?=$|\W)
+      | \beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_TOOL_LOG_LINE_RE = re.compile(
+    r'(?m)^\s*(?:\$ .+|>>> .+|FAILED .+|Traceback .+|File "[^"]+", line \d+.*|E\s+.+|={5,}.*)$'
+)
+_DEFAULT_FINAL_SUMMARY_CONFIG = {
+    "mode": "hybrid",
+    "timeout_ms": 1000,
+    "max_spoken_chars": _MAX_TEXT_CHARS,
+    "voice_profile": "eon",
+    "fallback": "deterministic_sanitizer",
+    "on_empty": "silence",
+}
+_DEFAULT_GENERATED_ACK_CONFIG = {
+    "mode": "generated",
+    "timeout_ms": 1000,
+    "max_words": 12,
+    "max_spoken_chars": 120,
+    "max_seconds": 2,
+    "voice_profile": "eon",
+    "context_window_chars": 500,
+    "provider": "auto",
+    "model": None,
+    "silence_on_failure": True,
+}
+_DEFAULT_VOICE_OBSERVABILITY_CONFIG = {
+    "emit_suppressed_events": True,
+    "include_candidate_counts": True,
+}
+_STACK_TRACE_RE = re.compile(r"(?is)^\s*Traceback \(most recent call last\):.*")
+_SENSITIVE_TOPIC_RE = re.compile(r"(?i)\b(?:trading\s+pnl|portfolio\s+exposure)\b")
+_AMBIENT_POLICY: AmbientVoicePolicy | None = None
+
+
+@dataclass(frozen=True)
+class SanitizedVoiceText:
+    text: str
+    policy: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FinalVoiceSummaryResult:
+    kind: str
+    text: str
+    source: str
+    derived_from: str
+    voice_profile: str
+    summarizer: dict[str, Any]
+    policy: dict[str, Any]
+
+
+def _enabled() -> bool:
+    value = str(os.getenv("HERMES_PULSE_VOICE_EVENTS", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def voice_out_path() -> Path:
+    """Return the canonical Jarvis-style voice-out JSONL path."""
+    return get_hermes_home() / "pulse" / "voice-out.jsonl"
+
+
+def voice_events_path() -> Path:
+    """Return the legacy voice-events JSONL path.
+
+    Kept as a compatibility mirror for older Aegis builds.  New consumers should
+    read :func:`voice_out_path`.
+    """
+    return get_hermes_home() / "pulse" / "voice-events.jsonl"
+
+
+def is_voice_event_fresh_for_speech(
+    event: dict[str, Any],
+    *,
+    now: float | None = None,
+    max_age_seconds: float = 30.0,
+) -> bool:
+    """Return whether a voice-out event is fresh enough to auto-speak.
+
+    Missing, non-numeric, future-skewed, or stale timestamps are observability
+    only. Consumers should require this before triggering ambient room audio.
+    """
+    try:
+        raw_ts = event.get("ts")
+        if raw_ts is None:
+            return False
+        ts = float(raw_ts)
+        age = (time.time() if now is None else float(now)) - ts
+        max_age = max(0.0, float(max_age_seconds))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age <= max_age
+
+
+def _default_policy() -> dict[str, Any]:
+    return {
+        "allowed": True,
+        "sanitized": True,
+        "truncated": False,
+        "suppressed": False,
+        "rule_profile": "living_room_default",
+        "reason_codes": [],
+        "classifiers": {
+            "dropped_code": False,
+            "dropped_tool_logs": False,
+            "dropped_paths": False,
+            "blocked_secret_like": False,
+            "blocked_sensitive_topic": False,
+            "blocked_stack_trace": False,
+            "long_response": False,
+        },
+    }
+
+
+def _ambient_context(kind: str, metadata: dict[str, Any]) -> AmbientVoiceContext:
+    """Build the deterministic ambient-policy context from safe event metadata."""
+    return AmbientVoiceContext(
+        source=str(kind or metadata.get("source") or "completion"),
+        platform=metadata.get("platform"),
+        channel_id=metadata.get("channel_id"),
+        chat_id=metadata.get("chat_id"),
+        thread_id=metadata.get("thread_id"),
+        source_message_id=metadata.get("source_message_id"),
+        input_modality=metadata.get("input_modality"),
+        output_device=metadata.get("output_device"),
+        profile=metadata.get("voice_profile") or metadata.get("profile") or "eon",
+        explicit_spoken_request=bool(metadata.get("explicit_spoken_request", False)),
+        is_private_context=bool(metadata.get("is_private_context", False)),
+        config_scope=metadata.get("config_scope"),
+    )
+
+
+def _safe_reason_code(reason: Any) -> str | None:
+    """Return a safe short reason code, never raw evidence/snippets."""
+    code = str(reason or "").strip()
+    if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
+        return code
+    return None
+
+
+def _policy_metadata_from_decision(
+    decision: Any,
+    base_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Convert AmbientVoicePolicy decisions into the Pulse v2 safe metadata shape."""
+    policy = _default_policy()
+    base_reason_codes: list[Any] = []
+    if base_policy:
+        for key in ("allowed", "sanitized", "truncated", "suppressed", "rule_profile"):
+            if key in base_policy:
+                policy[key] = base_policy[key]
+        base_classifiers = base_policy.get("classifiers") or {}
+        classifier_aliases = {
+            "dropped_code": ("dropped_code", "code"),
+            "dropped_tool_logs": ("dropped_tool_logs", "command_log"),
+            "dropped_paths": ("dropped_paths", "raw_path"),
+            "blocked_secret_like": ("blocked_secret_like", "secret_like"),
+            "blocked_sensitive_topic": ("blocked_sensitive_topic", "sensitive_topic"),
+            "blocked_stack_trace": ("blocked_stack_trace", "stack_trace"),
+            "long_response": ("long_response",),
+        }
+        for safe_key, aliases in classifier_aliases.items():
+            policy["classifiers"][safe_key] = any(bool(base_classifiers.get(alias)) for alias in aliases)
+        base_reason_codes = list(base_policy.get("reason_codes") or [])
+
+    reason_aliases = {
+        "raw_path_stripped": "path_stripped",
+        "raw_path": "path_stripped",
+        "empty_after_sanitization": "empty_after_sanitize",
+        "secret_like": "secret_like_blocked",
+        "sensitive_topic": "sensitive_topic_blocked",
+        "stack_trace": "stack_trace_blocked",
+    }
+    reason_codes: list[str] = []
+    for reason in base_reason_codes + list(getattr(decision, "reasons", ()) or ()):
+        mapped = _safe_reason_code(reason_aliases.get(str(reason), str(reason)))
+        if mapped and mapped not in reason_codes:
+            reason_codes.append(mapped)
+
+    classifiers = getattr(decision, "classifiers", {}) or {}
+    policy.update(
+        {
+            "allowed": bool(getattr(decision, "allowed", policy["allowed"])),
+            "sanitized": bool(policy.get("sanitized") or getattr(decision, "sanitized", False)),
+            "truncated": bool(policy.get("truncated") or getattr(decision, "truncated", False)),
+            "suppressed": bool(getattr(decision, "suppressed", policy["suppressed"])),
+            "rule_profile": str(getattr(decision, "rule_profile", policy["rule_profile"])),
+            "reason_codes": reason_codes,
+        }
+    )
+    policy["classifiers"].update(
+        {
+            "dropped_code": bool(policy["classifiers"].get("dropped_code") or classifiers.get("code")),
+            "dropped_tool_logs": bool(policy["classifiers"].get("dropped_tool_logs") or classifiers.get("command_log")),
+            "dropped_paths": bool(policy["classifiers"].get("dropped_paths") or classifiers.get("raw_path")),
+            "blocked_secret_like": bool(policy["classifiers"].get("blocked_secret_like") or classifiers.get("secret_like")),
+            "blocked_sensitive_topic": bool(
+                policy["classifiers"].get("blocked_sensitive_topic") or classifiers.get("sensitive_topic")
+            ),
+            "blocked_stack_trace": bool(policy["classifiers"].get("blocked_stack_trace") or classifiers.get("stack_trace")),
+            "long_response": bool(policy["classifiers"].get("long_response") or classifiers.get("long_response")),
+        }
+    )
+    return policy
+
+
+_SAFE_METADATA_KEYS = {
+    "session_id",
+    "platform",
+    "chat_id",
+    "channel_id",
+    "thread_id",
+    "source_message_id",
+    "input_modality",
+    "output_device",
+    "config_scope",
+    "explicit_spoken_request",
+    "is_private_context",
+    "summarizer",
+    "ack",
+}
+_SAFE_METADATA_STRING_RE = re.compile(r"^[A-Za-z0-9_.:@#-]{1,128}$")
+_SAFE_ENUM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def _safe_metadata_string(value: Any, *, enum: bool = False) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    pattern = _SAFE_ENUM_RE if enum else _SAFE_METADATA_STRING_RE
+    if pattern.fullmatch(text) and not _SECRET_RE.search(text) and not _PATH_RE.search(text):
+        return text
+    return None
+
+
+def _safe_summarizer_metadata(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed: dict[str, Any] = {}
+    for key in ("mode", "method", "fallback", "validation_reason", "reason"):
+        safe = _safe_metadata_string(value.get(key), enum=True)
+        if safe is not None:
+            allowed[key] = safe
+    for key in ("fallback_used", "validation_failed"):
+        if key in value:
+            allowed[key] = bool(value.get(key))
+    if "timeout_ms" in value:
+        try:
+            allowed["timeout_ms"] = max(1, min(int(value.get("timeout_ms") or 0), 10000))
+        except (TypeError, ValueError):
+            pass
+    return allowed or None
+
+
+def _safe_ack_metadata(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed: dict[str, Any] = {}
+    for key in ("method", "reason"):
+        safe = _safe_metadata_string(value.get(key), enum=True)
+        if safe is not None:
+            allowed[key] = safe
+    for key in ("timeout_ms", "elapsed_ms"):
+        if key in value:
+            try:
+                allowed[key] = max(0, min(int(value.get(key) or 0), 10000))
+            except (TypeError, ValueError):
+                pass
+    return allowed or None
+
+
+def _safe_voice_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return allowlisted Pulse metadata with no raw content/debug passthrough."""
+    safe: dict[str, Any] = {}
+    for key in _SAFE_METADATA_KEYS:
+        if key not in metadata or metadata[key] is None:
+            continue
+        value = metadata[key]
+        if key in {"explicit_spoken_request", "is_private_context"}:
+            safe[key] = bool(value)
+        elif key == "summarizer":
+            summarizer = _safe_summarizer_metadata(value)
+            if summarizer:
+                safe[key] = summarizer
+        elif key == "ack":
+            ack = _safe_ack_metadata(value)
+            if ack:
+                safe[key] = ack
+        elif key in {"platform", "input_modality", "output_device", "config_scope"}:
+            safe_value = _safe_metadata_string(value, enum=True)
+            if safe_value is not None:
+                safe[key] = safe_value
+        else:
+            safe_value = _safe_metadata_string(value)
+            if safe_value is not None:
+                safe[key] = safe_value
+    return safe
+
+
+def _final_summary_config() -> dict[str, Any]:
+    """Load pulse.voice.final_summary with conservative defaults.
+
+    Config loading is best-effort because voice event publication must never
+    block or break gateway text delivery.
+    """
+    config = dict(_DEFAULT_FINAL_SUMMARY_CONFIG)
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config() or {}
+        pulse_voice = ((loaded.get("pulse") or {}).get("voice") or {}) if isinstance(loaded, dict) else {}
+        user_config = pulse_voice.get("final_summary") or {}
+        if isinstance(user_config, dict):
+            config.update({k: v for k, v in user_config.items() if v is not None})
+    except Exception:
+        pass
+    return config
+
+
+def _generated_ack_config() -> dict[str, Any]:
+    """Load pulse.voice.generated_ack with silence-on-failure defaults."""
+    config = dict(_DEFAULT_GENERATED_ACK_CONFIG)
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config() or {}
+        pulse_voice = ((loaded.get("pulse") or {}).get("voice") or {}) if isinstance(loaded, dict) else {}
+        user_config = pulse_voice.get("generated_ack") or {}
+        if isinstance(user_config, dict):
+            config.update({k: v for k, v in user_config.items() if v is not None})
+    except Exception:
+        pass
+    return config
+
+
+def _bool_config(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _voice_observability_config() -> dict[str, Any]:
+    """Load safe Pulse voice observability knobs."""
+    raw = dict(_DEFAULT_VOICE_OBSERVABILITY_CONFIG)
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config() or {}
+        pulse_voice = ((loaded.get("pulse") or {}).get("voice") or {}) if isinstance(loaded, dict) else {}
+        user_config = pulse_voice.get("observability") or {}
+        if isinstance(user_config, dict):
+            raw.update({k: v for k, v in user_config.items() if v is not None})
+    except Exception:
+        pass
+    return {
+        "emit_suppressed_events": _bool_config(
+            raw.get("emit_suppressed_events"),
+            _DEFAULT_VOICE_OBSERVABILITY_CONFIG["emit_suppressed_events"],
+        ),
+        "include_candidate_counts": _bool_config(
+            raw.get("include_candidate_counts"),
+            _DEFAULT_VOICE_OBSERVABILITY_CONFIG["include_candidate_counts"],
+        ),
+    }
+
+
+def _ambient_policy() -> AmbientVoicePolicy:
+    """Return config-loaded ambient policy while preserving test monkeypatch hook."""
+    if _AMBIENT_POLICY is not None:
+        return _AMBIENT_POLICY
+    try:
+        from hermes_cli.config import load_config
+
+        return AmbientVoicePolicy.from_config(load_config() or {})
+    except Exception:
+        return AmbientVoicePolicy()
+
+
+class _ProviderAckGenerator:
+    """Small OpenAI-compatible auxiliary-client adapter for generated acks.
+
+    All exceptions intentionally bubble to GeneratedAckHarness, where they become
+    silence. This adapter must never log prompts, raw model responses,
+    credentials, or provider details.
+    """
+
+    def __init__(self, *, provider: str = "auto", model: str | None = None) -> None:
+        self.provider = str(provider or "auto")
+        self.model = str(model).strip() if model else None
+
+    def __call__(self, prompt: str, *, timeout_ms: int) -> str:
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, resolved_model = resolve_provider_client(self.provider, model=self.model or "")
+        model = self.model or resolved_model
+        if client is None or not model:
+            return ""
+        timeout_s = max(0.1, min(float(timeout_ms or 1000) / 1000.0, 1.5))
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate one short room-audio acknowledgement for Eon. "
+                        "Return only the line or an empty string."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.5,
+            max_tokens=40,
+            timeout=timeout_s,
+        )
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", "") if message is not None else ""
+        if isinstance(content, list):
+            return " ".join(
+                str(part.get("text", "") if isinstance(part, dict) else part)
+                for part in content
+            )
+        return str(content or "")
+
+
+def _make_generated_ack_generator(config: dict[str, Any]) -> AckGenerator | None:
+    provider = str(config.get("provider") or "auto").strip().lower()
+    if provider in {"", "none", "off", "disabled"}:
+        return None
+    model_value = config.get("model")
+    model = str(model_value).strip() if model_value else None
+    return _ProviderAckGenerator(provider=provider, model=model)
+
+
+def _trim_if_needed(path: Path) -> None:
+    try:
+        if not path.exists() or path.stat().st_size <= _MAX_BYTES:
+            return
+        data = path.read_bytes()[-(_MAX_BYTES // 2):]
+        first_newline = data.find(b"\n")
+        if first_newline >= 0:
+            data = data[first_newline + 1 :]
+        path.write_bytes(data)
+    except OSError:
+        return
+
+
+def _first_sentence(text: str) -> str:
+    match = re.match(r"^.{1,150}?[.!?。！？](?=\s|$)", text)
+    return match.group(0) if match else text
+
+
+def sanitize_voice_text(text: str, *, max_chars: int = _MAX_TEXT_CHARS) -> SanitizedVoiceText:
+    """Return speech-safe text plus non-sensitive policy metadata."""
+    original = str(text or "")
+    policy = _default_policy()
+    classifiers = policy["classifiers"]
+
+    classifiers["dropped_code"] = bool(_CODE_FENCE_RE.search(original) or _INLINE_CODE_RE.search(original))
+    classifiers["dropped_tool_logs"] = bool(_TOOL_LOG_LINE_RE.search(original))
+    classifiers["dropped_paths"] = bool(_PATH_RE.search(original) or _FILE_REF_RE.search(original))
+    classifiers["blocked_secret_like"] = bool(_SECRET_RE.search(original))
+    classifiers["blocked_sensitive_topic"] = bool(_SENSITIVE_TOPIC_RE.search(original))
+    classifiers["blocked_stack_trace"] = bool(_STACK_TRACE_RE.search(original))
+
+    if classifiers["blocked_secret_like"] or classifiers["blocked_sensitive_topic"] or classifiers["blocked_stack_trace"]:
+        policy["allowed"] = False
+        policy["suppressed"] = True
+        if classifiers["blocked_secret_like"]:
+            policy["reason_codes"].append("secret_like_blocked")
+        if classifiers["blocked_sensitive_topic"]:
+            policy["reason_codes"].append("sensitive_topic_blocked")
+        if classifiers["blocked_stack_trace"]:
+            policy["reason_codes"].append("stack_trace_blocked")
+        return SanitizedVoiceText("", policy)
+
+    cleaned = _CODE_FENCE_RE.sub("", original)
+    cleaned = _TOOL_LOG_LINE_RE.sub("", cleaned)
+    cleaned = _MEDIA_RE.sub("", cleaned)
+    cleaned = _DIRECTIVE_RE.sub("", cleaned)
+    cleaned = _MARKDOWN_LINK_RE.sub(r"\1", cleaned)
+    cleaned = _INLINE_CODE_RE.sub("", cleaned)
+    if classifiers["dropped_paths"]:
+        cleaned = _PATH_RE.sub("", cleaned)
+        cleaned = _FILE_REF_RE.sub("", cleaned)
+        policy["reason_codes"].append("path_stripped")
+    cleaned = re.sub(r"^[#>*\-•\s]+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        policy["allowed"] = False
+        policy["suppressed"] = True
+        policy["reason_codes"].append("empty_after_sanitize")
+        return SanitizedVoiceText("", policy)
+
+    cleaned = _first_sentence(cleaned).strip()
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[: max_chars - 1].rstrip(" ,.;:") + "…"
+        policy["truncated"] = True
+        policy["reason_codes"].append("truncated")
+    policy["reason_codes"].append("bounded_to_one_sentence")
+    return SanitizedVoiceText(cleaned, policy)
+
+
+def voice_safe_text(text: str, *, max_chars: int = _MAX_TEXT_CHARS) -> str:
+    """Return short text safe enough to speak aloud.
+
+    This intentionally strips code blocks, media tags, markdown links, transport
+    directives, bullets/headings, paths, and excess whitespace.  It then keeps
+    only a single bounded sentence so executor prose/logs cannot leak into room
+    audio.
+    """
+    return sanitize_voice_text(text, max_chars=max_chars).text
+
+
+def summarize_final_voice_response(
+    final_response: str,
+    *,
+    summarizer: Callable[[str], str] | None = None,
+    max_chars: int = _MAX_TEXT_CHARS,
+) -> FinalVoiceSummaryResult:
+    """Derive the final spoken line and metadata from assistant final text.
+
+    The generated path is bounded by ``pulse.voice.final_summary.timeout_ms``
+    through ``FinalSpeechSummarizer``. Any timeout, exception, invalid generated
+    output, or missing generated model falls back to deterministic sanitization;
+    empty deterministic output stays silent.
+    """
+    config = _final_summary_config()
+    mode = str(config.get("mode") or "hybrid").strip().lower()
+    if mode not in {"deterministic", "generated", "hybrid", "off"}:
+        mode = "hybrid"
+    timeout_ms = int(config.get("timeout_ms") or _DEFAULT_FINAL_SUMMARY_CONFIG["timeout_ms"])
+    max_spoken_chars = int(config.get("max_spoken_chars") or max_chars or _MAX_TEXT_CHARS)
+    voice_profile = str(config.get("voice_profile") or "eon")
+
+    context = FinalSpeechVoiceContext(
+        max_spoken_chars=max_spoken_chars,
+        timeout_ms=max(1, timeout_ms),
+        voice_profile=voice_profile,
+    )
+    result = FinalSpeechSummarizer(generator=summarizer, mode=mode).summarize(final_response, context)
+    fallback_used = result.method == "deterministic" and (
+        summarizer is not None or mode in {"generated", "hybrid"}
+    )
+    summarizer_meta = {
+        "mode": mode,
+        "method": result.method,
+        "fallback_used": fallback_used,
+        "timeout_ms": timeout_ms,
+        "validation_failed": bool(str(result.reason or "").startswith("generated_invalid")),
+    }
+
+
+    if result.reason:
+        reason_code = re.sub(r"[^A-Za-z0-9_-]+", "_", result.reason).strip("_")
+        if reason_code:
+            summarizer_meta["reason"] = reason_code
+
+    summary_policy = sanitize_voice_text(result.text).policy if result.text else _default_policy()
+    summary_policy.update(result.policy)
+    summary_policy.update({
+        "pre_sanitized": True,
+        "post_sanitized": True,
+    })
+    if not result.text:
+        summary_policy["allowed"] = False
+        summary_policy["suppressed"] = True
+    return FinalVoiceSummaryResult(
+        kind=result.kind,
+        text=result.text,
+        source="assistant_final",
+        derived_from="final_response",
+        voice_profile=voice_profile,
+        summarizer=summarizer_meta,
+        policy=summary_policy,
+    )
+
+def completion_voice_text(
+    final_response: str,
+    *,
+    summarizer: Callable[[str], str] | None = None,
+) -> tuple[str, str]:
+    """Derive a concise completion/question/error event from executor output."""
+    result = summarize_final_voice_response(final_response, summarizer=summarizer)
+    return result.kind, result.text
+
+
+def _write_event(path: Path, event: dict[str, Any]) -> None:
+    line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+    _trim_if_needed(path)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
+def _write_voice_event(event: dict[str, Any]) -> None:
+    canonical = voice_out_path()
+    legacy = voice_events_path()
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    with _LOCK:
+        _write_event(canonical, event)
+        # Compatibility mirror for older Aegis builds; same canonical schema,
+        # not raw delta/commentary.
+        if legacy != canonical:
+            _write_event(legacy, event)
+
+
+def _observability_metadata(
+    *,
+    original_chars: int,
+    spoken_text: str,
+    decision: Any,
+    stage: str,
+    include_candidate_counts: bool = True,
+) -> dict[str, Any]:
+    reason_aliases = {
+        "empty_after_sanitization": "empty_after_sanitize",
+        "secret_like": "secret_like_blocked",
+        "sensitive_topic": "sensitive_topic_blocked",
+        "stack_trace": "stack_trace_blocked",
+        "command_log": "tool_log_blocked",
+    }
+    blocked_reasons = {
+        "secret_like_blocked",
+        "sensitive_topic_blocked",
+        "stack_trace_blocked",
+        "tool_log_blocked",
+        "empty_after_sanitize",
+    }
+    suppression_reason = None
+    for reason in list(getattr(decision, "reasons", ()) or []):
+        mapped = _safe_reason_code(reason_aliases.get(str(reason), str(reason)))
+        if mapped in blocked_reasons:
+            suppression_reason = mapped
+            break
+    observability = {
+        "policy_stage": _safe_metadata_string(stage, enum=True) or "candidate",
+        "suppression_reason": suppression_reason if getattr(decision, "suppressed", False) else None,
+    }
+    if include_candidate_counts:
+        observability.update(
+            {
+                "candidate_chars": max(0, int(original_chars or 0)),
+                "spoken_chars": len(str(spoken_text or "")),
+            }
+        )
+    return observability
+
+
+def _base_voice_event(
+    *,
+    kind: str,
+    text: str,
+    max_seconds: int,
+    policy: dict[str, Any],
+    observability: dict[str, Any],
+    metadata: dict[str, Any],
+    context: AmbientVoiceContext,
+) -> dict[str, Any]:
+    safe_metadata = _safe_voice_metadata(metadata)
+    return {
+        "id": f"{time.time_ns()}",
+        "ts": time.time(),
+        "schema_version": 2,
+        "kind": kind,
+        "text": text,
+        "max_seconds": max(0, min(int(max_seconds or 0), 30)),
+        "source": _safe_metadata_string(metadata.get("source", kind), enum=True) or kind,
+        "derived_from": _safe_metadata_string(
+            metadata.get("derived_from", "pulse_voice_candidate"),
+            enum=True,
+        ) or "pulse_voice_candidate",
+        "voice_profile": _safe_metadata_string(
+            metadata.get("voice_profile", context.profile or "eon"),
+            enum=True,
+        ) or "eon",
+        "policy": policy,
+        "observability": observability,
+        **safe_metadata,
+    }
+
+
+def publish_voice_out(kind: str, text: str, **metadata: Any) -> None:
+    """Append a canonical voice-out event for local Pulse/Aegis subscribers.
+
+    ``kind`` must be one of ``ack``, ``completion``, ``error``, ``question``, or
+    ``progress``.  ``text`` is sanitized and bounded here even if callers forget.
+    """
+    if not _enabled():
+        return
+    kind = str(kind or "progress").strip().lower()
+    if kind not in _ALLOWED_KINDS:
+        kind = "progress"
+    try:
+        original = str(text or "")
+        sanitized = sanitize_voice_text(original)
+        context = _ambient_context(kind, metadata)
+        default_seconds = 2 if kind in {"ack", "progress"} else 4
+        stage = "final" if kind in {"completion", "question", "error"} else kind
+        base_policy = metadata.get("policy")
+
+        if isinstance(base_policy, dict):
+            merged_policy = dict(sanitized.policy)
+            merged_policy.update({k: v for k, v in base_policy.items() if k not in {"reason_codes", "classifiers"}})
+            merged_policy["reason_codes"] = list(base_policy.get("reason_codes") or []) + list(
+                sanitized.policy.get("reason_codes") or []
+            )
+            merged_classifiers = dict(sanitized.policy.get("classifiers") or {})
+            merged_classifiers.update(base_policy.get("classifiers") or {})
+            merged_policy["classifiers"] = merged_classifiers
+        else:
+            merged_policy = sanitized.policy
+
+        # The first-pass sanitizer enforces hard no-speak rules for secret-like
+        # text, stack traces, and empty-after-sanitize candidates. Never let the
+        # contextual ambient policy turn those back into speakable output.
+        if not sanitized.policy.get("allowed", True) or not sanitized.text:
+            classifiers = sanitized.policy.get("classifiers") or {}
+            decision = SimpleNamespace(
+                allowed=False,
+                text="",
+                sanitized=bool(sanitized.policy.get("sanitized", True)),
+                truncated=bool(sanitized.policy.get("truncated", False)),
+                suppressed=True,
+                max_seconds=0,
+                reasons=tuple(sanitized.policy.get("reason_codes") or ("empty_after_sanitize",)),
+                classifiers={
+                    "code": bool(classifiers.get("dropped_code")),
+                    "command_log": bool(classifiers.get("dropped_tool_logs")),
+                    "raw_path": bool(classifiers.get("dropped_paths")),
+                    "secret_like": bool(classifiers.get("blocked_secret_like")),
+                    "sensitive_topic": bool(classifiers.get("blocked_sensitive_topic")),
+                    "stack_trace": bool(classifiers.get("blocked_stack_trace")),
+                    "long_response": bool(classifiers.get("long_response")),
+                },
+                rule_profile=context.config_scope or "living_room_default",
+            )
+            policy = _policy_metadata_from_decision(decision, merged_policy)
+        else:
+            decision = _ambient_policy().evaluate(sanitized.text, context)
+            policy = _policy_metadata_from_decision(decision, merged_policy)
+
+        observability_config = _voice_observability_config()
+        if not decision.allowed or not decision.text:
+            if not observability_config.get("emit_suppressed_events", True):
+                return
+            policy["allowed"] = False
+            policy["suppressed"] = True
+            event = _base_voice_event(
+                kind="suppressed",
+                text="",
+                max_seconds=0,
+                policy=policy,
+                observability=_observability_metadata(
+                    original_chars=len(original),
+                    spoken_text="",
+                    decision=decision,
+                    stage=stage,
+                    include_candidate_counts=observability_config.get("include_candidate_counts", True),
+                ),
+                metadata=metadata,
+                context=context,
+            )
+            event["max_seconds"] = 0
+            _write_voice_event(event)
+            return
+
+        try:
+            requested_max_seconds = int(metadata.get("max_seconds", decision.max_seconds or default_seconds) or default_seconds)
+        except (TypeError, ValueError):
+            requested_max_seconds = int(decision.max_seconds or default_seconds)
+        event = _base_voice_event(
+            kind=kind,
+            text=decision.text,
+            max_seconds=max(1, min(requested_max_seconds, 30)),
+            policy=policy,
+            observability=_observability_metadata(
+                original_chars=len(original),
+                spoken_text=decision.text,
+                decision=decision,
+                stage=stage,
+                include_candidate_counts=observability_config.get("include_candidate_counts", True),
+            ),
+            metadata=metadata,
+            context=context,
+        )
+        _write_voice_event(event)
+    except Exception:
+        return
+
+
+def publish_generated_ack_voice_out(
+    user_message: str,
+    *,
+    generator: AckGenerator | None = None,
+    **metadata: Any,
+) -> None:
+    """Publish one generated turn-start voice acknowledgement if it is safe.
+
+    This helper is voice-only. It never sends platform text, never mutates chat
+    history, and returns silently for disabled config, missing generator/provider,
+    timeouts, invalid candidates, policy denial, or any exception.
+    """
+    if not _enabled():
+        return
+    try:
+        config = _generated_ack_config()
+        mode = str(config.get("mode") or "generated").strip().lower()
+        if mode == "off":
+            return
+        timeout_ms = max(1, min(int(config.get("timeout_ms") or 1000), 1500))
+        max_words = max(1, min(int(config.get("max_words") or 12), 20))
+        max_spoken_chars = max(1, min(int(config.get("max_spoken_chars") or 120), 240))
+        max_seconds = max(1, min(int(config.get("max_seconds") or 2), 10))
+        voice_profile = str(config.get("voice_profile") or "eon")
+        context_window_chars = max(80, min(int(config.get("context_window_chars") or 500), 2000))
+
+        context = AckContext(
+            user_message=str(user_message or "")[:context_window_chars],
+            session_id=metadata.get("session_id"),
+            platform=metadata.get("platform"),
+            chat_id=metadata.get("chat_id"),
+            channel_id=metadata.get("channel_id"),
+            thread_id=metadata.get("thread_id"),
+            source_message_id=metadata.get("source_message_id"),
+            input_modality=metadata.get("input_modality"),
+            output_device=metadata.get("output_device"),
+            voice_profile=voice_profile,
+            timeout_ms=timeout_ms,
+            max_words=max_words,
+            max_spoken_chars=max_spoken_chars,
+            max_seconds=max_seconds,
+            context_window_chars=context_window_chars,
+            config_scope=str(metadata.get("config_scope") or "living_room_default"),
+            explicit_spoken_request=bool(metadata.get("explicit_spoken_request", False)),
+            is_private_context=bool(metadata.get("is_private_context", False)),
+        )
+        if generator is None:
+            generator = _make_generated_ack_generator(config)
+        result = GeneratedAckHarness(generator=generator, mode=mode).generate(context)
+        if result.method == "silence" or not result.text:
+            return
+        publish_voice_out(
+            "ack",
+            result.text,
+            source="generated_ack",
+            derived_from="turn_start",
+            voice_profile=voice_profile,
+            max_seconds=max_seconds,
+            policy=result.policy,
+            ack={"method": result.method, "timeout_ms": timeout_ms, "elapsed_ms": result.elapsed_ms},
+            session_id=context.session_id,
+            platform=context.platform,
+            chat_id=context.chat_id,
+            channel_id=context.channel_id,
+            thread_id=context.thread_id,
+            source_message_id=context.source_message_id,
+            input_modality=context.input_modality,
+            output_device=context.output_device,
+            config_scope=context.config_scope,
+            explicit_spoken_request=context.explicit_spoken_request,
+            is_private_context=context.is_private_context,
+        )
+    except Exception:
+        return
+
+
+def publish_completion_voice_out(
+    final_response: str,
+    *,
+    summarizer: Callable[[str], str] | None = None,
+    **metadata: Any,
+) -> None:
+    """Publish a short spoken completion derived from executor final text."""
+    from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+
+    VoiceResponsePipeline().publish_final_response(
+        final_response,
+        VoiceContext.from_metadata(**metadata),
+        summarizer=summarizer,
+    )
+
+
+def publish_voice_event(kind: str, text: str, **metadata: Any) -> None:
+    """Backward-compatible wrapper for older gateway call sites.
+
+    Raw streaming ``delta`` events are deliberately ignored.  Interim assistant
+    ``commentary`` maps to a short ``progress`` voice-out event only when the
+    model actually generated that assistant text.
+    """
+    from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+
+    VoiceResponsePipeline().publish_legacy_event(kind, text, VoiceContext.from_metadata(**metadata))
