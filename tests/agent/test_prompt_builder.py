@@ -847,6 +847,7 @@ class TestEnvironmentHints:
     def test_build_environment_hints_on_wsl(self, monkeypatch):
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
         result = _pb.build_environment_hints()
@@ -859,6 +860,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         import sys, platform
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(platform, "system", lambda: "Linux")
         monkeypatch.setattr(platform, "release", lambda: "6.8.0-generic")
@@ -879,6 +881,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
@@ -896,6 +899,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
@@ -911,6 +915,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         # Force the probe to fail so we exercise the static fallback path
@@ -930,6 +935,7 @@ class TestEnvironmentHints:
         """When the probe succeeds, its output must appear in the hint block."""
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: False)
         monkeypatch.setenv("TERMINAL_ENV", "modal")
         fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
         monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: fake_probe_output)
@@ -947,6 +953,32 @@ class TestEnvironmentHints:
                 f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
                 f"info is suppressed in the system prompt"
             )
+
+    def test_build_environment_hints_container_in_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: True)
+        monkeypatch.setattr(_pb, "is_container", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Podman" in result or "Docker" in result
+        assert "container" in result.lower()
+        # Should NOT contain the plain-WSL /mnt/c guidance
+        assert "/mnt/c/" not in result
+
+    def test_build_environment_hints_container_not_wsl(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(_pb, "is_container", lambda: True)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        # Container without WSL — the container-in-WSL hint must NOT appear,
+        # but host info is still emitted (local backend detected).
+        assert "Podman" not in result
+        assert "/mnt/c/" not in result
+        assert "CONTAINER_IN_WSL" not in result
 
 
 # =========================================================================

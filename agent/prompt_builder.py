@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_hermes_home, get_skills_dir, is_container, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
@@ -615,6 +615,11 @@ WSL_ENVIRONMENT_HINT = (
     "the Windows username if needed."
 )
 
+CONTAINER_IN_WSL_ENVIRONMENT_HINT = (
+    "You are running inside a Podman/Docker container on WSL "
+    "(Windows Subsystem for Linux)."
+)
+
 
 # Non-local terminal backends that run commands (and therefore every file
 # tool: read_file, write_file, patch, search_files) inside a separate
@@ -756,7 +761,8 @@ def build_environment_hints() -> str:
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.
 
-    The WSL environment hint is appended unchanged when running under WSL.
+    The WSL environment hint is appended when running under WSL.
+    Container-in-WSL is checked before plain WSL.
     """
     import platform
     import sys
@@ -825,7 +831,9 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
-    if is_wsl():
+    if is_container() and is_wsl():
+        hints.append(CONTAINER_IN_WSL_ENVIRONMENT_HINT)
+    elif is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
     return "\n\n".join(hints)
 
