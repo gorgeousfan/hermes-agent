@@ -104,6 +104,57 @@ class TestGetAndPoll:
 
 
 # =========================================================================
+# Stdin approval guard
+# =========================================================================
+
+class TestStdinApprovalGuard:
+    def test_write_stdin_blocks_hardline_payload_before_pipe_write(self, registry):
+        """Second-stage stdin must not bypass the terminal hardline floor."""
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_stdin_guard", command="bash")
+        session.process = proc
+        registry._running[session.id] = session
+
+        result = registry.write_stdin(session.id, "rm -rf $HOME\n")
+
+        assert result["status"] == "blocked"
+        assert "hardline" in result["error"]
+        stdin.write.assert_not_called()
+        stdin.flush.assert_not_called()
+
+    def test_submit_stdin_blocks_hardline_payload_before_pipe_write(self, registry):
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_submit_guard", command="bash")
+        session.process = proc
+        registry._running[session.id] = session
+
+        result = registry.submit_stdin(session.id, "rm -rf $HOME")
+
+        assert result["status"] == "blocked"
+        assert "hardline" in result["error"]
+        stdin.write.assert_not_called()
+        stdin.flush.assert_not_called()
+
+    def test_write_stdin_allows_safe_payload(self, registry):
+        stdin = MagicMock()
+        proc = MagicMock()
+        proc.stdin = stdin
+        session = _make_session(sid="proc_stdin_safe", command="python")
+        session.process = proc
+        registry._running[session.id] = session
+
+        result = registry.write_stdin(session.id, "print('hello')\n")
+
+        assert result == {"status": "ok", "bytes_written": len("print('hello')\n")}
+        stdin.write.assert_called_once_with("print('hello')\n")
+        stdin.flush.assert_called_once()
+
+
+# =========================================================================
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 
