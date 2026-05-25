@@ -66,6 +66,11 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  bundledLocales = lib.cleanSourceWith {
+    src = ../locales;
+    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
+  };
+
   runtimeDeps = [
     nodejs
     ripgrep
@@ -150,6 +155,7 @@ stdenv.mkDerivation {
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
     cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
+    cp -r ${bundledLocales} $out/share/hermes-agent/locales
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -161,6 +167,7 @@ stdenv.mkDerivation {
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
+          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
