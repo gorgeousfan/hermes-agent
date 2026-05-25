@@ -179,6 +179,47 @@ class TestMakeRunEnvHomeInjection:
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
 
+    def test_preserves_host_gh_config_when_profile_home_hides_it(self, tmp_path, monkeypatch):
+        account_home = tmp_path / "account"
+        hermes_home = tmp_path / "hermes"
+        account_gh = account_home / ".config" / "gh"
+        profile_home = hermes_home / "home"
+        account_gh.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+        (account_gh / "hosts.yml").write_text("github.com: {}\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(account_home))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from tools.environments.local import _make_run_env
+
+        result = _make_run_env({})
+
+        assert result["HOME"] == str(profile_home)
+        assert result["GH_CONFIG_DIR"] == str(account_gh)
+
+    def test_profile_gh_config_wins_without_gh_config_dir(self, tmp_path, monkeypatch):
+        account_home = tmp_path / "account"
+        hermes_home = tmp_path / "hermes"
+        profile_gh = hermes_home / "home" / ".config" / "gh"
+        account_gh = account_home / ".config" / "gh"
+        profile_gh.mkdir(parents=True)
+        account_gh.mkdir(parents=True)
+        (profile_gh / "hosts.yml").write_text("github.com: {}\n")
+        (account_gh / "hosts.yml").write_text("github.com: {}\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", str(account_home))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+        from tools.environments.local import _make_run_env
+
+        result = _make_run_env({})
+
+        assert result["HOME"] == str(hermes_home / "home")
+        assert "GH_CONFIG_DIR" not in result
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_subprocess_env() injection
@@ -230,6 +271,25 @@ class TestSanitizeSubprocessEnvHomeInjection:
 
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
+
+    def test_preserves_host_gh_config_for_background_env(self, tmp_path, monkeypatch):
+        account_home = tmp_path / "account"
+        hermes_home = tmp_path / "hermes"
+        account_gh = account_home / ".config" / "gh"
+        profile_home = hermes_home / "home"
+        account_gh.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+        (account_gh / "hosts.yml").write_text("github.com: {}\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+
+        base_env = {"HOME": str(account_home), "PATH": "/usr/bin"}
+        from tools.environments.local import _sanitize_subprocess_env
+
+        result = _sanitize_subprocess_env(base_env)
+
+        assert result["HOME"] == str(profile_home)
+        assert result["GH_CONFIG_DIR"] == str(account_gh)
 
 
 # ---------------------------------------------------------------------------

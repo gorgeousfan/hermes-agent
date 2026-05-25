@@ -3,6 +3,7 @@
 import logging
 import os
 import platform
+import pwd
 import re
 import shutil
 import signal
@@ -183,6 +184,35 @@ def _inject_context_hermes_home(env: dict) -> None:
         pass
 
 
+def _preserve_github_cli_config(env: dict, *, next_home: str | None) -> None:
+    """Expose host-level gh auth when profile HOME isolation hides it."""
+    if env.get("GH_CONFIG_DIR") or not next_home or _IS_WINDOWS:
+        return
+
+    profile_gh_hosts = Path(next_home).expanduser() / ".config" / "gh" / "hosts.yml"
+    if profile_gh_hosts.exists():
+        return
+
+    candidates: list[Path] = []
+    current_home = env.get("HOME")
+    if current_home:
+        candidates.append(Path(current_home).expanduser() / ".config" / "gh")
+    try:
+        candidates.append(Path(pwd.getpwuid(os.getuid()).pw_dir) / ".config" / "gh")
+    except Exception:
+        pass
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (candidate / "hosts.yml").is_file():
+            env["GH_CONFIG_DIR"] = str(candidate)
+            return
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -211,6 +241,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
+        _preserve_github_cli_config(sanitized, next_home=_profile_home)
         sanitized["HOME"] = _profile_home
 
     return sanitized
@@ -315,6 +346,7 @@ def _make_run_env(env: dict) -> dict:
     from hermes_constants import get_subprocess_home
     _profile_home = get_subprocess_home()
     if _profile_home:
+        _preserve_github_cli_config(run_env, next_home=_profile_home)
         run_env["HOME"] = _profile_home
 
     # Inject ContextVar-based session vars into subprocess env.
