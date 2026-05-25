@@ -241,7 +241,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
+        # #28876: let users opt into markdown on the api_server platform.
+        if platform_key == "api_server" and getattr(
+            agent, "_api_server_allow_markdown", False
+        ):
+            stable_parts.append(PLATFORM_HINTS["api_server_markdown"])
+        else:
+            stable_parts.append(PLATFORM_HINTS[platform_key])
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:

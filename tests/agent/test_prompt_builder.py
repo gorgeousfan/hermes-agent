@@ -791,6 +791,25 @@ class TestPromptBuilderConstants:
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
 
+    def test_api_server_hint_mentions_override(self):
+        # #28876: the default api_server hint forbids markdown, but the user
+        # must be told (and discoverable in their profile/config) that this
+        # is overridable. Otherwise webclient users have no escape hatch.
+        hint = PLATFORM_HINTS["api_server"]
+        assert "No markdown" in hint
+        assert "api_server_allow_markdown" in hint, (
+            "api_server hint must surface the override config key so users "
+            "with markdown-rendering clients can discover the escape hatch."
+        )
+
+    def test_api_server_markdown_variant_allows_markdown(self):
+        # #28876: opt-in markdown variant exists and inverts the restriction.
+        assert "api_server_markdown" in PLATFORM_HINTS
+        hint = PLATFORM_HINTS["api_server_markdown"]
+        assert "markdown" in hint.lower()
+        # Sanity: must NOT carry the "No markdown" prohibition.
+        assert "No markdown" not in hint
+
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
         # gateway platforms. On the CLI they render as literal text and

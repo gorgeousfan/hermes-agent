@@ -1190,6 +1190,13 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # API-server markdown override (#28876).  When true, the "api_server"
+    # platform hint is replaced with a markdown-permissive variant so users
+    # whose webclient renders markdown aren't forced into plain text.
+    agent._api_server_allow_markdown = bool(
+        _agent_section.get("api_server_allow_markdown", False)
+    )
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

@@ -539,6 +539,11 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # #28876: when responding through platform="api_server", the default
+        # system prompt forbids markdown because the rendering layer is unknown.
+        # Set this true if your API client (e.g. a markdown-rendering webclient)
+        # can display markdown and you'd prefer the agent use it.
+        "api_server_allow_markdown": False,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

@@ -582,7 +582,19 @@ PLATFORM_HINTS = {
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
         "code fences). Treat this like a conversation, not a document. Keep responses "
-        "brief and natural."
+        "brief and natural. (The user may override this instruction in their profile "
+        "or via the agent.api_server_allow_markdown config setting if their client "
+        "renders markdown.)"
+    ),
+    # Opt-in variant of "api_server" used when the user sets
+    # agent.api_server_allow_markdown=true in config.yaml.  Resolves issue #28876:
+    # webclients that DO render markdown were previously stuck with the plain-text
+    # api_server hint and had no way to override it.
+    "api_server_markdown": (
+        "You're responding through an API server. The client has indicated it can "
+        "render markdown — feel free to use markdown formatting (headers, bullets, "
+        "bold, code fences, tables) when it improves clarity. Still keep responses "
+        "appropriately concise for a conversational API context."
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "
