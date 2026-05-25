@@ -29,6 +29,14 @@ def test_string_content_passes_through_unchanged():
     assert msg["content"] == "$ ls\nfile.txt"
 
 
+def test_none_content_becomes_empty_string():
+    """A handler returning None (silent success) must become "" — not the
+    literal "null" — so strict providers don't reject a null content field."""
+    assert _coerce_tool_result_content(None) == ""
+    msg = make_tool_result_message("noop_tool", None, "call_none")
+    assert msg["content"] == ""
+
+
 def test_multimodal_content_is_preserved():
     """Multimodal envelopes must NOT be flattened — providers that support
     multipart tool messages consume the list directly."""
