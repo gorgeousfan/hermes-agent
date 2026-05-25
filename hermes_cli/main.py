@@ -12127,6 +12127,11 @@ Examples:
         help="Print the report locally instead of uploading",
     )
     share_parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip confirmation prompt and upload immediately",
+    )
+    share_parser.add_argument(
         "--no-redact",
         action="store_true",
         help=(

@@ -600,6 +600,15 @@ def run_debug_share(args):
 
     if not local_only:
         print(_PRIVACY_NOTICE)
+        yes = bool(getattr(args, "yes", False))
+        if not yes:
+            try:
+                answer = input("Upload debug report? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer not in ("y", "yes"):
+                print("Aborted.")
+                return
 
     print("Collecting debug report...")
 
