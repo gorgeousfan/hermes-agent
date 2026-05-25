@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _load_prompt_file
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -2548,3 +2548,77 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestLoadPromptFile:
+    """Tests for _load_prompt_file() — resolution, traversal guards, error handling."""
+
+    def test_load_from_relative_path(self, tmp_path):
+        prompt_file = tmp_path / "cron-jobs" / "my-prompt.md"
+        prompt_file.parent.mkdir(parents=True)
+        prompt_file.write_text("Hello from file", encoding="utf-8")
+
+        with patch("cron.scheduler._get_hermes_home", return_value=tmp_path):
+            result = _load_prompt_file("my-prompt.md")
+
+        assert result == "Hello from file"
+
+    def test_load_from_absolute_path_within_allowed(self, tmp_path):
+        prompt_file = tmp_path / "cron-jobs" / "sub" / "prompt.txt"
+        prompt_file.parent.mkdir(parents=True)
+        prompt_file.write_text("absolute path", encoding="utf-8")
+
+        with patch("cron.scheduler._get_hermes_home", return_value=tmp_path):
+            result = _load_prompt_file(str(prompt_file))
+
+        assert result == "absolute path"
+
+    def test_path_traversal_rejected(self, tmp_path):
+        outside = tmp_path / "secret.txt"
+        outside.write_text("leaked", encoding="utf-8")
+
+        with patch("cron.scheduler._get_hermes_home", return_value=tmp_path):
+            result = _load_prompt_file("../secret.txt")
+
+        assert result.startswith("[Prompt File Error]")
+        assert "outside the allowed directory" in result
+
+    def test_absolute_path_traversal_rejected(self, tmp_path):
+        outside = tmp_path / "outside.txt"
+        outside.write_text("leaked", encoding="utf-8")
+
+        with patch("cron.scheduler._get_hermes_home", return_value=tmp_path):
+            result = _load_prompt_file(str(outside))
+
+        assert result.startswith("[Prompt File Error]")
+        assert "outside the allowed directory" in result
+
+    def test_missing_file_returns_error(self, tmp_path):
+        with patch("cron.scheduler._get_hermes_home", return_value=tmp_path):
+            result = _load_prompt_file("nonexistent.md")
+
+        assert result.startswith("[Prompt File Error]")
+        assert "not found" in result
+
+    def test_prompt_file_wins_over_inline_prompt(self, tmp_path):
+        """When both prompt and prompt_file are set, prompt_file wins."""
+        prompt_file = tmp_path / "cron-jobs" / "from-file.md"
+        prompt_file.parent.mkdir(parents=True)
+        prompt_file.write_text("file content", encoding="utf-8")
+
+        job = {
+            "prompt": "inline content",
+            "prompt_file": "from-file.md",
+        }
+
+        with patch("cron.scheduler._get_hermes_home", return_value=tmp_path):
+            result = _build_job_prompt(job)
+
+        assert "file content" in result
+        assert "inline content" not in result
+
+    def test_inline_prompt_used_when_no_prompt_file(self):
+        """When prompt_file is not set, inline prompt is used as before."""
+        job = {"prompt": "inline content"}
+        result = _build_job_prompt(job)
+        assert "inline content" in result

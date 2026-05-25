@@ -954,6 +954,54 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _load_prompt_file(prompt_file: str) -> str:
+    """Load a cron job prompt from an external file.
+
+    Relative paths are resolved against ``HERMES_HOME/cron-jobs/``.
+    Absolute and ``~``-prefixed paths are validated to stay within that
+    directory (same path-traversal guard as ``_run_job_script``).
+
+    Args:
+        prompt_file: Path to the prompt file.
+
+    Returns:
+        The file contents as a string, or an error message prefixed with
+        ``[Prompt File Error]`` so the LLM can report it to the user.
+    """
+    prompts_dir = _get_hermes_home() / "cron-jobs"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    prompts_dir_resolved = prompts_dir.resolve()
+
+    raw = Path(prompt_file).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (prompts_dir / raw).resolve()
+
+    # Guard against path traversal
+    try:
+        path.relative_to(prompts_dir_resolved)
+    except ValueError:
+        return (
+            "[Prompt File Error] The prompt_file path is outside the "
+            "allowed directory. Paths must resolve within "
+            f"{prompts_dir_resolved}. Got: {prompt_file}"
+        )
+
+    if not path.is_file():
+        return (
+            f"[Prompt File Error] The prompt_file was not found or is not "
+            f"a regular file: {path}"
+        )
+
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, PermissionError) as e:
+        return (
+            f"[Prompt File Error] Failed to read prompt_file at {path}: {e}"
+        )
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -966,6 +1014,11 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             (if any) runs inline as before.
     """
     prompt = str(job.get("prompt") or "")
+    # If prompt_file is set, load prompt from the external file.
+    # If both prompt and prompt_file are set, prompt_file wins.
+    prompt_file = job.get("prompt_file")
+    if prompt_file:
+        prompt = _load_prompt_file(prompt_file)
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
