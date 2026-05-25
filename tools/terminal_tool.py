@@ -2097,8 +2097,16 @@ def terminal_tool(
                 # Got a result
                 break
             
-            # Extract output
+            # Extract output. Environment backends keep stdout/stderr separate so
+            # file tools can consume stdout without backend diagnostics leaking
+            # into file content. The terminal tool is user-facing, so preserve
+            # the historical behavior of showing both streams.
             output = result.get("output", "")
+            stderr = result.get("stderr", "")
+            if stderr:
+                if output and not output.endswith("\n"):
+                    output += "\n"
+                output += stderr
             returncode = result.get("returncode", 0)
 
             # Add helpful message for sudo failures in messaging context

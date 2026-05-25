@@ -529,7 +529,7 @@ class LocalEnvironment(BaseEnvironment):
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=_popen_cwd,

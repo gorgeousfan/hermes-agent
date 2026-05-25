@@ -144,7 +144,7 @@ def _popen_bash(
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
         text=True,
         **kwargs,
@@ -197,6 +197,9 @@ class ProcessHandle(Protocol):
 
     @property
     def stdout(self) -> IO[str] | None: ...
+
+    @property
+    def stderr(self) -> IO[str] | None: ...
 
     @property
     def returncode(self) -> int | None: ...
@@ -481,51 +484,28 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _wait_for_process(self, proc: ProcessHandle, timeout: int = 120) -> dict:
-        """Poll-based wait with interrupt checking and stdout draining.
+        """Poll-based wait with interrupt checking and stdout/stderr draining.
 
         Shared across all backends — not overridden.
 
-        Fires the ``activity_callback`` (if set on this instance) every 10s
-        while the process is running so the gateway's inactivity timeout
-        doesn't kill long-running commands.
-
-        Also wraps the poll loop in a ``try/finally`` that guarantees we
-        call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
-        or ``SystemExit``.  Without this, the local backend (which spawns
-        subprocesses with ``os.setsid`` into their own process group) leaves
-        an orphan with ``PPID=1`` when python is shut down mid-tool — the
-        ``sleep 300``-survives-30-min bug Physikal and I both hit.
+        ``output`` intentionally contains stdout only.  Stderr is returned in a
+        separate ``stderr`` field so file tools can consume command stdout as
+        bytes from the target file without SSH/client warnings being prepended.
+        The terminal tool recombines both streams for user-visible shell output.
         """
         output_chunks: list[str] = []
+        stderr_chunks: list[str] = []
 
-        # Non-blocking drain via select().
-        #
-        # The old pattern — ``for line in proc.stdout`` — blocks on
-        # ``readline()`` until the pipe reaches EOF.  When the user's command
-        # backgrounds a process (``cmd &``, ``setsid cmd & disown``, etc.),
-        # that backgrounded grandchild inherits the write-end of our stdout
-        # pipe via ``fork()``.  Even after ``bash`` itself exits, the pipe
-        # stays open because the grandchild still holds it — so the drain
-        # thread never returns and the tool hangs for the full lifetime of
-        # the grandchild (issue #8340: users reported indefinite hangs when
-        # restarting uvicorn with ``setsid ... & disown``).
-        #
-        # The fix: select() with a short poll interval, and stop draining
-        # shortly after ``bash`` exits even if the pipe hasn't EOF'd yet.
-        # Any output the grandchild writes after that point goes to an
-        # orphaned pipe (harmless — the kernel reaps it when our end closes).
-        #
-        # Decoding: we ``os.read()`` raw bytes in fixed-size chunks (4096)
-        # so a single multibyte UTF-8 character can split across reads.  An
-        # incremental decoder buffers partial sequences across chunks, and
-        # ``errors="replace"`` mirrors the baseline ``TextIOWrapper`` (which
-        # was constructed with ``encoding="utf-8", errors="replace"`` on
-        # ``Popen``) so binary or mis-encoded output is preserved with
-        # U+FFFD substitution rather than clobbering the whole buffer.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-
-        def _drain():
-            fd = proc.stdout.fileno()
+        def _drain_stream(stream, chunks: list[str]) -> None:
+            if stream is None:
+                return
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            try:
+                fd = stream.fileno()
+                if not isinstance(fd, int):
+                    return
+            except (AttributeError, ValueError, OSError):
+                return
             # select.select does NOT work on pipe fds on Windows (only sockets).
             # Use blocking os.read in a daemon thread instead — safe because
             # EOF arrives promptly when bash exits.
@@ -535,17 +515,18 @@ class BaseEnvironment(ABC):
                         chunk = os.read(fd, 4096)
                         if not chunk:
                             break
-                        output_chunks.append(decoder.decode(chunk))
+                        chunks.append(decoder.decode(chunk))
                 except (ValueError, OSError):
                     pass
                 finally:
                     try:
                         tail = decoder.decode(b"", final=True)
                         if tail:
-                            output_chunks.append(tail)
+                            chunks.append(tail)
                     except Exception:
                         pass
                 return
+
             idle_after_exit = 0
             try:
                 while True:
@@ -560,7 +541,7 @@ class BaseEnvironment(ABC):
                             break
                         if not chunk:
                             break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
+                        chunks.append(decoder.decode(chunk))
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # bash is gone and the pipe was idle for ~100ms.  Give
@@ -570,18 +551,24 @@ class BaseEnvironment(ABC):
                         if idle_after_exit >= 3:
                             break
             finally:
-                # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
-                # this emits U+FFFD for any final incomplete sequence rather than
-                # raising.
                 try:
                     tail = decoder.decode(b"", final=True)
                     if tail:
-                        output_chunks.append(tail)
+                        chunks.append(tail)
                 except Exception:
                     pass
 
-        drain_thread = threading.Thread(target=_drain, daemon=True)
-        drain_thread.start()
+        drain_threads = [
+            threading.Thread(target=_drain_stream, args=(proc.stdout, output_chunks), daemon=True)
+        ]
+        stderr_stream = getattr(proc, "stderr", None)
+        if stderr_stream is not None:
+            drain_threads.append(
+                threading.Thread(target=_drain_stream, args=(stderr_stream, stderr_chunks), daemon=True)
+            )
+        for drain_thread in drain_threads:
+            drain_thread.start()
+
         deadline = time.monotonic() + timeout
         _now = time.monotonic()
         _activity_state = {
@@ -589,15 +576,10 @@ class BaseEnvironment(ABC):
             "start": _now,
         }
 
-        # --- Debug tracing (opt-in via HERMES_DEBUG_INTERRUPT=1) -------------
-        # Captures loop entry/exit, interrupt state changes, and periodic
-        # heartbeats so we can diagnose "agent never sees the interrupt"
-        # reports without reproducing locally.
         _tid = threading.current_thread().ident
         _pid = getattr(proc, "pid", None)
         _iter_count = 0
         _last_heartbeat = _now
-        _last_interrupt_state = False
         _cb_was_none = _get_activity_callback() is None
         if _DEBUG_INTERRUPT:
             logger.info(
@@ -620,9 +602,11 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
                         )
                     self._kill_process(proc)
-                    drain_thread.join(timeout=2)
+                    for drain_thread in drain_threads:
+                        drain_thread.join(timeout=2)
                     return {
                         "output": "".join(output_chunks) + "\n[Command interrupted]",
+                        "stderr": "".join(stderr_chunks),
                         "returncode": 130,
                     }
                 if time.monotonic() > deadline:
@@ -633,21 +617,19 @@ class BaseEnvironment(ABC):
                             _tid, _pid, _iter_count, timeout,
                         )
                     self._kill_process(proc)
-                    drain_thread.join(timeout=2)
+                    for drain_thread in drain_threads:
+                        drain_thread.join(timeout=2)
                     partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
                         "output": partial + timeout_msg
                         if partial
                         else timeout_msg.lstrip(),
+                        "stderr": "".join(stderr_chunks),
                         "returncode": 124,
                     }
-                # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
 
-                # Heartbeat every ~30s: proves the loop is alive and reports
-                # the activity-callback state (thread-local, can get clobbered
-                # by nested tool calls or executor thread reuse).
                 if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
                     _cb_now_none = _get_activity_callback() is None
                     logger.info(
@@ -675,13 +657,6 @@ class BaseEnvironment(ABC):
                 if _poll_sleep < 0.2:
                     _poll_sleep = min(_poll_sleep * 1.5, 0.2)
         except (KeyboardInterrupt, SystemExit):
-            # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
-            # while we were polling.  The local backend spawns subprocesses
-            # with os.setsid, which puts them in their own process group — so
-            # if we let the interrupt propagate without killing the child,
-            # python exits and the child is reparented to init (PPID=1) and
-            # keeps running as an orphan.  Killing the process group here
-            # guarantees the tool's side effects stop when the agent stops.
             if _DEBUG_INTERRUPT:
                 logger.info(
                     "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
@@ -691,20 +666,21 @@ class BaseEnvironment(ABC):
                 )
             try:
                 self._kill_process(proc)
-                drain_thread.join(timeout=2)
+                for drain_thread in drain_threads:
+                    drain_thread.join(timeout=2)
             except Exception:
-                pass  # cleanup is best-effort
+                pass
             raise
 
-        # Drain thread now exits promptly after bash does (~300ms idle
-        # check).  A short join is enough; a long one would be a bug since
-        # it means the non-blocking loop itself stopped cooperating.
-        drain_thread.join(timeout=2)
+        for drain_thread in drain_threads:
+            drain_thread.join(timeout=2)
 
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
+        for stream in (proc.stdout, getattr(proc, "stderr", None)):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
 
         if _DEBUG_INTERRUPT:
             logger.info(
@@ -715,7 +691,11 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return {"output": "".join(output_chunks), "returncode": proc.returncode}
+        return {
+            "output": "".join(output_chunks),
+            "stderr": "".join(stderr_chunks),
+            "returncode": proc.returncode,
+        }
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""
@@ -851,4 +831,3 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
-

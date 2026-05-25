@@ -704,3 +704,42 @@ class _DeletedTestGitBaselineCheck:
     helper is restored or replaced.
     """
     pass
+
+
+class TestSeparatedStdoutStderr:
+    def test_local_environment_keeps_stderr_out_of_stdout(self, tmp_path):
+        """Backend stderr must not contaminate stdout consumed by file tools."""
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=5)
+        try:
+            env._snapshot_ready = False
+            result = env.execute("printf 'payload'; printf 'ssh warning\\n' >&2")
+        finally:
+            env.cleanup()
+
+        assert result["output"] == "payload"
+        assert result["stderr"] == "ssh warning\n"
+
+    def test_terminal_tool_still_surfaces_stderr_to_users(self, tmp_path, monkeypatch):
+        """Separating streams internally must not hide stderr from terminal_tool."""
+        from tools import terminal_tool as terminal_module
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=5)
+        monkeypatch.setitem(terminal_module._active_environments, "default", env)
+        monkeypatch.setitem(terminal_module._last_activity, "default", 0)
+        try:
+            payload = terminal_module.terminal_tool(
+                "printf 'payload'; printf 'ssh warning\\n' >&2",
+                timeout=5,
+            )
+        finally:
+            env.cleanup()
+            terminal_module._active_environments.pop("default", None)
+            terminal_module._last_activity.pop("default", None)
+
+        import json
+        result = json.loads(payload)
+        assert result["output"] == "payload\nssh warning"
+        assert result["exit_code"] == 0
