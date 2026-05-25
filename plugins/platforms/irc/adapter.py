@@ -199,7 +199,7 @@ class IRCAdapter(BasePlatformAdapter):
         # Wait for registration (001 RPL_WELCOME) with timeout
         try:
             await asyncio.wait_for(self._registration_event.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("IRC: registration timed out")
             await self.disconnect()
             self._set_fatal_error("registration_timeout", "IRC server did not send RPL_WELCOME", retryable=True)
@@ -809,7 +809,7 @@ async def _standalone_send(
                 return {"error": "IRC standalone send: registration timeout (no RPL_WELCOME)"}
             try:
                 raw_line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=remaining)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return {"error": "IRC standalone send: registration timeout (no RPL_WELCOME)"}
             except asyncio.IncompleteReadError:
                 return {"error": "IRC standalone send: server closed connection during registration"}
@@ -852,7 +852,7 @@ async def _standalone_send(
                     break
                 try:
                     raw_line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=remaining)
-                except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+                except (TimeoutError, asyncio.IncompleteReadError):
                     break
                 decoded = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
                 jmsg = _parse_irc_message(decoded)
@@ -907,7 +907,7 @@ async def _standalone_send(
         await _raw("QUIT :delivered")
         try:
             await asyncio.wait_for(reader.read(1024), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
         return {"success": True, "message_id": str(int(time.time() * 1000))}
@@ -920,7 +920,7 @@ async def _standalone_send(
         try:
             writer.close()
             await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             pass
 
 

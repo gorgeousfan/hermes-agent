@@ -460,7 +460,7 @@ def _rpc_server_loop(
         while True:
             try:
                 chunk = conn.recv(65536)
-            except socket.timeout:
+            except TimeoutError:
                 break
             if not chunk:
                 break
@@ -544,7 +544,7 @@ def _rpc_server_loop(
 
                 conn.sendall((result + "\n").encode())
 
-    except socket.timeout:
+    except TimeoutError:
         logger.debug("RPC listener socket timeout")
     except OSError as e:
         logger.debug("RPC listener socket error: %s", e, exc_info=True)

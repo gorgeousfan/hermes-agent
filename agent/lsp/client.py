@@ -400,7 +400,7 @@ class LSPClient:
             if self.is_running:
                 try:
                     await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
-                except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
+                except (TimeoutError, LSPRequestError, LSPProtocolError):
                     pass
                 try:
                     await self._send_notification("exit", None)
@@ -432,7 +432,7 @@ class LSPClient:
                 proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     try:
                         proc.kill()
                         await proc.wait()
@@ -760,7 +760,7 @@ class LSPClient:
                 params,
                 timeout=DIAGNOSTICS_REQUEST_TIMEOUT,
             )
-        except (LSPRequestError, LSPProtocolError, asyncio.TimeoutError) as e:
+        except (TimeoutError, LSPRequestError, LSPProtocolError) as e:
             logger.debug("[%s] document diagnostic pull failed: %s", self.server_id, e)
             return
         if not isinstance(result, dict):
@@ -850,7 +850,7 @@ class LSPClient:
                     self._push_event.clear()
                     try:
                         await asyncio.wait_for(self._push_event.wait(), timeout=remaining)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         break
                 return
             remaining = deadline - asyncio.get_event_loop().time()
@@ -864,7 +864,7 @@ class LSPClient:
             self._push_event.clear()
             try:
                 await asyncio.wait_for(self._push_event.wait(), timeout=min(remaining, 0.5))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     def diagnostics_for(self, path: str) -> List[Dict[str, Any]]:
