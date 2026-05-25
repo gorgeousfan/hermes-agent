@@ -21,7 +21,7 @@ Use Google Workspace CLI without Google Cloud setup.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Google`, `Calendar`, `Drive`, `Sheets`, `CLI`, `MyBrandMetrics`, `OAuth` |
-| Related skills | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) |
+| Related skills | [`google-workspace`](/user-guide/skills/bundled/productivity/productivity-google-workspace) |
 
 ## Reference: full SKILL.md
 
