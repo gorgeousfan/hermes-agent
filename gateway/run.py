@@ -15765,6 +15765,24 @@ class GatewayRunner:
                 return
 
 
+            # Streaming tools (for example Cursor Agent stream-json) can emit
+            # explicit progress snapshots while a single long-running tool call
+            # is still active.  Render these directly instead of applying the
+            # normal "new tool name" suppression below; otherwise repeated
+            # updates from the same tool would be hidden in gateway sessions.
+            if event_type == "tool.progress":
+                msg = (preview or "").strip()
+                if not msg:
+                    return
+                if msg == last_progress_msg[0]:
+                    repeat_count[0] += 1
+                    progress_queue.put(("__dedup__", msg, repeat_count[0]))
+                    return
+                last_progress_msg[0] = msg
+                repeat_count[0] = 0
+                progress_queue.put(msg)
+                return
+
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return

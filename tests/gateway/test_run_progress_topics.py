@@ -674,6 +674,36 @@ class VerboseAgent:
         }
 
 
+class CursorProgressAgent:
+    """Agent that emits multiple progress snapshots from one long-running tool."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.tool_progress_callback is not None
+        self.tool_progress_callback(
+            "tool.progress",
+            "cursor_agent",
+            "Cursor Agent progress:\n• planning edits",
+            None,
+        )
+        time.sleep(0.35)
+        self.tool_progress_callback(
+            "tool.progress",
+            "cursor_agent",
+            "Cursor Agent progress:\n• running tests",
+            None,
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -734,6 +764,28 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_renders_streaming_tool_progress_even_when_tool_name_repeats(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CursorProgressAgent,
+        session_id="sess-cursor-stream-progress",
+        config_data={
+            "display": {
+                "tool_progress": "new",
+                "interim_assistant_messages": False,
+                "tool_preview_length": 80,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    all_progress = "\n".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "planning edits" in all_progress
+    assert "running tests" in all_progress
 
 
 @pytest.mark.asyncio

@@ -1600,6 +1600,26 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
+    elif function_name == "cursor_agent":
+        # Cursor Agent has its own streaming subprocess loop.  Dispatch it here
+        # (rather than through the generic registry path) so it can relay
+        # periodic stream-json progress via the current agent's progress
+        # callback on gateway/CLI/TUI surfaces.
+        from tools.cursor_agent_tool import run_cursor_agent as _run_cursor_agent
+        return _run_cursor_agent(
+            prompt=function_args.get("prompt", ""),
+            workspace=function_args.get("workspace"),
+            model=function_args.get("model"),
+            command=function_args.get("command"),
+            force=function_args.get("force", True),
+            trust=function_args.get("trust", True),
+            stream_partial_output=function_args.get("stream_partial_output", False),
+            progress_interval_seconds=function_args.get("progress_interval_seconds"),
+            progress_max_chars=function_args.get("progress_max_chars"),
+            timeout_seconds=function_args.get("timeout_seconds"),
+            progress_callback=getattr(agent, "tool_progress_callback", None),
+            task_id=effective_task_id,
+        )
     else:
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,

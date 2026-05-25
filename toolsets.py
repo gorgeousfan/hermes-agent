@@ -32,7 +32,7 @@ _HERMES_CORE_TOOLS = [
     # Web
     "web_search", "web_extract",
     # Terminal + process management
-    "terminal", "process",
+    "terminal", "process", "cursor_agent",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
@@ -152,6 +152,16 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
+        "includes": []
+    },
+
+    "cursor": {
+        "description": (
+            "Cursor Agent CLI for heavy coding tasks. Runs headless with "
+            "stream-json progress so gateway sessions receive periodic "
+            "updates instead of going silent during long edits."
+        ),
+        "tools": ["cursor_agent"],
         "includes": []
     },
     

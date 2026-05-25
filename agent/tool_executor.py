@@ -746,13 +746,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                )
+                if function_name == "cursor_agent":
+                    from tools.cursor_agent_tool import run_cursor_agent as _run_cursor_agent
+                    function_result = _run_cursor_agent(
+                        prompt=function_args.get("prompt", ""),
+                        workspace=function_args.get("workspace"),
+                        model=function_args.get("model"),
+                        command=function_args.get("command"),
+                        force=function_args.get("force", True),
+                        trust=function_args.get("trust", True),
+                        stream_partial_output=function_args.get("stream_partial_output", False),
+                        progress_interval_seconds=function_args.get("progress_interval_seconds"),
+                        progress_max_chars=function_args.get("progress_max_chars"),
+                        timeout_seconds=function_args.get("timeout_seconds"),
+                        progress_callback=getattr(agent, "tool_progress_callback", None),
+                        task_id=effective_task_id,
+                    )
+                else:
+                    function_result = _ra().handle_function_call(
+                        function_name, function_args, effective_task_id,
+                        tool_call_id=tool_call.id,
+                        session_id=agent.session_id or "",
+                        enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
+                    )
                 _spinner_result = function_result
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -766,13 +783,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
-                    enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                    skip_pre_tool_call_hook=True,
-                )
+                if function_name == "cursor_agent":
+                    from tools.cursor_agent_tool import run_cursor_agent as _run_cursor_agent
+                    function_result = _run_cursor_agent(
+                        prompt=function_args.get("prompt", ""),
+                        workspace=function_args.get("workspace"),
+                        model=function_args.get("model"),
+                        command=function_args.get("command"),
+                        force=function_args.get("force", True),
+                        trust=function_args.get("trust", True),
+                        stream_partial_output=function_args.get("stream_partial_output", False),
+                        progress_interval_seconds=function_args.get("progress_interval_seconds"),
+                        progress_max_chars=function_args.get("progress_max_chars"),
+                        timeout_seconds=function_args.get("timeout_seconds"),
+                        progress_callback=getattr(agent, "tool_progress_callback", None),
+                        task_id=effective_task_id,
+                    )
+                else:
+                    function_result = _ra().handle_function_call(
+                        function_name, function_args, effective_task_id,
+                        tool_call_id=tool_call.id,
+                        session_id=agent.session_id or "",
+                        enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
+                    )
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
