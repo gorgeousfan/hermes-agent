@@ -1194,4 +1194,118 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 
 
+# =========================================================================
+# SHARED.md — cross-profile shared identity
+# =========================================================================
+
+
+class TestLoadSharedSoulMd:
+    """``load_shared_soul_md`` reads ~/.hermes/SHARED.md (or env-overridden path)."""
+
+    def test_returns_none_when_file_does_not_exist(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(tmp_path / "missing.md"))
+        from agent.prompt_builder import load_shared_soul_md
+        assert load_shared_soul_md() is None
+
+    def test_returns_none_when_file_is_empty(self, tmp_path, monkeypatch):
+        shared = tmp_path / "SHARED.md"
+        shared.write_text("\n\n   \n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(shared))
+        from agent.prompt_builder import load_shared_soul_md
+        assert load_shared_soul_md() is None
+
+    def test_loads_via_env_var_override(self, tmp_path, monkeypatch):
+        shared = tmp_path / "custom-shared.md"
+        shared.write_text("Cross-profile rule: be honest.", encoding="utf-8")
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(shared))
+        from agent.prompt_builder import load_shared_soul_md
+        assert load_shared_soul_md() == "Cross-profile rule: be honest."
+
+    def test_loads_from_default_root_when_no_env(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_SHARED_SOUL", raising=False)
+        fake_home = tmp_path / "home"
+        (fake_home / ".hermes").mkdir(parents=True)
+        (fake_home / ".hermes" / "SHARED.md").write_text(
+            "Default location works.", encoding="utf-8"
+        )
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        from agent.prompt_builder import load_shared_soul_md
+        assert load_shared_soul_md() == "Default location works."
+
+    def test_default_root_ignores_hermes_home(self, tmp_path, monkeypatch):
+        """SHARED.md is read from ~/.hermes regardless of the profile's HERMES_HOME."""
+        monkeypatch.delenv("HERMES_SHARED_SOUL", raising=False)
+        fake_home = tmp_path / "home"
+        (fake_home / ".hermes").mkdir(parents=True)
+        (fake_home / ".hermes" / "SHARED.md").write_text("Root SHARED.", encoding="utf-8")
+        # A profile HERMES_HOME with its own SHARED.md should be ignored.
+        profile_home = tmp_path / "profile_x"
+        profile_home.mkdir()
+        (profile_home / "SHARED.md").write_text(
+            "Profile-local SHARED must be ignored.", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        from agent.prompt_builder import load_shared_soul_md
+        result = load_shared_soul_md()
+        assert result == "Root SHARED."
+        assert "Profile-local" not in (result or "")
+
+    def test_env_var_supports_tilde_expansion(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        (fake_home / "myshared.md").write_text("Tilde works.", encoding="utf-8")
+        monkeypatch.setattr("os.path.expanduser", lambda p: p.replace("~", str(fake_home)))
+        monkeypatch.setenv("HERMES_SHARED_SOUL", "~/myshared.md")
+        from agent.prompt_builder import load_shared_soul_md
+        assert load_shared_soul_md() == "Tilde works."
+
+
+class TestLoadSoulMdWithShared:
+    """``load_soul_md`` concatenates SHARED.md before the profile SOUL.md."""
+
+    def test_shared_prepended_to_profile_soul(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Profile identity.", encoding="utf-8")
+        shared = tmp_path / "SHARED.md"
+        shared.write_text("Cross-profile rule.", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(shared))
+        from agent.prompt_builder import load_soul_md
+        result = load_soul_md()
+        assert result == "Cross-profile rule.\n\n---\n\nProfile identity."
+
+    def test_shared_only_when_profile_soul_empty(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        # Empty profile SOUL.md — blocks the auto-seed too.
+        (hermes_home / "SOUL.md").write_text("", encoding="utf-8")
+        shared = tmp_path / "SHARED.md"
+        shared.write_text("Just shared.", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(shared))
+        from agent.prompt_builder import load_soul_md
+        assert load_soul_md() == "Just shared."
+
+    def test_profile_only_when_no_shared(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Profile only.", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(tmp_path / "no-shared.md"))
+        from agent.prompt_builder import load_soul_md
+        assert load_soul_md() == "Profile only."
+
+    def test_separator_format_is_stable(self, tmp_path, monkeypatch):
+        """The separator between SHARED and profile SOUL is ``\\n\\n---\\n\\n``."""
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("PROFILE", encoding="utf-8")
+        shared = tmp_path / "SHARED.md"
+        shared.write_text("SHARED", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_SHARED_SOUL", str(shared))
+        from agent.prompt_builder import load_soul_md
+        assert load_soul_md() == "SHARED\n\n---\n\nPROFILE"
 

@@ -1310,8 +1310,51 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
+def load_shared_soul_md() -> Optional[str]:
+    """Load SHARED.md (cross-profile shared identity) from the default Hermes root.
+
+    SHARED.md provides rules and identity context common to all profiles on
+    this machine.  When present, it is prepended to each profile's SOUL.md
+    in the agent identity slot, so a single rule (e.g. "user's wiki lives
+    at ~/wiki, consult it before saying you don't know") can apply to every
+    profile without being duplicated in each ``profiles/<name>/SOUL.md``.
+
+    Path resolution:
+      * ``HERMES_SHARED_SOUL`` env var if set (absolute or user-expandable path).
+      * Otherwise ``~/.hermes/SHARED.md`` — the default Hermes root, regardless
+        of the current profile's ``HERMES_HOME``.
+
+    Returns ``None`` if the file does not exist, is empty, or cannot be read.
+    """
+    override = os.environ.get("HERMES_SHARED_SOUL", "").strip()
+    if override:
+        shared_path = Path(os.path.expanduser(override))
+    else:
+        # Always read from the default Hermes root (~/.hermes), not the
+        # current profile's HERMES_HOME — that's the whole point of SHARED.
+        shared_path = Path.home() / ".hermes" / "SHARED.md"
+
+    if not shared_path.exists():
+        return None
+    try:
+        content = shared_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "SHARED.md")
+        content = _truncate_content(content, "SHARED.md")
+        return content
+    except Exception as e:
+        logger.debug("Could not read SHARED.md from %s: %s", shared_path, e)
+        return None
+
+
 def load_soul_md() -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
+
+    If ``~/.hermes/SHARED.md`` (or the path in ``HERMES_SHARED_SOUL``) exists,
+    its content is prepended to the profile SOUL with a ``\\n\\n---\\n\\n``
+    separator.  This lets cross-profile rules apply to every agent without
+    duplication.  See :func:`load_shared_soul_md`.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
@@ -1324,18 +1367,21 @@ def load_soul_md() -> Optional[str]:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
     soul_path = get_hermes_home() / "SOUL.md"
-    if not soul_path.exists():
-        return None
-    try:
-        content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return None
-        content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
-        return content
-    except Exception as e:
-        logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
-        return None
+    profile_soul: Optional[str] = None
+    if soul_path.exists():
+        try:
+            content = soul_path.read_text(encoding="utf-8").strip()
+            if content:
+                content = _scan_context_content(content, "SOUL.md")
+                profile_soul = _truncate_content(content, "SOUL.md")
+        except Exception as e:
+            logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+
+    shared_soul = load_shared_soul_md()
+
+    if shared_soul and profile_soul:
+        return f"{shared_soul}\n\n---\n\n{profile_soul}"
+    return shared_soul or profile_soul
 
 
 def _load_hermes_md(cwd_path: Path) -> str:

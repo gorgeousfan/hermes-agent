@@ -71,6 +71,28 @@ If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-
 
 No wrapper language is added around the file. The content itself matters — write the way you want your agent to think and speak.
 
+## Sharing rules across profiles with SHARED.md
+
+If you run multiple profiles on the same machine (e.g. `default`, plus `profiles/work/`, `profiles/personal/`), each profile has its own `SOUL.md`. Rules that should apply to **every** profile — for example "user's wiki lives at `~/wiki`, consult it before saying you don't know" — used to require editing every profile's SOUL one by one.
+
+`SHARED.md` solves that. When Hermes loads the identity slot, it also checks for a shared file and prepends it to the profile SOUL with a `\n\n---\n\n` separator. The same shared rules then apply to every profile without duplication.
+
+```text
+~/.hermes/SHARED.md
+```
+
+Override the path with the `HERMES_SHARED_SOUL` environment variable if you want it elsewhere (tilde expansion supported).
+
+How the slot is built:
+
+- `SHARED.md` exists, profile `SOUL.md` exists → `SHARED + \n\n---\n\n + SOUL`
+- `SHARED.md` exists, profile `SOUL.md` missing/empty → `SHARED` alone becomes the identity
+- `SHARED.md` missing → behavior is unchanged from earlier versions; only the profile SOUL is loaded
+
+`SHARED.md` always reads from the **default Hermes root** (`~/.hermes`), regardless of the current profile's `HERMES_HOME`. This is intentional: each profile's `HERMES_HOME` points at its own directory, so reading SHARED from there would defeat the purpose. The shared rules live at one well-known spot.
+
+Use SHARED for things like infrastructure facts ("the team's vector DB is at `db.internal:6333`"), shared safety rules ("never call destructive scripts without a dry-run first"), or anything you'd otherwise be tempted to copy-paste into multiple SOUL files.
+
 ## A good first edit
 
 If you do nothing else, open the file and change just a few lines so it feels like you.
