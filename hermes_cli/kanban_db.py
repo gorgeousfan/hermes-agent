@@ -1750,6 +1750,16 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                if task_status == "blocked" and initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": "initial_status",
+                            "source": "create_task",
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -4096,6 +4106,15 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    target_task_id: Optional[str] = None
+    """Optional task id requested by a target-bound dispatcher tick."""
+    target_miss_reason: Optional[str] = None
+    """Why a target-bound dispatcher tick did not spawn the requested task.
+
+    ``None`` means no target was requested, or the target was eligible and
+    spawned/planned. Values are intentionally compact and stable for JSON
+    automation callers.
+    """
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5096,6 +5115,7 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    target_task_id: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -5124,6 +5144,10 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``target_task_id`` makes the spawn phase target-bound: after normal
+    housekeeping, only that exact task may be planned/spawned. Broad ready
+    queue ordering is ignored so automation can preflight one card without a
+    TOCTOU window where another ready card sorts earlier and gets spawned.
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -5159,6 +5183,15 @@ def dispatch_once(
             pass
 
     result = DispatchResult()
+    if target_task_id is None:
+        normalized_target_task_id = None
+    else:
+        normalized_target_task_id = str(target_task_id).strip()
+    result.target_task_id = normalized_target_task_id
+    if target_task_id is not None and not normalized_target_task_id:
+        result.target_miss_reason = "invalid_target"
+        return result
+    target_task_id = normalized_target_task_id
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -5190,11 +5223,24 @@ def dispatch_once(
             ).fetchone()[0]
         )
 
-    ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'ready' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
+    if target_task_id:
+        target_row = conn.execute(
+            "SELECT id, assignee, status, claim_lock FROM tasks WHERE id = ?",
+            (target_task_id,),
+        ).fetchone()
+        if target_row is None:
+            result.target_miss_reason = "not_found"
+            return result
+        if target_row["status"] != "ready" or target_row["claim_lock"]:
+            result.target_miss_reason = "not_ready"
+            return result
+        ready_rows = [target_row]
+    else:
+        ready_rows = conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = 'ready' AND claim_lock IS NULL "
+            "ORDER BY priority DESC, created_at ASC"
+        ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -5204,6 +5250,8 @@ def dispatch_once(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
         if in_progress >= max_in_progress:
+            if target_task_id:
+                result.target_miss_reason = "capacity"
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
         remaining = max_in_progress - in_progress
@@ -5212,9 +5260,13 @@ def dispatch_once(
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
+            if target_task_id:
+                result.target_miss_reason = "capacity"
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            if target_task_id:
+                result.target_miss_reason = "unassigned"
             continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
@@ -5238,6 +5290,8 @@ def dispatch_once(
             # multi-lane setups where the ready queue is steadily full
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
+            if target_task_id:
+                result.target_miss_reason = "nonspawnable"
             continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
@@ -5265,6 +5319,8 @@ def dispatch_once(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            if target_task_id:
+                result.target_miss_reason = "claim_lost"
             continue
         try:
             workspace = resolve_workspace(claimed, board=board)
@@ -5275,6 +5331,8 @@ def dispatch_once(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+            if target_task_id:
+                result.target_miss_reason = "workspace_error"
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
@@ -5311,6 +5369,11 @@ def dispatch_once(
             )
             if auto:
                 result.auto_blocked.append(claimed.id)
+            if target_task_id:
+                result.target_miss_reason = "spawn_failed"
+
+    if target_task_id:
+        return result
 
     # ---- review column dispatch ----
     # Review tasks are tasks that a worker moved to 'review' after

@@ -294,6 +294,31 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_recompute_ready_preserves_initial_blocked_human_hold(kanban_home):
+    """Tasks created directly into blocked are explicit holds, not dependency blocks."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="operator hold",
+            assignee="a",
+            initial_status="blocked",
+        )
+
+        promoted = kb.recompute_ready(conn)
+
+        assert promoted == 0
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+        rows = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+        kinds = [row["kind"] for row in rows]
+        assert kinds == ["created", "blocked"]
+        assert "initial_status" in (rows[-1]["payload"] or "")
+
+
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")
@@ -1149,6 +1174,106 @@ def test_dispatch_max_spawn_fills_remaining_capacity(
         assert spawns == [ready_a]
         assert kb.get_task(conn, ready_a).status == "running"
         assert kb.get_task(conn, ready_b).status == "ready"
+
+
+def test_dispatch_target_task_id_spawns_only_exact_task(
+    kanban_home, all_assignees_spawnable
+):
+    """Target-bound dispatch must not spawn earlier ready cards.
+
+    This guards against the board-wide ``dispatch --max 1`` TOCTOU shape:
+    the caller can verify one card, but a broad dispatcher tick may spawn a
+    different ready card that sorts earlier in the queue.
+    """
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        earlier = kb.create_task(conn, title="earlier", assignee="alice")
+        target = kb.create_task(conn, title="target", assignee="bob")
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, target_task_id=target)
+
+        assert res.target_task_id == target
+        assert res.target_miss_reason is None
+        assert spawns == [target]
+        assert [item[0] for item in res.spawned] == [target]
+        target_task = kb.get_task(conn, target)
+        earlier_task = kb.get_task(conn, earlier)
+        assert target_task is not None
+        assert earlier_task is not None
+        assert target_task.status == "running"
+        assert earlier_task.status == "ready"
+
+
+def test_dispatch_target_task_id_runs_housekeeping_before_target_selection(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        stale = kb.create_task(conn, title="stale", assignee="alice")
+        target = kb.create_task(conn, title="target", assignee="bob")
+        kb.claim_task(conn, stale)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 1, stale),
+        )
+
+        res = kb.dispatch_once(conn, dry_run=True, target_task_id=target)
+
+        assert res.reclaimed == 1
+        assert res.target_task_id == target
+        assert res.target_miss_reason is None
+        assert [item[0] for item in res.spawned] == [target]
+        stale_task = kb.get_task(conn, stale)
+        target_task = kb.get_task(conn, target)
+        assert stale_task is not None
+        assert target_task is not None
+        assert stale_task.status == "ready"
+        assert target_task.status == "ready"
+
+
+def test_dispatch_target_task_id_reports_not_ready_without_spawning(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        target = kb.create_task(conn, title="target", assignee="bob")
+        kb.claim_task(conn, target)
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, target_task_id=target)
+
+        assert res.target_task_id == target
+        assert res.target_miss_reason == "not_ready"
+        assert spawns == []
+        assert res.spawned == []
+
+
+def test_dispatch_empty_target_task_id_fails_closed(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        ready = kb.create_task(conn, title="ready", assignee="alice")
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, target_task_id="  ")
+
+        assert res.target_task_id == ""
+        assert res.target_miss_reason == "invalid_target"
+        assert spawns == []
+        assert res.spawned == []
+        task = kb.get_task(conn, ready)
+        assert task is not None
+        assert task.status == "ready"
 
 
 def test_dispatch_reclaims_stale_before_spawning(kanban_home):
