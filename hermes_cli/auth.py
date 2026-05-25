@@ -4062,6 +4062,8 @@ def _poll_for_token(
 # Nous Portal — token refresh, agent key minting, model discovery
 # =============================================================================
 
+from tools.http_tools import retryable_post
+
 # -----------------------------------------------------------------------------
 # Shared Nous token store — lets OAuth credentials persist across profiles
 # so a new `hermes --profile <name> auth add nous --type oauth` can one-tap
@@ -4207,7 +4209,6 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     refresh_token = state.get("refresh_token")
     access_token = state.get("access_token")
     if not (isinstance(refresh_token, str) and refresh_token.strip()):
-        # No refresh_token = nothing worth sharing across profiles
         return
     if not (isinstance(access_token, str) and access_token.strip()):
         return
@@ -4264,14 +4265,12 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
 def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     """Return the shared Nous OAuth state if present and well-formed.
 
-    Returns ``None`` when the file is missing, unreadable, malformed, or
-    lacks required fields. Callers should treat ``None`` as "no shared
-    credentials available — fall through to device-code".
+    Unreadable or malformed shared state is treated as unavailable so callers
+    can fall back to the normal device-code path.
     """
     try:
         path = _nous_shared_store_path()
     except RuntimeError:
-        # Test seat belt tripped — treat as missing
         return None
     if not path.is_file():
         return None
@@ -4502,14 +4501,26 @@ def _refresh_access_token(
     client_id: str,
     refresh_token: str,
 ) -> Dict[str, Any]:
-    response = client.post(
-        f"{portal_base_url}/api/oauth/token",
-        headers={"x-nous-refresh-token": refresh_token},
-        data={
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-        },
-    )
+    url = f"{portal_base_url}/api/oauth/token"
+
+    try:
+        response = retryable_post(
+            client,
+            url,
+            headers={"x-nous-refresh-token": refresh_token},
+            data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+            },
+            max_attempts=3,
+            base_delay=0.5,
+            backoff_factor=2.0,
+            max_delay=10.0,
+            logger_extra={"url": url, "client_id": client_id},
+        )
+    except Exception as exc:
+        logger.warning("Nous token refresh failed after retries url=%s error=%s", url, exc, exc_info=True)
+        raise
 
     if response.status_code == 200:
         payload = response.json()
@@ -4529,12 +4540,11 @@ def _refresh_access_token(
     relogin = code in {"invalid_grant", "invalid_token", "refresh_token_reused"}
 
     # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
-    # server and surface an actionable message.  This fires when an external
-    # process (health-check script, monitoring tool, custom self-heal hook)
-    # called POST /api/oauth/token with Hermes's refresh_token without
-    # persisting the rotated token back to auth.json — the server then
-    # retires the original RT, Hermes's next refresh uses it, and the whole
-    # session chain gets revoked as a token-theft signal (#15099).
+    # server and surface an actionable message. This typically happens when an
+    # external process (for example a health-check script, monitoring tool, or
+    # self-heal hook) refreshes Hermes's token chain but does not persist the
+    # rotated refresh token back into auth.json, so the portal treats Hermes's
+    # next refresh as token reuse / token theft and revokes the session chain.
     lowered = description.lower()
     if code == "refresh_token_reused" or "reuse" in lowered or "reuse detected" in lowered:
         description = (
