@@ -1229,6 +1229,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "cursor-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://cursor"):
+        from agent.cursor_acp_client import CursorACPClient
+
+        client = CursorACPClient(**client_kwargs)
+        _ra().logger.info(
+            "Cursor ACP client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
