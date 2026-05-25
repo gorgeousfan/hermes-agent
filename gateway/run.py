@@ -12743,15 +12743,18 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
-        def _list_titled_sessions() -> list[dict]:
+        def _list_titled_sessions(exclude_sources: list[str] | None = None) -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source, limit=10,
+                exclude_sources=exclude_sources,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
             # List recent titled sessions for this user/platform
             try:
-                titled = _list_titled_sessions()
+                titled = _list_titled_sessions(exclude_sources=["cron"])
                 if not titled:
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
@@ -12769,7 +12772,7 @@ class GatewayRunner:
         # Resolve a numbered choice or a title to a session ID.
         if name.isdigit():
             try:
-                titled = _list_titled_sessions()
+                titled = _list_titled_sessions(exclude_sources=["cron"])
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
