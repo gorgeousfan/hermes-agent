@@ -1215,6 +1215,57 @@ class TestParseTargetRefSlack:
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
 
 
+class TestParseTargetRefBlueBubbles:
+    """_parse_target_ref recognizes BlueBubbles email and phone targets as explicit."""
+
+    def test_email_address_is_explicit(self):
+        """BlueBubbles email addresses (e.g., user@example.com) are explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("bluebubbles", "user@example.com")
+        assert chat_id == "user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_email_with_whitespace_is_stripped(self):
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "  user@example.com  ")
+        assert chat_id == "user@example.com"
+        assert is_explicit is True
+
+    def test_email_with_plus_and_dots(self):
+        """Email addresses with + tags and dots are recognized."""
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "user+tag@sub.domain.co.uk")
+        assert chat_id == "user+tag@sub.domain.co.uk"
+        assert is_explicit is True
+
+    def test_phone_is_explicit_via_phone_platforms(self):
+        """Phone numbers are handled by the _PHONE_PLATFORMS branch, not bluebubbles-specific."""
+        # Since BlueBubbles is NOT in _PHONE_PLATFORMS yet, phones are NOT explicit
+        # (this will change once PR #21683 merges and adds bluebubbles to _PHONE_PLATFORMS)
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "+15551234567")
+        # Currently falls through to the isdigit() check below, but "+" is NOT stripped
+        # (only "-" is stripped), so "+15551234567".isdigit() returns False
+        # This test documents the current behavior: phones are NOT explicit for BlueBubbles
+        # until BlueBubbles is added to _PHONE_PLATFORMS
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_invalid_email_is_not_explicit(self):
+        """Invalid email format is not recognized as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "invalid-email")
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_empty_string_is_not_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "")
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_non_email_address_is_not_explicit_for_bluebubbles(self):
+        """Channel names are not explicit targets for BlueBubbles."""
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "general")
+        assert chat_id is None
+        assert is_explicit is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 
