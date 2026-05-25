@@ -83,7 +83,8 @@ WORKDIR /opt/hermes
 # ui-tui/package.json.  Copying the tree up front lets npm resolve the
 # workspace to real content instead of stopping at a bare package.json.
 COPY package.json package-lock.json ./
-COPY web/package.json web/package-lock.json web/
+COPY apps/dashboard/package.json apps/dashboard/package-lock.json apps/dashboard/
+COPY apps/shared/package.json apps/shared/
 COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 
@@ -100,7 +101,7 @@ ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
-    (cd web && npm install --prefer-offline --no-audit) && \
+    (cd apps/dashboard && npm install --prefer-offline --no-audit) && \
     (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
@@ -134,15 +135,15 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging
 COPY --chown=hermes:hermes . .
 
 # Build browser dashboard and terminal UI assets.
-RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build
+RUN cd apps/dashboard && npm run build && \
+    cd ../../ui-tui && npm run build
 
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.
 # The venv needs to be traversable too.
 # node_modules trees additionally need to be writable by the hermes user
 # so the runtime `npm install` triggered by _tui_need_npm_install() in
-# hermes_cli/main.py succeeds (see #18800). /opt/hermes/web is build-time
+# hermes_cli/main.py succeeds (see #18800). /opt/hermes/apps/dashboard is build-time
 # only (HERMES_WEB_DIST points at hermes_cli/web_dist) and is intentionally
 # not chowned here.
 # The .venv MUST remain hermes-writable so lazy_deps.py can install
