@@ -7143,8 +7143,11 @@ class GatewayRunner:
                     f"mid-turn. Wait for the current response or `/stop` first."
                 )
 
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+            if event.message_type in (MessageType.PHOTO, MessageType.VOICE):
+                logger.debug(
+                    "PRIORITY %s follow-up for session %s — queueing without interrupt",
+                    event.message_type.value, _quick_key,
+                )
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)

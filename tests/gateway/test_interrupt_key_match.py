@@ -149,3 +149,36 @@ class TestInterruptKeyConsistency:
         assert queued is event
         assert queued.media_urls == ["/tmp/photo-a.jpg"]
         assert interrupt_event.is_set() is False
+
+    @pytest.mark.asyncio
+    async def test_voice_followup_is_queued_without_interrupt(self):
+        """Voice follow-ups should queue behind the active run, not interrupt it (#31328).
+
+        Without this: a rapid second voice note arriving mid-processing sets
+        the interrupt Event, which makes the stale-response check in
+        ``_process_message_background`` swallow the in-flight reply.  Voice 1's
+        response is silently dropped from the user's session.  Photo bursts
+        already had this protection — voice bursts have the same UX shape.
+        """
+        adapter = StubAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        source = _source("-1001234", "group")
+        session_key = build_session_key(source)
+        interrupt_event = asyncio.Event()
+        adapter._active_sessions[session_key] = interrupt_event
+
+        event = MessageEvent(
+            text="",
+            source=source,
+            message_type=MessageType.VOICE,
+            message_id="2",
+            media_urls=["/tmp/voice-b.ogg"],
+            media_types=["audio/ogg"],
+        )
+        await adapter.handle_message(event)
+
+        queued = adapter._pending_messages[session_key]
+        assert queued is event
+        assert queued.media_urls == ["/tmp/voice-b.ogg"]
+        assert interrupt_event.is_set() is False

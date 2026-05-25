@@ -3306,11 +3306,22 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
-            # Special case: photo bursts/albums frequently arrive as multiple near-
-            # simultaneous messages. Queue them without interrupting the active run,
-            # then process them immediately after the current task finishes.
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+            # Special case: photo and voice bursts frequently arrive as multiple
+            # near-simultaneous messages (album uploads, rapid voice notes).
+            # Queue them without interrupting the active run, then process them
+            # immediately after the current task finishes.
+            #
+            # Without this for voice (#31328): voice 2 lands while voice 1 is
+            # still being processed → interrupt sets, voice 1's response is
+            # suppressed by the stale-response check below, voice 1 is silently
+            # dropped from the session.  Photo bursts already had this
+            # protection; voice/audio bursts have the same UX shape so they
+            # follow the same contract.
+            if event.message_type in (MessageType.PHOTO, MessageType.VOICE):
+                logger.debug(
+                    "[%s] Queuing %s follow-up for session %s without interrupt",
+                    self.name, event.message_type.value, session_key,
+                )
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
