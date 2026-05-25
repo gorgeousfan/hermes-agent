@@ -380,3 +380,99 @@ class TestExternalDriftGuard:
         # at the same snapshot. Different second is also fine.
         assert ".bak." in r1["drift_backup"]
         assert ".bak." in r2["drift_backup"]
+
+
+# =========================================================================
+# On-disk change guard (supplementary to drift guard — #26045)
+#
+# Even when the file is structurally valid (no drift), a concurrent
+# session or patch tool might have changed the on-disk content between
+# our read and write.  The replace/remove/add operations must refuse
+# when the file's content hash doesn't match what we saw at entry.
+# =========================================================================
+
+
+class TestOnDiskChangeGuard:
+    """Mutations must refuse when on-disk content changed since the last read."""
+
+    def test_replace_refuses_when_file_changed_between_read_and_write(self, store):
+        """The file was externally modified after our lock-acquire snapshot.
+
+        Simulate a concurrent write that changes the file between our
+        _snapshot_on_disk() call and the pre-flush verification.
+        """
+        store.add("memory", "Entry one.")
+        store.add("memory", "Entry two.")
+
+        import unittest.mock
+        with unittest.mock.patch.object(
+            MemoryStore, "_check_on_disk_unchanged", return_value=False
+        ):
+            result = store.replace("memory", "Entry one", "Entry one updated")
+
+        assert result["success"] is False
+        assert "modified on disk" in result["error"]
+        assert "26045" in result["error"]
+
+    def test_replace_succeeds_when_file_unchanged(self, store):
+        """Normal replace flow: file hasn't been touched externally."""
+        store.add("memory", "Original entry.")
+        result = store.replace("memory", "Original", "Updated entry.")
+
+        assert result["success"] is True
+        assert "Updated entry." in result["entries"]
+        assert "Original entry." not in result["entries"]
+
+    def test_remove_refuses_when_file_changed_between_read_and_write(self, store):
+        """Remove also guards against stale on-disk state."""
+        store.add("memory", "To be removed.")
+
+        import unittest.mock
+        with unittest.mock.patch.object(
+            MemoryStore, "_check_on_disk_unchanged", return_value=False
+        ):
+            result = store.remove("memory", "To be removed")
+
+        assert result["success"] is False
+        assert "modified on disk" in result["error"]
+
+    def test_add_refuses_when_file_changed_between_read_and_write(self, store):
+        """Add also guards against stale on-disk state."""
+        store.add("memory", "Existing entry.")
+
+        import unittest.mock
+        with unittest.mock.patch.object(
+            MemoryStore, "_check_on_disk_unchanged", return_value=False
+        ):
+            result = store.add("memory", "Another entry.")
+
+        assert result["success"] is False
+        assert "modified on disk" in result["error"]
+
+    def test_on_disk_guard_does_not_trigger_when_file_is_new(self, tmp_path, monkeypatch):
+        """First-ever add to a non-existent file should succeed (snapshot is None)."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        store.load_from_disk()
+
+        result = store.add("memory", "First entry ever.")
+        assert result["success"] is True
+
+    def test_on_disk_guard_and_drift_guard_are_independent(self, store):
+        """Both guards coexist — drift is checked first, on-disk second.
+
+        If drift is detected, the on-disk guard is never reached.
+        If drift is clean but the file changed, on-disk guard fires.
+        """
+        store.add("memory", "Clean entry.")
+
+        # Simulate drift by appending content without § delimiters.
+        path = store._path_for("memory")
+        raw = path.read_text(encoding="utf-8")
+        # Content that makes one giant entry exceeding char_limit
+        path.write_text(raw + "\n\n" + "x" * 600, encoding="utf-8")
+
+        result = store.replace("memory", "Clean", "Replaced.")
+        # Drift guard should fire first
+        assert result["success"] is False
+        assert "drift_backup" in result

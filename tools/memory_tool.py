@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -216,6 +217,23 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
+    @staticmethod
+    def _snapshot_on_disk(path: Path) -> Optional[str]:
+        """Return a content hash of the on-disk file, or None if it doesn't exist."""
+        if not path.exists():
+            return None
+        try:
+            raw = path.read_text(encoding="utf-8")
+            return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        except (OSError, IOError):
+            return None
+
+    @staticmethod
+    def _check_on_disk_unchanged(path: Path, snapshot: Optional[str]) -> bool:
+        """Return True if the on-disk file content matches the snapshot hash."""
+        current = MemoryStore._snapshot_on_disk(path)
+        return current == snapshot
+
     def _reload_target(self, target: str) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
@@ -273,13 +291,16 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
+            path = self._path_for(target)
+            pre_hash = self._snapshot_on_disk(path)
+
             # Re-read from disk under lock to pick up writes from other sessions.
             # If external drift was detected, the file was backed up to .bak.<ts>
             # — refuse the mutation so we don't clobber the un-roundtrippable
             # content the patch tool / shell append / sister session wrote.
             bak = self._reload_target(target)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(path, bak)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -307,6 +328,19 @@ class MemoryStore:
 
             entries.append(content)
             self._set_entries(target, entries)
+
+            # Refuse if the on-disk file changed since we read it.
+            if not self._check_on_disk_unchanged(path, pre_hash):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Refusing to add to {path.name}: the file was modified "
+                        f"on disk since it was last read. Re-read the current state "
+                        f"and retry. This guard prevents overwriting concurrent "
+                        f"writes (issue #26045)."
+                    ),
+                }
+
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
@@ -326,9 +360,12 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
+            path = self._path_for(target)
+            pre_hash = self._snapshot_on_disk(path)
+
             bak = self._reload_target(target)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(path, bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -365,6 +402,21 @@ class MemoryStore:
                     ),
                 }
 
+            # Refuse if the on-disk file changed since we read it (e.g. a
+            # concurrent session or patch tool edit).  This is the same
+            # contract the patch tool enforces and would alone have prevented
+            # the original ~8KB data-loss incident (#26045).
+            if not self._check_on_disk_unchanged(path, pre_hash):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Refusing to replace in {path.name}: the file was modified "
+                        f"on disk since it was last read. Re-read the current state "
+                        f"and retry. This guard prevents overwriting concurrent "
+                        f"writes (issue #26045)."
+                    ),
+                }
+
             entries[idx] = new_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
@@ -378,9 +430,12 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._path_for(target)):
+            path = self._path_for(target)
+            pre_hash = self._snapshot_on_disk(path)
+
             bak = self._reload_target(target)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(path, bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -401,6 +456,19 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+
+            # Refuse if the on-disk file changed since we read it.
+            if not self._check_on_disk_unchanged(path, pre_hash):
+                return {
+                    "success": False,
+                    "error": (
+                        f"Refusing to remove from {path.name}: the file was modified "
+                        f"on disk since it was last read. Re-read the current state "
+                        f"and retry. This guard prevents overwriting concurrent "
+                        f"writes (issue #26045)."
+                    ),
+                }
+
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
