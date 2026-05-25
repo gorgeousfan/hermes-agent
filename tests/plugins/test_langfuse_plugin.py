@@ -704,3 +704,162 @@ class TestToolObservationKeying:
         assert ended["output"] == {"status": "done"}
         assert not state.tools
 
+
+class TestSerializeAssistantMessageReasoning:
+    """`_serialize_assistant_message` must surface reasoning for the three
+    conventions ``agent.agent_runtime_helpers.extract_reasoning`` covers:
+    top-level `reasoning` (Anthropic, Codex), `reasoning_content` (LM Studio /
+    Moonshot / Qwen3 thinking / DeepSeek — exposed by NormalizedResponse via
+    `provider_data["reasoning_content"]`), and the `reasoning_details` array
+    (OpenRouter's unified format).  Regression coverage for #29482."""
+
+    def _mod(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_top_level_reasoning_takes_precedence(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = "top-level thinking"
+            reasoning_content = "should be ignored"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "top-level thinking"
+        assert out["content"] == "answer"
+
+    def test_falls_back_to_reasoning_content_when_reasoning_missing(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = "deepseek-style chain of thought"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "deepseek-style chain of thought"
+
+    def test_falls_back_to_reasoning_content_when_reasoning_empty_string(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = ""
+            reasoning_content = "qwen3 thinking"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "qwen3 thinking"
+
+    def test_reads_reasoning_content_from_normalized_response_provider_data(self):
+        """Use the real NormalizedResponse — the production code path that
+        the issue reporter hits (transport stores reasoning_content on
+        provider_data, the property surfaces it)."""
+        mod = self._mod()
+        from agent.transports.types import NormalizedResponse
+
+        resp = NormalizedResponse(
+            content="final answer",
+            tool_calls=None,
+            finish_reason="stop",
+            provider_data={"reasoning_content": "lm-studio chain of thought"},
+        )
+
+        # Sanity check: top-level `reasoning` is None, the property surfaces
+        # the provider_data field as documented in transports/types.py:115.
+        assert resp.reasoning is None
+        assert resp.reasoning_content == "lm-studio chain of thought"
+
+        out = mod._serialize_assistant_message(resp)
+        assert out["reasoning"] == "lm-studio chain of thought"
+        assert out["content"] == "final answer"
+
+    def test_returns_none_when_both_missing(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            tool_calls = None
+            # No reasoning, no reasoning_content.
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] is None
+
+    def test_falls_back_to_reasoning_details_openrouter_unified(self):
+        """OpenRouter's unified `reasoning_details` array — keys mirror
+        ``agent.agent_runtime_helpers.extract_reasoning`` precedence
+        (``summary`` > ``thinking`` > ``content`` > ``text``).  When the
+        top-level `reasoning` / `reasoning_content` fields are unset, the
+        Langfuse observation must still surface the structured payload."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                {"type": "reasoning.summary", "summary": "first summary"},
+                {"type": "reasoning.thinking", "thinking": "deeper thought"},
+                {"type": "reasoning.text", "text": "trailing text"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == (
+            "first summary\n\ndeeper thought\n\ntrailing text"
+        )
+
+    def test_reasoning_details_skips_non_dict_and_empty(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = None
+            reasoning_content = None
+            reasoning_details = [
+                "not a dict",
+                {"type": "reasoning.summary", "summary": "   "},
+                {"type": "reasoning.summary"},  # no recognised key
+                {"type": "reasoning.summary", "summary": "kept"},
+                {"type": "reasoning.summary", "summary": "kept"},  # duplicate
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "kept"
+
+    def test_top_level_reasoning_wins_over_reasoning_details(self):
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = "top-level wins"
+            reasoning_content = None
+            reasoning_details = [
+                {"type": "reasoning.summary", "summary": "should be ignored"},
+            ]
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        assert out["reasoning"] == "top-level wins"
+
+    def test_falsy_non_string_reasoning_is_not_overwritten(self):
+        """Only ``None`` or blank strings trigger the fallback — a provider
+        that deliberately surfaces a falsy non-string structure (e.g. an
+        empty dict from a typed payload) must be preserved verbatim rather
+        than silently overwritten by ``reasoning_content``."""
+        mod = self._mod()
+
+        class _Msg:
+            content = "answer"
+            reasoning = {}  # falsy but explicitly set by provider
+            reasoning_content = "should NOT replace the empty-dict payload"
+            tool_calls = None
+
+        out = mod._serialize_assistant_message(_Msg())
+        # ``_safe_value`` serialises the empty dict; the key point is the
+        # ``reasoning_content`` fallback did not fire.
+        assert out["reasoning"] == {}

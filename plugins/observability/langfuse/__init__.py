@@ -469,10 +469,49 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     return serialized
 
 
+def _reasoning_is_blank(value: Any) -> bool:
+    # Only `None` and empty/whitespace strings should trigger the fallback —
+    # never overwrite a legitimately falsy non-string payload (`0`, `False`,
+    # `{}`, `[]`) the provider may have placed in `reasoning` deliberately.
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
 def _serialize_assistant_message(message: Any) -> dict[str, Any]:
+    # Mirrors agent.agent_runtime_helpers.extract_reasoning so the Langfuse
+    # observation shows whichever reasoning surface the provider actually
+    # populated: top-level `reasoning` (Anthropic / Codex), `reasoning_content`
+    # (LM Studio / Moonshot / Qwen3 thinking / DeepSeek), then the
+    # `reasoning_details` array (OpenRouter's unified format, list of
+    # ``{type, summary|thinking|content|text}`` dicts).  Without the
+    # `reasoning_details` branch, OpenRouter-routed traffic still records
+    # `reasoning: None` even though the structured payload is present.
+    reasoning = getattr(message, "reasoning", None)
+    if _reasoning_is_blank(reasoning):
+        reasoning = getattr(message, "reasoning_content", None)
+    if _reasoning_is_blank(reasoning):
+        details = getattr(message, "reasoning_details", None)
+        if isinstance(details, list):
+            parts: list[str] = []
+            for detail in details:
+                if not isinstance(detail, dict):
+                    continue
+                text = (
+                    detail.get("summary")
+                    or detail.get("thinking")
+                    or detail.get("content")
+                    or detail.get("text")
+                )
+                if isinstance(text, str) and text.strip() and text not in parts:
+                    parts.append(text)
+            if parts:
+                reasoning = "\n\n".join(parts)
     return {
         "content": _safe_value(getattr(message, "content", None)),
-        "reasoning": _safe_value(getattr(message, "reasoning", None)),
+        "reasoning": _safe_value(reasoning),
         "tool_calls": _serialize_tool_calls(getattr(message, "tool_calls", None)),
     }
 
