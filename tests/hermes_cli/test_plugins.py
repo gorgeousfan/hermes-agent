@@ -359,6 +359,105 @@ class TestPluginHooks:
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
 
+    def test_observer_hooks_registered_in_valid_hooks(self):
+        """Streaming / progress / interim observer hooks are first-class."""
+        for hook in ("on_stream_delta", "on_tool_progress", "on_interim_assistant"):
+            assert hook in VALID_HOOKS, f"missing {hook} in VALID_HOOKS"
+
+    def test_observer_hooks_dispatch(self, tmp_path, monkeypatch):
+        """Plugins can register the new observer hooks and receive kwargs."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        register_body = (
+            'ctx.register_hook("on_stream_delta", lambda **kw: None)\n'
+            '    ctx.register_hook("on_tool_progress", lambda **kw: None)\n'
+            '    ctx.register_hook("on_interim_assistant", lambda **kw: None)'
+        )
+        _make_plugin_dir(
+            plugins_dir, "observer_plugin",
+            register_body=register_body,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        mgr.invoke_hook(
+            "on_stream_delta",
+            session_id="s", platform="cli", model="m",
+            delta_text="a", content_type="text",
+            message_so_far="a", stream_id="x", final=False,
+        )
+        mgr.invoke_hook(
+            "on_tool_progress",
+            session_id="s", task_id="t", tool_name="read_file",
+            tool_call_id="c1", stage="start", text="path",
+            duration_ms=None, is_error=False,
+        )
+        mgr.invoke_hook(
+            "on_tool_progress",
+            session_id="s", task_id="t", tool_name="read_file",
+            tool_call_id="c1", stage="end", text="",
+            args={"path": "/tmp/example.txt"}, result="ok",
+            duration_ms=12.0, is_error=False,
+        )
+        mgr.invoke_hook(
+            "on_interim_assistant",
+            session_id="s", platform="cli", model="m",
+            message_text="thinking", already_streamed=False, reason="pre_tool",
+        )
+
+    def test_on_stream_delta_final_boundary_dispatch(self, tmp_path, monkeypatch):
+        """Observers receive on_stream_delta with final=True as a boundary
+        event (so they can seal the open stream box for this stream_id)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        # Capture invocations to a temp file from the plugin's hook so the
+        # parent process can verify final=True was forwarded.
+        capture_path = tmp_path / "stream_delta_captures.json"
+        register_body = (
+            "import json\n"
+            f"    _path = r'{capture_path}'\n"
+            "    def _cap(**kw):\n"
+            "        try:\n"
+            "            with open(_path, 'a', encoding='utf-8') as fh:\n"
+            "                fh.write(json.dumps({\n"
+            "                    'stream_id': kw.get('stream_id'),\n"
+            "                    'final': bool(kw.get('final')),\n"
+            "                    'content_type': kw.get('content_type'),\n"
+            "                    'message_so_far': kw.get('message_so_far'),\n"
+            "                }) + '\\n')\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    ctx.register_hook('on_stream_delta', _cap)"
+        )
+        _make_plugin_dir(
+            plugins_dir, "boundary_plugin",
+            register_body=register_body,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        mgr.invoke_hook(
+            "on_stream_delta",
+            session_id="s", platform="cli", model="m",
+            delta_text="Hi", content_type="text",
+            message_so_far="Hi", stream_id="boundary-1", final=False,
+        )
+        mgr.invoke_hook(
+            "on_stream_delta",
+            session_id="s", platform="cli", model="m",
+            delta_text="", content_type="text",
+            message_so_far="Hi there", stream_id="boundary-1", final=True,
+        )
+
+        import json
+        lines = capture_path.read_text(encoding="utf-8").splitlines()
+        events = [json.loads(ln) for ln in lines if ln.strip()]
+        assert len(events) == 2
+        assert events[0]["final"] is False
+        assert events[1]["final"] is True
+        assert events[1]["stream_id"] == "boundary-1"
+        assert events[1]["message_so_far"] == "Hi there"
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

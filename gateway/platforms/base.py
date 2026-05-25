@@ -827,12 +827,20 @@ DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
 SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
 _HERMES_HOME = get_hermes_home()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
+_MEDIA_DELIVERY_CANONICAL_CACHE_ROOTS = (
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
+)
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
+    *_MEDIA_DELIVERY_CANONICAL_CACHE_ROOTS,
     _HERMES_HOME / "image_cache",
     _HERMES_HOME / "audio_cache",
     _HERMES_HOME / "video_cache",
