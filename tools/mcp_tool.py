@@ -1267,6 +1267,7 @@ class MCPServerTask:
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
+        workdir = config.get("workdir") or config.get("cwd")
 
         if not command:
             raise ValueError(
@@ -1275,6 +1276,8 @@ class MCPServerTask:
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
+        if workdir:
+            workdir = os.path.expanduser(str(workdir))
 
         # Check package against OSV malware database before spawning
         from tools.osv_check import check_package_for_malware
@@ -1288,6 +1291,7 @@ class MCPServerTask:
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=workdir,
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
