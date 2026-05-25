@@ -328,6 +328,7 @@ AUTHOR_MAP = {
     "yuxiangl490@gmail.com": "y0shua1ee",
     "manmit0x@gmail.com": "0xDevNinja",
     "stevekelly622@gmail.com": "steezkelly",
+    "steveonjava@gmail.com": "steveonjava",
     "brian@dralth.com": "btorresgil",
     "momowind@gmail.com": "momowind",
     "clockwork-codex@users.noreply.github.com": "misery-hl",
