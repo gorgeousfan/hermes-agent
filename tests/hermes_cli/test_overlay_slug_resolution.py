@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.model_switch import list_authenticated_providers
+from hermes_cli.providers import get_label
 
 
 # -- Copilot slug resolution (env var path) ----------------------------------
@@ -42,6 +43,22 @@ def test_copilot_no_duplicate_entries():
     # Should have at most one copilot entry (may also have copilot-acp if creds exist)
     copilot_main = [s for s in copilot_slugs if s == "copilot"]
     assert len(copilot_main) == 1, f"Expected exactly one 'copilot' entry, got {copilot_main}"
+
+
+def test_google_gemini_cli_uses_display_label(monkeypatch):
+    """OAuth Gemini provider keeps its technical slug but displays a friendly label."""
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {"providers": {"google-gemini-cli": {}}, "credential_pool": {}},
+    )
+
+    providers = list_authenticated_providers(current_provider="google-gemini-cli")
+
+    gemini_cli = next((p for p in providers if p["slug"] == "google-gemini-cli"), None)
+    assert get_label("google-gemini-cli") == "Google Gemini (OAuth)"
+    assert gemini_cli is not None
+    assert gemini_cli["name"] == "Google Gemini (OAuth)"
+    assert gemini_cli["is_current"] is True
 
 
 # -- kimi-for-coding alias in auth.py ----------------------------------------
