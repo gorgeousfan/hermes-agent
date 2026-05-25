@@ -2086,7 +2086,24 @@ class GoogleChatAdapter(BasePlatformAdapter):
         text = re.sub(r"  +", " ", text)
 
         # Restore protected regions.
-        for key, value in placeholders.items():
+        #
+        # Iterate in REVERSE insertion order so values that nest an earlier
+        # placeholder are resolved first.  Each `_ph` callback runs as part
+        # of a left-to-right `re.sub` pass, so a captured group can contain
+        # the keys of previously-inserted placeholders (e.g. a header
+        # whose body has inline code, or a bold span around inline code).
+        # In that case the *outer* placeholder's value embeds the *inner*
+        # key — restoring forward would leave the inner `\x00GC<n>\x00`
+        # marker visible in the output because the inner key is iterated
+        # *before* the outer substitution puts it back into ``text``.
+        # Reverse iteration ensures the outer key is substituted first,
+        # re-introducing the inner key into ``text`` while the inner key
+        # is still pending in the loop.  Without this, real-world inputs
+        # like ``**Use `cmd` here**`` or ``[See **x** docs](url)`` leak the
+        # raw sentinel; downstream JSON / Chat API stripping of the NUL
+        # boundary bytes then surfaces the bare ``GC<n>`` token to users
+        # (#24567).
+        for key, value in reversed(placeholders.items()):
             text = text.replace(key, value)
 
         return text
