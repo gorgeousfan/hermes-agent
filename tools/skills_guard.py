@@ -920,9 +920,14 @@ def _resolve_trust_level(source: str) -> str:
     # Official optional skills shipped with the repo
     if normalized_source.startswith("official/") or normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
+    # Check if source matches any trusted repo. Match exact identifier or a
+    # sub-path under the repo (``trusted + "/"``) — never a bare ``startswith``
+    # of the repo name, which would also match sibling repos sharing the same
+    # owner-name prefix (e.g. ``openai/skills-evil`` for ``openai/skills``).
+    # Mirrors ``GitHubSource.trust_level_for()`` in skills_hub.py, which does
+    # exact set membership on the ``owner/repo`` split.
     for trusted in TRUSTED_REPOS:
-        if normalized_source.startswith(trusted) or normalized_source == trusted:
+        if normalized_source == trusted or normalized_source.startswith(trusted + "/"):
             return "trusted"
     return "community"
 

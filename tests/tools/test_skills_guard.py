@@ -66,6 +66,19 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("random-user/my-skill") == "community"
         assert _resolve_trust_level("") == "community"
 
+    def test_sibling_repo_sharing_trusted_repo_prefix_is_community(self):
+        # Regression for #31141: a sibling repo on the same org whose name
+        # shares a prefix with a trusted repo (e.g. ``openai/skills-evil`` vs
+        # ``openai/skills``) must NOT inherit the trusted tier via a bare
+        # ``startswith`` match. The trusted set is exact identifiers + their
+        # sub-paths only.
+        assert _resolve_trust_level("openai/skills-evil") == "community"
+        assert _resolve_trust_level("anthropics/skills-foo") == "community"
+        assert _resolve_trust_level("huggingface/skills-bar") == "community"
+        # Sub-paths under the attacker-controlled sibling repo must also stay
+        # community, not be re-promoted by deeper-path prefix overlap.
+        assert _resolve_trust_level("openai/skills-evil/some-skill") == "community"
+
 
 # ---------------------------------------------------------------------------
 # _determine_verdict
