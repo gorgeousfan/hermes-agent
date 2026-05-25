@@ -2246,3 +2246,54 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
+
+
+# Codex / OpenAI-Responses keys that the Anthropic Messages SDK rejects with
+# ``TypeError: Messages.stream() got an unexpected keyword argument …``.
+# See issue #31673: a successful ``vision_analyze`` aux call landing on the
+# main Anthropic provider was followed by the next streaming call crashing on
+# ``instructions=`` — the OpenAI Responses-API system-prompt kwarg was
+# leaking from the Codex-shaped path into ``api_kwargs`` for the Anthropic
+# stream call. Filtering them out keeps a stale leak from killing the user's
+# session (and a single warning per process makes the leak detectable so the
+# real source can be tracked down without flooding the log).
+_ANTHROPIC_KWARG_DENYLIST: frozenset = frozenset({
+    "instructions",         # Codex Responses system prompt (Anthropic uses ``system=``)
+    "input",                # Codex Responses input (Anthropic uses ``messages=``)
+    "store",                # Codex Responses persistence flag
+    "max_output_tokens",    # Codex Responses output cap (Anthropic uses ``max_tokens``)
+    "parallel_tool_calls",  # Codex Responses tool fan-out flag
+    "prompt_cache_key",     # Codex Responses cache key
+    "reasoning",            # Codex Responses reasoning dial (Anthropic uses ``thinking``)
+    "include",              # Codex Responses ``include`` (e.g. encrypted reasoning)
+})
+
+_anthropic_kwargs_leak_warned: bool = False
+
+
+def sanitize_anthropic_messages_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip Codex/OpenAI-Responses-only keys that Anthropic's SDK rejects.
+
+    Returns a shallow copy with the offending keys removed. Logs a single
+    ``warning`` per process the first time a leak is observed so the source
+    can be tracked down without flooding the log on every retry. Non-dict
+    inputs are returned unchanged so callers don't need to special-case
+    test-doubles. See issue #31673.
+    """
+    if not isinstance(kwargs, dict):
+        return kwargs
+    leaked = [key for key in _ANTHROPIC_KWARG_DENYLIST if key in kwargs]
+    if not leaked:
+        return kwargs
+    global _anthropic_kwargs_leak_warned
+    if not _anthropic_kwargs_leak_warned:
+        _anthropic_kwargs_leak_warned = True
+        logger.warning(
+            "Stripping Codex/Responses-only kwargs from Anthropic Messages call: "
+            "%s — these keys would crash the Anthropic SDK. See issue #31673.",
+            ", ".join(sorted(leaked)),
+        )
+    cleaned = dict(kwargs)
+    for key in leaked:
+        cleaned.pop(key, None)
+    return cleaned
