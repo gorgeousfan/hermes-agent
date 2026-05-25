@@ -294,7 +294,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return {
+                overflow_error = {
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
@@ -304,6 +304,49 @@ class MemoryStore:
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
+
+                # Attempt ONE auto-truncation retry: shrink the new entry to
+                # ~60% of its original length and cap it at the actual
+                # available budget. Preserve word boundaries by trimming at
+                # the last whitespace within the budget. If the salvaged
+                # entry would be too small to be useful (<50 chars), give up
+                # and surface the original overflow error.
+                delimiter_overhead = len(ENTRY_DELIMITER) if entries else 0
+                available = limit - current - delimiter_overhead
+                target_len = min(int(len(content) * 0.6), available)
+                if target_len < 50:
+                    return overflow_error
+
+                candidate = content[:target_len]
+                # Trim at last whitespace to keep word boundaries when
+                # possible; fall back to a hard cut if there is no space.
+                if " " in candidate:
+                    candidate = candidate.rsplit(" ", 1)[0]
+                truncated = candidate.rstrip()
+                if not truncated or len(truncated) < 50:
+                    return overflow_error
+
+                # Re-verify the truncated entry fits (paranoia: word-boundary
+                # trim should only ever shrink, never grow, the budget).
+                trial_entries = entries + [truncated]
+                if len(ENTRY_DELIMITER.join(trial_entries)) > limit:
+                    return overflow_error
+
+                entries.append(truncated)
+                self._set_entries(target, entries)
+                self.save_to_disk(target)
+
+                resp = self._success_response(
+                    target,
+                    (
+                        f"Entry was truncated from {len(content)} to "
+                        f"{len(truncated)} chars to fit available space."
+                    ),
+                )
+                resp["truncated"] = True
+                resp["original_length"] = len(content)
+                resp["saved_length"] = len(truncated)
+                return resp
 
             entries.append(content)
             self._set_entries(target, entries)
