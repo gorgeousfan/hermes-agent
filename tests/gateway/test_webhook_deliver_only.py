@@ -177,6 +177,41 @@ class TestDeliverOnlyBypassesAgent:
             "thread_id": "topic-42"
         }
 
+    @pytest.mark.asyncio
+    async def test_deliver_extra_metadata_passed_through(self):
+        """deliver_extra.metadata lets routes tune target-adapter delivery."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {
+                    "chat_id": "c-1",
+                    "metadata": {
+                        "weixin_send_chunk_retries": 0,
+                        "weixin_send_chunk_rate_limit_backoff_seconds": 0,
+                    },
+                },
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-metadata-1"},
+            )
+            assert resp.status == 200
+
+        assert mock_target.send.await_args.kwargs["metadata"] == {
+            "weixin_send_chunk_retries": 0,
+            "weixin_send_chunk_rate_limit_backoff_seconds": 0,
+        }
+
 
 # ===================================================================
 # HTTP status codes
@@ -216,6 +251,81 @@ class TestDeliverOnlyStatusCodes:
             assert "rate limited" not in json.dumps(data)
 
     @pytest.mark.asyncio
+    async def test_delivery_failure_does_not_poison_idempotency(self):
+        """A failed delivery may be retried with the same delivery id."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="rate limited by tg"),
+                SendResult(success=True),
+            ]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-fail-1"},
+            )
+            assert first.status == 502
+
+            second = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-fail-1"},
+            )
+            assert second.status == 200
+            data = await second.json()
+            assert data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_delivery_failure_can_ack_to_webhook_sender(self):
+        """Routes can accept the webhook even if downstream delivery fails."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_ack_on_failure": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            return_value=SendResult(success=False, error="rate limited by tg")
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-fail-ack-1"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["delivery_status"] == "target_failed"
+            assert data["route"] == "r"
+            assert data["target"] == "telegram"
+            assert "rate limited" not in json.dumps(data)
+
+    @pytest.mark.asyncio
     async def test_delivery_exception_returns_502(self):
         """If adapter.send() raises, we return 502 (not 500)."""
         routes = {
@@ -243,6 +353,218 @@ class TestDeliverOnlyStatusCodes:
             assert data["error"] == "Delivery failed"
             # Exception message must not leak
             assert "exploded" not in json.dumps(data)
+
+    @pytest.mark.asyncio
+    async def test_delivery_exception_can_ack_to_webhook_sender(self):
+        """ack_on_failure also accepts webhook calls when adapter.send() raises."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_ack_on_failure": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(side_effect=RuntimeError("tg exploded"))
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-exc-ack-1"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["delivery_status"] == "target_failed"
+            assert data["route"] == "r"
+            assert data["target"] == "telegram"
+            assert "exploded" not in json.dumps(data)
+
+    @pytest.mark.asyncio
+    async def test_slow_delivery_returns_202_and_continues_in_background(self):
+        """Slow target sends should not block the webhook sender."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_timeout_seconds": 0.01,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+
+        async def slow_send(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            return SendResult(success=True)
+
+        mock_target.send = AsyncMock(side_effect=slow_send)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-slow-1"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+            assert data["route"] == "r"
+            assert data["target"] == "telegram"
+
+        await asyncio.sleep(0.08)
+        mock_target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_background_delivery_failure_is_logged(self, caplog):
+        """If a timed-out background send later fails, log the target rejection."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_timeout_seconds": 0.01,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+
+        async def slow_send(*_args, **_kwargs):
+            await asyncio.sleep(0.05)
+            return SendResult(success=False, error="rate limited by tg")
+
+        mock_target.send = AsyncMock(side_effect=slow_send)
+
+        app = _create_app(adapter)
+        with caplog.at_level("WARNING", logger="gateway.platforms.webhook"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/webhooks/r",
+                    json={},
+                    headers={"X-GitHub-Delivery": "d-slow-fail-1"},
+                )
+                assert resp.status == 202
+
+            await asyncio.sleep(0.08)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "direct-deliver target rejected route=r target=telegram" in message
+            for message in messages
+        )
+        assert not any("rate limited by tg" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_slow_delivery_inflight_limit_rejects_overflow(self):
+        """Bounded background sends prevent slow targets from piling up."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_timeout_seconds": 0.01,
+                "direct_delivery_max_inflight": 1,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        release_send = asyncio.Event()
+
+        async def slow_send(*_args, **_kwargs):
+            await release_send.wait()
+            return SendResult(success=True)
+
+        mock_target.send = AsyncMock(side_effect=slow_send)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-slow-limit-1"},
+            )
+            assert first.status == 202
+
+            second = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-slow-limit-2"},
+            )
+            assert second.status == 429
+            data = await second.json()
+            assert data["status"] == "busy"
+            assert data["route"] == "r"
+
+        release_send.set()
+        await asyncio.sleep(0.05)
+        mock_target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_busy_delivery_does_not_poison_idempotency(self):
+        """A 429 busy response should allow the provider to retry the same id."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_timeout_seconds": 0.01,
+                "direct_delivery_max_inflight": 1,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        release_send = asyncio.Event()
+
+        async def slow_send(*_args, **_kwargs):
+            await release_send.wait()
+            return SendResult(success=True)
+
+        mock_target.send = AsyncMock(side_effect=slow_send)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-slow-limit-holder"},
+            )
+            assert first.status == 202
+
+            busy = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-busy-1"},
+            )
+            assert busy.status == 429
+
+            release_send.set()
+            await asyncio.sleep(0.05)
+
+            retry = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-busy-1"},
+            )
+            assert retry.status == 200
+            data = await retry.json()
+            assert data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
 
     @pytest.mark.asyncio
     async def test_target_platform_not_connected_returns_502(self):
