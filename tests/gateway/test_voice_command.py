@@ -404,6 +404,150 @@ class TestAutoVoiceReply:
 
 
 # =====================================================================
+# Voice-aware system context addendum
+# =====================================================================
+
+class TestVoiceAwareAddendum:
+    """Tests for ``_apply_voice_aware_addendum`` — the gating that injects a
+    'reply will be spoken' note into the per-turn system context.
+
+    Without this, the model produces long markdown replies that TTS reads
+    literally, including bullets and asterisks.  The addendum should fire
+    only when the reply will actually be spoken aloud this turn.
+    """
+
+    @pytest.fixture
+    def runner(self, tmp_path):
+        return _make_runner(tmp_path)
+
+    def _setup(self, runner, voice_mode):
+        chat_id = "123"
+        key = "telegram:" + chat_id
+        if voice_mode == "off":
+            runner._voice_mode.pop(key, None)
+        else:
+            runner._voice_mode[key] = voice_mode
+        return chat_id
+
+    # -- gating: when the addendum should NOT fire --------------------------
+
+    def test_mode_off_returns_unchanged(self, runner):
+        self._setup(runner, "off")
+        event = _make_event(message_type=MessageType.TEXT)
+        result = runner._apply_voice_aware_addendum(
+            event.source, event, "base context"
+        )
+        assert result == "base context"
+
+    def test_voice_only_with_text_input_returns_unchanged(self, runner):
+        """voice_only mode only speaks for voice input, so TEXT skips addendum."""
+        self._setup(runner, "voice_only")
+        event = _make_event(message_type=MessageType.TEXT)
+        result = runner._apply_voice_aware_addendum(
+            event.source, event, "base context"
+        )
+        assert result == "base context"
+
+    # -- gating: when the addendum SHOULD fire ------------------------------
+
+    def test_voice_only_with_voice_input_appends_addendum(self, runner):
+        self._setup(runner, "voice_only")
+        event = _make_event(message_type=MessageType.VOICE)
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert result.startswith("base context\n\n")
+        assert "[Voice reply mode]" in result
+
+    def test_all_mode_with_text_input_appends_addendum(self, runner):
+        """all-mode speaks every reply regardless of input type."""
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert "[Voice reply mode]" in result
+
+    def test_all_mode_with_voice_input_appends_addendum(self, runner):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.VOICE)
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert "[Voice reply mode]" in result
+
+    # -- config override behavior ------------------------------------------
+
+    def test_custom_addendum_from_config(self, runner):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        cfg = {"voice": {"spoken_reply_prompt": "BE BRIEF NELLIE"}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert result.endswith("BE BRIEF NELLIE")
+        assert "[Voice reply mode]" not in result
+
+    def test_explicit_empty_string_disables_addendum(self, runner):
+        """spoken_reply_prompt='' is explicit opt-out, not a 'use default'."""
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        cfg = {"voice": {"spoken_reply_prompt": ""}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert result == "base context"
+
+    def test_whitespace_only_override_disables_addendum(self, runner):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        cfg = {"voice": {"spoken_reply_prompt": "   \n  "}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert result == "base context"
+
+    def test_missing_voice_key_uses_default(self, runner):
+        """No ``voice:`` block in config → default addendum is used."""
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert "[Voice reply mode]" in result
+
+    # -- edge cases --------------------------------------------------------
+
+    def test_empty_context_prompt_returns_just_addendum(self, runner):
+        """No leading newlines when there's no prior context."""
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, ""
+            )
+        assert result.startswith("[Voice reply mode]")
+        assert not result.startswith("\n")
+
+    def test_lookup_exception_is_swallowed(self, runner):
+        """Best-effort: any exception leaves context_prompt unchanged."""
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        with patch("gateway.run._load_gateway_config", side_effect=RuntimeError("boom")):
+            result = runner._apply_voice_aware_addendum(
+                event.source, event, "base context"
+            )
+        assert result == "base context"
+
+
+# =====================================================================
 # _send_voice_reply
 # =====================================================================
 

@@ -1623,6 +1623,19 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+# Default context note appended to the system prompt when the agent's reply
+# will be spoken aloud via TTS this turn.  Users can override the wording via
+# ``voice.spoken_reply_prompt`` in ``config.yaml``.
+DEFAULT_SPOKEN_REPLY_ADDENDUM = (
+    "[Voice reply mode] Your next reply will be read aloud via "
+    "text-to-speech AND shown as a text message. Keep it short "
+    "(1-3 sentences when possible), conversational, and speakable: "
+    "no markdown formatting, no code blocks, no bullet lists, "
+    "no headers, no emoji. Spell out symbols only when they would "
+    "be unclear when read."
+)
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -1973,6 +1986,61 @@ class GatewayRunner:
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
+
+    def _turn_will_be_spoken(self, source, event) -> bool:
+        """Return True if the agent's reply on this turn will be sent via TTS.
+
+        Mirrors the per-chat gating used by the response path: voice mode
+        ``"all"`` always speaks; ``"voice_only"`` speaks only when the inbound
+        message was a voice note.  Best-effort — any lookup error returns
+        ``False`` so callers degrade to text-only behavior.
+        """
+        try:
+            mode = self._voice_mode.get(
+                self._voice_key(source.platform, source.chat_id), "off"
+            )
+        except Exception:
+            return False
+        if mode == "all":
+            return True
+        if mode == "voice_only":
+            return getattr(event, "message_type", None) == MessageType.VOICE
+        return False
+
+    def _apply_voice_aware_addendum(self, source, event, context_prompt: str) -> str:
+        """Append a voice-aware system note to ``context_prompt`` when this
+        turn's reply will be spoken aloud.
+
+        Lets the model produce speakable output (short, plain prose, no
+        markdown / code blocks / lists / headers / emoji) instead of generating
+        a long markdown reply that gets read literally by TTS.  The addendum
+        text is configurable via ``voice.spoken_reply_prompt`` in
+        ``config.yaml``; falls back to :data:`DEFAULT_SPOKEN_REPLY_ADDENDUM`.
+
+        Best-effort — any failure leaves ``context_prompt`` unchanged so a
+        bad addendum can never break a turn.
+        """
+        try:
+            if not self._turn_will_be_spoken(source, event):
+                return context_prompt
+            vcfg = (_load_gateway_config().get("voice") or {})
+            override = vcfg.get("spoken_reply_prompt")
+            # Distinguish "not configured" (use default) from "configured to
+            # empty string" (explicitly disable the addendum).
+            if override is None:
+                addendum = DEFAULT_SPOKEN_REPLY_ADDENDUM.strip()
+            else:
+                addendum = str(override).strip()
+            if not addendum:
+                return context_prompt
+            if context_prompt:
+                return (context_prompt + "\n\n" + addendum).strip()
+            return addendum
+        except Exception as exc:
+            logger.debug(
+                "Voice-aware context injection skipped (non-fatal): %s", exc
+            )
+            return context_prompt
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -8165,6 +8233,14 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+
+        # Voice-aware system context: if the agent's reply on this turn will
+        # be spoken via TTS, append a brief instruction so the model produces
+        # speakable output (no markdown / code blocks / lists / headers) for
+        # both the text and the spoken delivery.
+        context_prompt = self._apply_voice_aware_addendum(
+            source, event, context_prompt
+        )
 
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.

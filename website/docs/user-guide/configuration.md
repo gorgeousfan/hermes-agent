@@ -1330,9 +1330,13 @@ voice:
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode
   silence_threshold: 200        # RMS threshold for speech detection
   silence_duration: 3.0         # Seconds of silence before auto-stop
+  # spoken_reply_prompt: ""     # Optional override for the voice-mode system note
+                                # (empty string disables; omit to use the built-in default)
 ```
 
 Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/docs/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
+
+When voice replies are enabled on a messaging platform (`/voice on` for voice-input-only, `/voice tts` for every reply), Hermes appends a brief system note to the per-turn context telling the model its reply will be read aloud, so it produces short conversational prose instead of long markdown that TTS would read literally. Override the wording with `voice.spoken_reply_prompt`, or set it to an empty string to suppress the note entirely.
 
 ## Streaming
 
