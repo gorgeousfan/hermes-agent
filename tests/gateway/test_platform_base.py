@@ -8,6 +8,7 @@ import pytest
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
+    MEDIA_DIRECTIVE_RE,
     MessageEvent,
     MessageType,
     safe_url_for_log,
@@ -328,6 +329,33 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
+
+    def test_media_tag_supports_extension_after_space(self):
+        content = "MEDIA:/private/tmp/company-files-downloads/XM1307HE产品规格书V1.2 .docx"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/private/tmp/company-files-downloads/XM1307HE产品规格书V1.2 .docx", False)]
+        assert cleaned == ""
+
+    def test_media_tag_supports_unquoted_paths_with_multiple_spaces(self):
+        content = "MEDIA:/private/tmp/company files/downloads/my file name.docx"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/private/tmp/company files/downloads/my file name.docx", False)]
+        assert cleaned == ""
+
+    def test_stream_display_uses_shared_media_directive_pattern(self):
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        assert GatewayStreamConsumer._MEDIA_RE is MEDIA_DIRECTIVE_RE
+
+    def test_media_tag_strips_extension_after_space_from_stream_display(self):
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        text = "已准备\nMEDIA:/private/tmp/company-files-downloads/XM1307HE产品规格书V1.2 .docx\n请查收"
+        cleaned = GatewayStreamConsumer._clean_for_display(text)
+        assert "MEDIA:" not in cleaned
+        assert "V1.2 .docx" not in cleaned
+        assert "已准备" in cleaned
+        assert "请查收" in cleaned
 
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
