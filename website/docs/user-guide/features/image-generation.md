@@ -70,7 +70,7 @@ The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to
 
 ## Usage
 
-The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:
+The generation schema is intentionally minimal — the model picks up whatever you've configured:
 
 ```
 Generate an image of a serene mountain landscape with cherry blossoms
@@ -83,6 +83,18 @@ Create a square portrait of a wise old owl — use the typography model
 ```
 Make me a futuristic cityscape, landscape orientation
 ```
+
+### Editing Existing Images
+
+Hermes also exposes `image_edit` for backends that support input-image editing. It accepts an input image as a remote URL, `data:image/...` URL, or local absolute path, plus edit instructions and an optional mask.
+
+Use this when you want to transform or enhance an existing raster image while preserving important content, for example:
+
+```
+Enhance this App Store screenshot background and lighting, but preserve all headline text and phone UI exactly.
+```
+
+OpenAI-Codex uses GPT Image 2 through Codex/ChatGPT OAuth for this path, so it does not require `OPENAI_API_KEY`. Masked edits are backend-specific; for GPT Image masks should match the input dimensions and use an alpha channel.
 
 ## Aspect Ratios
 

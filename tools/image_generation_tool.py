@@ -847,6 +847,40 @@ IMAGE_GENERATE_SCHEMA = {
     },
 }
 
+IMAGE_EDIT_SCHEMA = {
+    "name": "image_edit",
+    "description": (
+        "Edit or enhance an existing raster image using the configured image "
+        "generation backend. Requires an input image URL, data URL, or local "
+        "absolute path. Best for reference-image edits, inpainting, background "
+        "enhancement, and ASO screenshot polish while preserving core content."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "Edit instructions. Be explicit about what must be preserved and what may change.",
+            },
+            "image_url": {
+                "type": "string",
+                "description": "Input image as an HTTP(S) URL, data URL, or local absolute file path.",
+            },
+            "aspect_ratio": {
+                "type": "string",
+                "enum": list(VALID_ASPECT_RATIOS),
+                "description": "Target aspect ratio for the edited output.",
+                "default": DEFAULT_ASPECT_RATIO,
+            },
+            "mask_url": {
+                "type": "string",
+                "description": "Optional mask image as URL, data URL, or local path. Backend-specific; for GPT Image masks should match input dimensions and use alpha.",
+            },
+        },
+        "required": ["prompt", "image_url"],
+    },
+}
+
 
 def _read_configured_image_model():
     """Return the value of ``image_gen.model`` from config.yaml, or None."""
@@ -887,7 +921,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **provider_kwargs):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -942,6 +976,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
     try:
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs.update({k: v for k, v in provider_kwargs.items() if v not in (None, "")})
         if configured_model:
             kwargs["model"] = configured_model
         result = provider.generate(**kwargs)
@@ -966,14 +1001,12 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     return json.dumps(result)
 
 
-def _handle_image_generate(args, **kw):
+def _handle_image_generate(args: Dict[str, Any], task_id=None):
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
 
-    # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path).
     dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
     if dispatched is not None:
         return dispatched
@@ -984,6 +1017,39 @@ def _handle_image_generate(args, **kw):
     )
 
 
+def _handle_image_edit(args: Dict[str, Any], task_id=None):
+    prompt = args.get("prompt", "")
+    if not prompt:
+        return tool_error("prompt is required for image_edit", error_type="invalid_argument")
+    image_url = args.get("image_url", "")
+    aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    mask_url = args.get("mask_url")
+
+    if not image_url:
+        return tool_error("image_url is required for image_edit", error_type="invalid_argument")
+
+    dispatched = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        image_url=image_url,
+        mask_url=mask_url,
+        action="edit",
+    )
+    if dispatched is not None:
+        return dispatched
+
+    return json.dumps({
+        "success": False,
+        "image": None,
+        "error": (
+            "image_edit requires a plugin image provider that supports input "
+            "images. Configure one with `hermes tools` → Image Generation "
+            "(for example OpenAI (Codex auth))."
+        ),
+        "error_type": "unsupported_provider",
+    })
+
+
 registry.register(
     name="image_generate",
     toolset="image_gen",
@@ -992,5 +1058,16 @@ registry.register(
     check_fn=check_image_generation_requirements,
     requires_env=[],
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
+    emoji="🎨",
+)
+
+registry.register(
+    name="image_edit",
+    toolset="image_gen",
+    schema=IMAGE_EDIT_SCHEMA,
+    handler=_handle_image_edit,
+    check_fn=check_image_generation_requirements,
+    requires_env=[],
+    is_async=False,
     emoji="🎨",
 )

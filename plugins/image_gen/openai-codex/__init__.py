@@ -19,7 +19,10 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.image_gen_provider import (
@@ -161,9 +164,54 @@ def _build_codex_client():
         return None
 
 
-def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> Optional[str]:
+def _local_image_to_data_url(value: str) -> str:
+    """Return a Responses-compatible image URL for a URL, data URL, or local path."""
+    value = (value or "").strip()
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+
+    path = Path(value).expanduser()
+    raw = path.read_bytes()
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _image_content_part(value: str) -> Dict[str, Any]:
+    return {"type": "input_image", "image_url": _local_image_to_data_url(value)}
+
+
+def _collect_image_b64(
+    client: Any,
+    *,
+    prompt: str,
+    size: str,
+    quality: str,
+    image_url: Optional[str] = None,
+    mask_url: Optional[str] = None,
+    action: str = "auto",
+) -> Optional[str]:
     """Stream a Codex Responses image_generation call and return the b64 image."""
     image_b64: Optional[str] = None
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    if image_url:
+        content.append(_image_content_part(image_url))
+
+    tool: Dict[str, Any] = {
+        "type": "image_generation",
+        "model": API_MODEL,
+        "size": size,
+        "quality": quality,
+        "output_format": "png",
+        "background": "opaque",
+        "partial_images": 1,
+    }
+    if action and action != "auto":
+        tool["action"] = action
+    elif image_url:
+        tool["action"] = "edit"
+    if mask_url:
+        tool["input_image_mask"] = _local_image_to_data_url(mask_url)
 
     with client.responses.stream(
         model=_CODEX_CHAT_MODEL,
@@ -172,17 +220,9 @@ def _collect_image_b64(client: Any, *, prompt: str, size: str, quality: str) -> 
         input=[{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": content,
         }],
-        tools=[{
-            "type": "image_generation",
-            "model": API_MODEL,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-            "background": "opaque",
-            "partial_images": 1,
-        }],
+        tools=[tool],
         tool_choice={
             "type": "allowed_tools",
             "mode": "required",
@@ -318,12 +358,29 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
+        image_url = kwargs.get("image_url") or kwargs.get("input_image")
+        mask_url = kwargs.get("mask_url") or kwargs.get("input_image_mask")
+        action = kwargs.get("action") or ("edit" if image_url else "auto")
+
+        if action == "edit" and not image_url:
+            return error_response(
+                error="image_url is required for image edit requests",
+                error_type="invalid_argument",
+                provider="openai-codex",
+                model=tier_id,
+                prompt=prompt,
+                aspect_ratio=aspect,
+            )
+
         try:
             b64 = _collect_image_b64(
                 client,
                 prompt=prompt,
                 size=size,
                 quality=meta["quality"],
+                image_url=image_url,
+                mask_url=mask_url,
+                action=action,
             )
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
@@ -364,7 +421,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             prompt=prompt,
             aspect_ratio=aspect,
             provider="openai-codex",
-            extra={"size": size, "quality": meta["quality"]},
+            extra={"size": size, "quality": meta["quality"], "action": action},
         )
 
 
