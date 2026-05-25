@@ -194,6 +194,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [selection])
 
   const composer = useComposerState({
+    catalog,
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
     onImageAttached: info => {
