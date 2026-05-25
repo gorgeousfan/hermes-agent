@@ -1,5 +1,6 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
+from fnmatch import fnmatch
 from pathlib import Path
 import tomllib
 
@@ -122,3 +123,21 @@ def test_dashboard_plugin_manifests_and_assets_are_packaged():
     assert "*/dashboard/manifest.json" in plugin_data
     assert "*/dashboard/dist/*" in plugin_data
     assert "*/dashboard/dist/**/*" in plugin_data
+
+
+def test_bundled_plugin_manifests_are_packaged():
+    """Bundled plugins need plugin.yaml in wheel installs for discovery."""
+    package_data = _load_package_data()
+    plugin_data = package_data["plugins"]
+    plugins_dir = Path(__file__).resolve().parents[1] / "plugins"
+    manifests = [
+        manifest.relative_to(plugins_dir).as_posix()
+        for manifest in plugins_dir.glob("**/plugin.yaml")
+    ]
+
+    missing = [
+        manifest
+        for manifest in manifests
+        if not any(fnmatch(manifest, pattern) for pattern in plugin_data)
+    ]
+    assert missing == []
