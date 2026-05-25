@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+
+- All bundled plugins instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -25,6 +25,33 @@ import sys
 from typing import Any, Dict, List
 
 import pytest
+
+
+BUNDLED_WEB_PLUGINS = [
+    "brave-free",
+    "ddgs",
+    "exa",
+    "firecrawl",
+    "parallel",
+    "searxng",
+    "tavily",
+    "xai",
+]
+
+BUNDLED_WEB_PLUGIN_CAPABILITIES = [
+    ("brave-free", True, False, False),
+    ("ddgs", True, False, False),
+    ("searxng", True, False, False),
+    ("exa", True, True, False),
+    ("parallel", True, True, False),
+    ("tavily", True, True, True),
+    # firecrawl: search + extract + crawl. Crawl was originally
+    # disabled in the migration (fell through to a legacy inline
+    # path); the follow-up commit enabled it natively.
+    ("firecrawl", True, True, True),
+    # xAI delegates search to Grok's server-side web_search tool.
+    ("xai", True, False, False),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -71,40 +98,18 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly."""
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "ddgs",
-            "exa",
-            "firecrawl",
-            "parallel",
-            "searxng",
-            "tavily",
-            "xai",
-        ]
+        assert names == BUNDLED_WEB_PLUGINS
 
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract,expected_crawl",
-        [
-            ("brave-free", True, False, False),
-            ("ddgs", True, False, False),
-            ("searxng", True, False, False),
-            ("exa", True, True, False),
-            ("parallel", True, True, False),
-            ("tavily", True, True, True),
-            # firecrawl: search + extract + crawl. Crawl was originally
-            # disabled in the migration (fell through to a legacy inline
-            # path); the follow-up commit enabled it natively.
-            ("firecrawl", True, True, True),
-            # xai: search-only via Grok's agentic web_search tool.
-            ("xai", True, False, False),
-        ],
+        BUNDLED_WEB_PLUGIN_CAPABILITIES,
     )
     def test_capability_flags_match_spec(
         self,
@@ -124,7 +129,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        BUNDLED_WEB_PLUGINS,
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -137,7 +142,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        BUNDLED_WEB_PLUGINS,
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
