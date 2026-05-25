@@ -186,6 +186,7 @@ class TestToolResultContentShortCircuit:
         agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
         agent._no_list_tool_content_models = set()  # explicit empty
         monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        monkeypatch.setattr(agent, "_model_supports_multimodal_tool_results", lambda: True)
         out = agent._tool_result_content_for_active_model(
             "computer_use", self._multimodal_result()
         )
@@ -205,6 +206,29 @@ class TestToolResultContentShortCircuit:
         assert "data:image" not in out
         assert "image_url" not in out
 
+    def test_declared_no_multimodal_tool_results_queues_user_image_followup(self, monkeypatch):
+        """Vision models behind LM Studio-like endpoints need tool text + user image."""
+        agent = _make_agent(provider="custom:qwen-local", model="qwen36-27b-vision")
+        agent._no_list_tool_content_models = set()
+        monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        monkeypatch.setattr(agent, "_model_supports_multimodal_tool_results", lambda: False)
+
+        out = agent._tool_result_content_for_active_model(
+            "computer_use", self._multimodal_result("BASE64PNG")
+        )
+
+        assert isinstance(out, str)
+        assert "capture mode=som" in out
+        assert "BASE64PNG" not in out
+        pending = agent._drain_pending_multimodal_user_messages()
+        assert len(pending) == 1
+        assert pending[0]["role"] == "user"
+        assert any(part.get("type") == "image_url" for part in pending[0]["content"])
+        assert any(
+            part.get("type") == "text" and "computer_use" in part.get("text", "")
+            for part in pending[0]["content"]
+        )
+
     def test_cache_miss_on_different_model(self, monkeypatch):
         """Cache is per (provider, model). A cached entry for mimo-v2.5
         must NOT affect a session running on a different model.
@@ -212,6 +236,7 @@ class TestToolResultContentShortCircuit:
         agent = _make_agent(provider="xiaomi", model="mimo-v2.5-pro")
         agent._no_list_tool_content_models = {("xiaomi", "mimo-v2.5")}
         monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        monkeypatch.setattr(agent, "_model_supports_multimodal_tool_results", lambda: True)
         out = agent._tool_result_content_for_active_model(
             "computer_use", self._multimodal_result()
         )
@@ -224,10 +249,43 @@ class TestToolResultContentShortCircuit:
         agent = _make_agent()
         # Deliberately do not assign _no_list_tool_content_models.
         monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
+        monkeypatch.setattr(agent, "_model_supports_multimodal_tool_results", lambda: True)
         out = agent._tool_result_content_for_active_model(
             "computer_use", self._multimodal_result()
         )
         assert isinstance(out, list)
+
+    def test_non_vision_model_computer_use_returns_json_error(self, monkeypatch):
+        """Non-vision models must get a structured JSON error for computer_use
+        so the agent can surface actionable guidance (switch to vision model)."""
+        import json
+
+        agent = _make_agent(provider="openai", model="gpt-4o-mini")
+        monkeypatch.setattr(agent, "_model_supports_vision", lambda: False)
+        out = agent._tool_result_content_for_active_model(
+            "computer_use", self._multimodal_result()
+        )
+
+        # Must be a JSON string, not a plain text summary.
+        assert isinstance(out, str)
+        parsed = json.loads(out)
+        assert "error" in parsed
+        assert "text_summary" in parsed
+        assert "vision-capable model" in parsed["error"]
+
+    def test_non_vision_model_other_tool_returns_plain_summary(self, monkeypatch):
+        """Non-vision models for non-computer_use tools get a plain text summary,
+        not the JSON error wrapper (that's computer_use-specific)."""
+        agent = _make_agent(provider="openai", model="gpt-4o-mini")
+        monkeypatch.setattr(agent, "_model_supports_vision", lambda: False)
+        out = agent._tool_result_content_for_active_model(
+            "vision_analyze", self._multimodal_result()
+        )
+
+        # Plain text summary — not JSON, no "error" key.
+        assert isinstance(out, str)
+        assert "capture mode=som" in out
+        assert not out.startswith("{")
 
 
 # ─── Classifier ──────────────────────────────────────────────────────────────

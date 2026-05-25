@@ -415,3 +415,154 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+    def test_custom_provider_capabilities_from_config_entry(self):
+        """Local/custom providers can declare tool and vision capabilities in config.yaml."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  provider: custom:qwen-local\n"
+            "  default: qwen36-35b-oq4-mtp\n"
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    api_mode: chat_completions\n"
+            "    model: qwen36-35b-oq4-mtp\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 32768\n"
+        )
+
+        caps = get_model_capabilities("custom", "qwen36-35b-oq4-mtp")
+
+        assert caps is not None
+        assert caps.supports_tools is True
+        assert caps.supports_vision is True
+        assert caps.context_window == 32768
+
+    def test_named_custom_provider_capabilities_from_config_entry(self):
+        """Provider labels like custom:qwen-local use the same custom metadata."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    model: qwen36-35b-oq4-mtp\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 32768\n"
+        )
+
+        caps = get_model_capabilities("custom:qwen-local", "qwen36-35b-oq4-mtp")
+
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.context_window == 32768
+
+    def test_custom_provider_per_model_capability_overrides(self):
+        """One local custom provider can declare separate 35B and 27B model caps."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 8192\n"
+            "    models:\n"
+            "      qwen36-35b-oq4-mtp:\n"
+            "        context_length: 32768\n"
+            "      qwen36-27b-oq4-mtp:\n"
+            "        context_length: 8192\n"
+        )
+
+        caps_35b = get_model_capabilities("custom", "qwen36-35b-oq4-mtp")
+        caps_27b = get_model_capabilities("custom", "qwen36-27b-oq4-mtp")
+
+        assert caps_35b is not None
+        assert caps_27b is not None
+        assert caps_35b.supports_vision is True
+        assert caps_27b.supports_vision is True
+        assert caps_35b.context_window == 32768
+        assert caps_27b.context_window == 8192
+
+    def test_custom_provider_multimodal_tool_result_capability_from_config(self):
+        """Local providers can say they accept user images but reject tool-result images."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:1234/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    supports_multimodal_tool_results: false\n"
+            "    context_length: 65536\n"
+            "    models:\n"
+            "      qwen36-27b-vision:\n"
+            "        supports_multimodal_tool_results: false\n"
+        )
+
+        caps = get_model_capabilities("custom:qwen-local", "qwen36-27b-vision")
+
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.supports_multimodal_tool_results is False
+
+    def test_model_level_multimodal_tool_results_overrides_provider_default(self):
+        """Model-level supports_multimodal_tool_results must override the provider default."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:1234/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    supports_multimodal_tool_results: true\n"
+            "    context_length: 65536\n"
+            "    models:\n"
+            "      qwen36-27b-vision:\n"
+            "        supports_multimodal_tool_results: false\n"
+            "      qwen36-35b-vision:\n"
+            "        context_length: 131072\n"
+        )
+
+        # Model with explicit override to false — must win over provider true
+        caps_disabled = get_model_capabilities("custom:qwen-local", "qwen36-27b-vision")
+        assert caps_disabled is not None
+        assert caps_disabled.supports_multimodal_tool_results is False
+
+        # Model without explicit override — must inherit provider true
+        caps_inherited = get_model_capabilities("custom:qwen-local", "qwen36-35b-vision")
+        assert caps_inherited is not None
+        assert caps_inherited.supports_multimodal_tool_results is True
+
+    def test_custom_provider_context_lookup_uses_config_context_length(self):
+        """Context lookup should use custom provider config before models.dev fallback."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    model: qwen36-27b-oq4-mtp\n"
+            "    context_length: 8192\n"
+        )
+
+        assert lookup_models_dev_context("custom", "qwen36-27b-oq4-mtp") == 8192
