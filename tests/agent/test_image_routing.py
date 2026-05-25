@@ -449,3 +449,134 @@ class TestLargeImageHandling:
         assert len(parts) == 2
         assert parts[0]["type"] == "text"
         assert parts[1]["type"] == "image_url"
+
+
+# ─── custom_providers vision support ────────────────────────────────────────
+
+
+class TestCustomProvidersVisionOverride:
+    """custom_providers list entries can declare vision: true on models."""
+
+    def test_custom_provider_vision_true_enables_native(self):
+        """A model with vision: true in custom_providers routes to native."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {
+                        "llava-v1.6": {"vision": True},
+                    },
+                }
+            ]
+        }
+        # Provider name can be "custom:my-vllm" or just "my-vllm"
+        assert _supports_vision_override(cfg, "custom:my-vllm", "llava-v1.6") is True
+        assert _supports_vision_override(cfg, "my-vllm", "llava-v1.6") is True
+
+    def test_custom_provider_vision_false_disables_native(self):
+        """A model with vision: false routes to text."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {
+                        "llama-3": {"vision": False},
+                    },
+                }
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:my-vllm", "llama-3") is False
+
+    def test_custom_provider_no_vision_field_returns_none(self):
+        """A model without vision field returns None (falls through to models.dev)."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {
+                        "llama-3": {"context_length": 8192},
+                    },
+                }
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:my-vllm", "llama-3") is None
+
+    def test_custom_provider_supports_vision_alias(self):
+        """Both vision: true and supports_vision: true work."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {
+                        "model-a": {"vision": True},
+                        "model-b": {"supports_vision": True},
+                    },
+                }
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:my-vllm", "model-a") is True
+        assert _supports_vision_override(cfg, "custom:my-vllm", "model-b") is True
+
+    def test_custom_provider_case_insensitive_model_match(self):
+        """Model name matching is case-insensitive."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "jingdong",
+                    "models": {
+                        "Kimi-K2.5": {"vision": True},
+                    },
+                }
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:jingdong", "kimi-k2.5") is True
+        assert _supports_vision_override(cfg, "custom:jingdong", "KIMI-K2.5") is True
+
+    def test_custom_provider_case_insensitive_provider_match(self):
+        """Provider name matching is case-insensitive."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "JingDong",
+                    "models": {
+                        "kimi": {"vision": True},
+                    },
+                }
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:jingdong", "kimi") is True
+        assert _supports_vision_override(cfg, "custom:JINGDONG", "kimi") is True
+
+    def test_custom_provider_unknown_returns_none(self):
+        """Unknown provider or model returns None."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {
+                        "llava": {"vision": True},
+                    },
+                }
+            ]
+        }
+        assert _supports_vision_override(cfg, "custom:other", "llava") is None
+        assert _supports_vision_override(cfg, "custom:my-vllm", "unknown-model") is None
+
+    def test_decide_image_input_mode_uses_custom_provider_vision(self):
+        """decide_image_input_mode respects custom_providers vision: true."""
+        cfg = {
+            "custom_providers": [
+                {
+                    "name": "my-vllm",
+                    "models": {
+                        "llava": {"vision": True},
+                        "llama": {},  # no vision
+                    },
+                }
+            ],
+            "agent": {"image_input_mode": "auto"},
+        }
+        # Vision-capable model routes to native
+        assert decide_image_input_mode("custom:my-vllm", "llava", cfg) == "native"
+        # Non-vision model routes to text
+        assert decide_image_input_mode("custom:my-vllm", "llama", cfg) == "text"

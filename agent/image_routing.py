@@ -88,6 +88,7 @@ def _supports_vision_override(
          (named custom providers — ``provider`` may be the runtime-resolved
          value ``"custom"`` and/or the user-declared name under
          ``model.provider``; both are tried)
+      3. ``custom_providers`` list entries with ``vision: true`` on the model
 
     Returns None when no override is set, so the caller falls through to
     models.dev. Returns False explicitly only when the user wrote a
@@ -103,11 +104,7 @@ def _supports_vision_override(
     if top is not None:
         return top
 
-    # 2. Per-provider, per-model. Named custom providers (e.g. "my-vllm")
-    # get rewritten to provider="custom" at runtime
-    # (hermes_cli/runtime_provider.py:_resolve_named_custom_runtime), so the
-    # config still holds the user-declared name under model.provider. Try
-    # both as candidate provider keys.
+    # 2. Per-provider, per-model from providers dict
     config_provider = str(model_cfg.get("provider") or "").strip()
     providers_raw = cfg.get("providers")
     providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
@@ -121,6 +118,51 @@ def _supports_vision_override(
         coerced = _coerce_capability_bool(per_model.get("supports_vision"))
         if coerced is not None:
             return coerced
+
+    # 3. custom_providers list (legacy format used by many deployments)
+    #    Check both the user-declared name (e.g., "jingdong") and the
+    #    runtime-normalized "custom:<name>" form.
+    custom_providers_raw = cfg.get("custom_providers")
+    if isinstance(custom_providers_raw, list):
+        # Normalize provider name: "custom:jingdong" -> "jingdong"
+        cp_name = provider
+        if provider and provider.startswith("custom:"):
+            cp_name = provider[len("custom:"):].strip()
+        for entry in custom_providers_raw:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = str(entry.get("name") or "").strip()
+            if entry_name.lower() != cp_name.lower():
+                continue
+            models_raw = entry.get("models")
+            if not isinstance(models_raw, dict):
+                continue
+            # Check exact model match first, then case-insensitive
+            per_model_raw = models_raw.get(model)
+            if isinstance(per_model_raw, dict):
+                # Support both "vision: true" and "supports_vision: true"
+                vision_val = per_model_raw.get("vision")
+                if vision_val is not None:
+                    coerced = _coerce_capability_bool(vision_val)
+                    if coerced is not None:
+                        return coerced
+                coerced = _coerce_capability_bool(per_model_raw.get("supports_vision"))
+                if coerced is not None:
+                    return coerced
+            # Case-insensitive fallback
+            model_lower = model.lower()
+            for mid, mdata in models_raw.items():
+                if isinstance(mdata, dict) and mid.lower() == model_lower:
+                    vision_val = mdata.get("vision")
+                    if vision_val is not None:
+                        coerced = _coerce_capability_bool(vision_val)
+                        if coerced is not None:
+                            return coerced
+                    coerced = _coerce_capability_bool(mdata.get("supports_vision"))
+                    if coerced is not None:
+                        return coerced
+            break  # Found the provider entry, no need to continue
+
     return None
 
 
