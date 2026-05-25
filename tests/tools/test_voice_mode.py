@@ -308,6 +308,28 @@ class TestCheckVoiceRequirements:
         assert result["available"] is False
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
+        assert "HERMES_LOCAL_STT_COMMAND" in result["details"]
+        assert "XAI_API_KEY" in result["details"]
+
+    @pytest.mark.parametrize(
+        ("provider", "expected"),
+        [
+            ("local_command", "STT provider: OK (local command)"),
+            ("xai", "STT provider: OK (xAI)"),
+        ],
+    )
+    def test_new_stt_providers_are_reported_as_available(self, monkeypatch, provider, expected):
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: provider)
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert expected in result["details"]
 
 
 # ============================================================================

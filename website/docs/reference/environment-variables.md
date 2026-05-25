@@ -96,6 +96,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `CLAUDE_CODE_OAUTH_TOKEN` | Explicit Claude Code token override if you export one manually |
 | `HERMES_MODEL` | Override model name at process level (used by cron scheduler; prefer `config.yaml` for normal use) |
 | `VOICE_TOOLS_OPENAI_KEY` | Preferred OpenAI key for OpenAI speech-to-text and text-to-speech providers |
+| `XAI_STT_BASE_URL` | Override the xAI speech-to-text endpoint (default: `https://api.x.ai/v1`; the `/stt` path is appended automatically) |
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language passed to `HERMES_LOCAL_STT_COMMAND` or auto-detected local `whisper` CLI fallback (default: `en`) |
 | `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
@@ -150,6 +151,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
 | `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
+| `XAI_STT_BASE_URL` | Override the xAI speech-to-text endpoint |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |

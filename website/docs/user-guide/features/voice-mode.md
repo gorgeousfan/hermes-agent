@@ -400,9 +400,18 @@ stt:
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
-  provider: "local"                  # "local" (free) | "groq" | "openai"
+  provider: "local"                  # "local" (free) | "local_command" | "groq" | "openai" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
+  openai:
+    model: "whisper-1"               # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+    language: ""                     # optional ISO language hint, e.g. "fr" or "en"
+    prompt: ""                       # optional short transcription hint
+    prompt_file: ""                  # optional UTF-8 file with a reusable transcription prompt
+  xai:
+    language: "en"                   # optional language hint
+    format: true                      # inverse text normalization
+    diarize: false                    # speaker diarization
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -437,7 +446,12 @@ STT_GROQ_MODEL=whisper-large-v3-turbo    # Override default Groq STT model
 STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
+XAI_STT_BASE_URL=https://api.x.ai/v1             # Custom xAI STT endpoint
+```
 
+For OpenAI-compatible STT providers, `stt.openai.prompt` sends a short hint to the transcription API. Use `stt.openai.prompt_file` instead when the hint is long, shared across machines, or version-controlled; Hermes reads the UTF-8 file at transcription time. If both are set, the inline `prompt` wins as a temporary override.
+
+```bash
 # Text-to-Speech providers (Edge TTS and NeuTTS need no key)
 ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
 # VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
@@ -458,8 +472,9 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
+| **xAI** | `grok-stt` endpoint | Fast | High accuracy, ITN, optional diarization | Paid or OAuth quota | Yes |
 
-Provider priority (automatic fallback): **local** > **groq** > **openai**
+Provider priority (automatic fallback): **local** > **local_command** > **groq** > **openai** > **xai**. Explicit `stt.provider: mistral` is temporarily disabled while the `mistralai` PyPI package is quarantined after the 2026-05-12 malicious release.
 
 ### TTS Provider Comparison
 
