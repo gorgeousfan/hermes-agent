@@ -24,6 +24,9 @@ const LOCAL_HOST_SUFFIXES = ['.corp', '.home', '.internal', '.lan', '.local', '.
 const STATUS_PERMALINK_HOST_RE = /^(?:mobile\.)?(?:x|twitter)\.com$/i
 const STATUS_PERMALINK_PATH_RE = /^\/[^/]+\/status\/\d+\/?$/i
 
+const GENERIC_PATH_SEGMENT_RE =
+  /^(?:status|statuses|auth|authorize|oauth|oauth2|signin|signup|login|logout|register|page|pages|index|home|post|posts|tweet|tweets|view|views|show|detail|details|comment|comments|share|embed|dashboard|profile|account|settings|item|items|callback|redirect)$/i
+
 const HTML_ENTITIES: Record<string, string> = {
   '#39': "'",
   amp: '&',
@@ -115,6 +118,10 @@ export function urlSlugTitleLabel(value: string): string {
     }
 
     if (/^(?:[a-z]{1,3}\d+|\d+)$/i.test(cleaned.replace(/\s+/g, ''))) {
+      continue
+    }
+
+    if (GENERIC_PATH_SEGMENT_RE.test(cleaned)) {
       continue
     }
 
