@@ -88,8 +88,22 @@ def test_load_picker_context_empty_config():
     assert ctx.current_provider == ""
     assert ctx.current_model == ""
     assert ctx.current_base_url == ""
+    assert ctx.picker_providers is None
     assert ctx.user_providers == {}
     assert ctx.custom_providers == []
+
+
+def test_load_picker_context_reads_picker_provider_allowlist():
+    cfg = _cfg(
+        model={
+            "default": "gpt-5.4",
+            "provider": "openrouter",
+            "picker_providers": ["anthropic", "custom"],
+        }
+    )
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+    assert ctx.picker_providers == ["anthropic", "custom"]
 
 
 # ─── with_overrides ────────────────────────────────────────────────────
@@ -100,6 +114,7 @@ def _empty_ctx(provider="orig", model="orig-model", base_url="orig-url"):
         current_provider=provider,
         current_model=model,
         current_base_url=base_url,
+        picker_providers=None,
         user_providers={},
         custom_providers=[],
     )
@@ -169,6 +184,25 @@ def test_build_models_payload_does_not_call_provider_model_ids():
          patch("hermes_cli.models.provider_model_ids") as mock_pm:
         build_models_payload(ctx)
     mock_pm.assert_not_called()
+
+
+def test_build_models_payload_forwards_picker_provider_allowlist():
+    ctx = ConfigContext(
+        current_provider="openrouter",
+        current_model="gpt-5.4",
+        current_base_url="",
+        picker_providers=["anthropic", "custom"],
+        user_providers={},
+        custom_providers=[],
+    )
+
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as listing:
+        build_models_payload(ctx)
+
+    assert listing.call_args.kwargs["picker_providers"] == ["anthropic", "custom"]
 
 
 def test_include_unconfigured_appends_canonical_skeletons():

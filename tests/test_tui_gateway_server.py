@@ -3633,6 +3633,46 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "catalog blew up" in resp["error"]["message"]
 
 
+def test_model_options_forwards_picker_provider_allowlist(monkeypatch):
+    captured = {}
+
+    def _fake_load_picker_context():
+        class _Ctx:
+            current_provider = "openrouter"
+            current_model = "gpt-5.4"
+            current_base_url = ""
+            picker_providers = ["anthropic", "custom"]
+            user_providers = {}
+            custom_providers = []
+
+            def with_overrides(self, **_kwargs):
+                return self
+
+        return _Ctx()
+
+    def _fake_build_models_payload(ctx, **kwargs):
+        captured["picker_providers"] = ctx.picker_providers
+        captured["kwargs"] = kwargs
+        return {"providers": [], "model": ctx.current_model, "provider": ctx.current_provider}
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        _fake_load_picker_context,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        _fake_build_models_payload,
+    )
+
+    resp = server._methods["model.options"](101, {"session_id": ""})
+
+    assert "result" in resp, resp
+    assert captured["picker_providers"] == ["anthropic", "custom"]
+    assert captured["kwargs"]["include_unconfigured"] is True
+    assert captured["kwargs"]["picker_hints"] is True
+    assert captured["kwargs"]["canonical_order"] is True
+
+
 # ---------------------------------------------------------------------------
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------

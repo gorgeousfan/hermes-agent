@@ -212,6 +212,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
         current_model="openai/gpt-5.4",
         user_providers={"foo": {"api": "http://x"}},
         custom_providers=[{"name": "bar", "base_url": "http://y"}],
+        picker_providers=["anthropic", "custom"],
         max_models=12,
     )
 
@@ -220,6 +221,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
     assert captured["current_model"] == "openai/gpt-5.4"
     assert captured["user_providers"] == {"foo": {"api": "http://x"}}
     assert captured["custom_providers"] == [{"name": "bar", "base_url": "http://y"}]
+    assert captured["picker_providers"] == ["anthropic", "custom"]
     assert captured["max_models"] == 12
 
 

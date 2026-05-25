@@ -50,6 +50,7 @@ class ConfigContext:
     current_provider: str
     current_model: str
     current_base_url: str
+    picker_providers: list[str] | None
     user_providers: dict
     custom_providers: list
 
@@ -100,6 +101,11 @@ def load_picker_context() -> ConfigContext:
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
+        picker_providers=(
+            model_cfg.get("picker_providers")
+            if isinstance(model_cfg, dict) and isinstance(model_cfg.get("picker_providers"), list)
+            else None
+        ),
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
     )
@@ -135,6 +141,7 @@ def build_models_payload(
         current_provider=ctx.current_provider,
         current_base_url=ctx.current_base_url,
         current_model=ctx.current_model,
+        picker_providers=ctx.picker_providers,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
         max_models=max_models,
