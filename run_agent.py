@@ -812,6 +812,40 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
         }
 
+    @staticmethod
+    def _normalize_runtime_identity_field(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip().rstrip("/").lower()
+
+    @classmethod
+    def _codex_runtime_identity_changed(
+        cls,
+        *,
+        provider_a: Any,
+        base_url_a: Any,
+        api_mode_a: Any,
+        provider_b: Any,
+        base_url_b: Any,
+        api_mode_b: Any,
+    ) -> bool:
+        return (
+            cls._normalize_runtime_identity_field(provider_a),
+            cls._normalize_runtime_identity_field(base_url_a),
+            cls._normalize_runtime_identity_field(api_mode_a),
+        ) != (
+            cls._normalize_runtime_identity_field(provider_b),
+            cls._normalize_runtime_identity_field(base_url_b),
+            cls._normalize_runtime_identity_field(api_mode_b),
+        )
+
+    def _current_codex_reasoning_origin(self) -> Dict[str, str]:
+        return {
+            "_origin_provider": self._normalize_runtime_identity_field(getattr(self, "provider", "")),
+            "_origin_base_url": self._normalize_runtime_identity_field(getattr(self, "base_url", "")),
+            "_origin_api_mode": self._normalize_runtime_identity_field(getattr(self, "api_mode", "")),
+        }
+
     def _check_compression_model_feasibility(self) -> None:
         """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""
         from agent.conversation_compression import check_compression_model_feasibility
@@ -2159,13 +2193,17 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            from tools import terminal_tool as _terminal_tool
+
+            _terminal_tool.cleanup_vm(task_id)
         except Exception:
             pass
 
         # 3. Clean browser daemon sessions
         try:
-            cleanup_browser(task_id)
+            from tools import browser_tool as _browser_tool
+
+            _browser_tool.cleanup_browser(task_id)
         except Exception:
             pass
 
@@ -3367,8 +3405,9 @@ class AIAgent:
     def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode.
 
-        Lazy-initializes on first call per api_mode. Returns None if no
-        transport is registered for the mode.
+        Lazy-initializes on first call per api_mode. If registry discovery was
+        disrupted by test-time module reloading, make one explicit best-effort
+        import for known transports before giving up.
         """
         mode = api_mode or self.api_mode
         cache = getattr(self, "_transport_cache", None)
@@ -3379,6 +3418,23 @@ class AIAgent:
         if t is None:
             from agent.transports import get_transport
             t = get_transport(mode)
+            if t is None:
+                try:
+                    direct_transports = {
+                        "anthropic_messages": ("agent.transports.anthropic", "AnthropicTransport"),
+                        "chat_completions": ("agent.transports.chat_completions", "ChatCompletionsTransport"),
+                        "codex_responses": ("agent.transports.codex", "ResponsesApiTransport"),
+                        "bedrock_converse": ("agent.transports.bedrock", "BedrockTransport"),
+                    }
+                    module_name, class_name = direct_transports.get(mode, (None, None))
+                    if module_name and class_name:
+                        import importlib
+                        module = importlib.import_module(module_name)
+                        transport_cls = getattr(module, class_name, None)
+                        if transport_cls is not None:
+                            t = transport_cls()
+                except Exception:
+                    pass
             cache[mode] = t
         return t
 

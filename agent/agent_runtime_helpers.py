@@ -1334,6 +1334,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    old_base_url = getattr(agent, "base_url", "")
+    old_api_mode = getattr(agent, "api_mode", "")
 
     # Clear the per-config context_length override so the new model's
     # actual context window is resolved via get_model_context_length()
@@ -1492,6 +1494,19 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # ── Reset fallback state ──
     agent._fallback_activated = False
     agent._fallback_index = 0
+
+    # Legacy Codex reasoning items saved before origin metadata was added are
+    # only safe to replay within the same backend lineage. After an in-place
+    # provider/backend switch, suppress legacy replay and rely on newly tagged
+    # reasoning items from the active backend going forward.
+    agent._allow_legacy_codex_reasoning_replay = not agent._codex_runtime_identity_changed(
+        provider_a=old_provider,
+        base_url_a=old_base_url,
+        api_mode_a=old_api_mode,
+        provider_b=agent.provider,
+        base_url_b=agent.base_url,
+        api_mode_b=agent.api_mode,
+    )
 
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary

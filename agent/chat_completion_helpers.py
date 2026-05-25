@@ -367,6 +367,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
+            allow_legacy_codex_reasoning_replay=getattr(agent, "_allow_legacy_codex_reasoning_replay", True),
+            codex_reasoning_origin=agent._current_codex_reasoning_origin(),
         )
 
     # ── chat_completions (default) ─────────────────────────────────────
@@ -666,7 +668,22 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # multi-turn continuity. These get replayed as input on the next turn.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)
     if codex_items:
-        msg["codex_reasoning_items"] = codex_items
+        origin = agent._current_codex_reasoning_origin()
+        tagged_items = []
+        for item in codex_items:
+            if isinstance(item, dict):
+                tagged = dict(item)
+            elif hasattr(item, "model_dump"):
+                tagged = item.model_dump()
+            elif hasattr(item, "__dict__"):
+                tagged = dict(item.__dict__)
+            else:
+                continue
+            for key, value in origin.items():
+                tagged.setdefault(key, value)
+            tagged_items.append(tagged)
+        if tagged_items:
+            msg["codex_reasoning_items"] = tagged_items
 
     # Codex Responses API: preserve exact assistant message items (with
     # id/phase) so follow-up turns can replay structured items instead of

@@ -36,6 +36,17 @@ from hermes_cli.config import cfg_get, load_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
+_ORIGINAL_LOAD_CONFIG = load_config
+
+
+def _load_runtime_config() -> dict:
+    """Load config while honoring both local and source-module monkeypatches."""
+    local_loader = globals().get("load_config")
+    if callable(local_loader) and local_loader is not _ORIGINAL_LOAD_CONFIG:
+        return local_loader()
+    from hermes_cli import config as hermes_config
+    return hermes_config.load_config()
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -101,7 +112,7 @@ def get_vnc_url() -> Optional[str]:
 def _get_camofox_config() -> Dict[str, Any]:
     """Return the ``browser.camofox`` config block, or an empty dict."""
     try:
-        camofox_cfg = load_config().get("browser", {}).get("camofox", {})
+        camofox_cfg = _load_runtime_config().get("browser", {}).get("camofox", {})
     except Exception as exc:
         logger.warning("camofox config check failed, defaulting to disabled: %s", exc)
         return {}
@@ -639,7 +650,7 @@ def camofox_vision(question: str, annotate: bool = False,
         )
 
         try:
-            _cfg = load_config()
+            _cfg = _load_runtime_config()
             _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vision_timeout = float(_vision_cfg.get("timeout", 120))
             _vision_temperature = float(_vision_cfg.get("temperature", 0.1))

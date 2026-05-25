@@ -27,6 +27,8 @@ class ResponsesApiTransport(ProviderTransport):
         return _chat_messages_to_responses_input(
             messages,
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
+            allow_legacy_reasoning_replay=kwargs.get("allow_legacy_codex_reasoning_replay", True),
+            current_origin=kwargs.get("codex_reasoning_origin"),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -99,6 +101,8 @@ class ResponsesApiTransport(ProviderTransport):
             "input": _chat_messages_to_responses_input(
                 payload_messages,
                 is_xai_responses=is_xai_responses,
+                allow_legacy_reasoning_replay=params.get("allow_legacy_codex_reasoning_replay", True),
+                current_origin=params.get("codex_reasoning_origin"),
             ),
             "tools": response_tools,
             "store": False,
