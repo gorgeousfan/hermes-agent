@@ -364,9 +364,10 @@ class TestNonBypassStillQueued:
         assert sk in adapter._pending_messages, (
             "Regular text was not queued — it should be pending"
         )
-        assert len(adapter.sent_responses) == 0, (
-            "Regular text should not produce a direct response"
+        assert len(adapter.sent_responses) == 1, (
+            "Regular text should trigger busy feedback"
         )
+        assert "⏳ Agent is busy" in adapter.sent_responses[0]
 
     @pytest.mark.asyncio
     async def test_unknown_command_queued(self):
@@ -378,7 +379,8 @@ class TestNonBypassStillQueued:
         await adapter.handle_message(_make_event("/foobar"))
 
         assert sk in adapter._pending_messages
-        assert len(adapter.sent_responses) == 0
+        assert len(adapter.sent_responses) == 1
+        assert "⏳ Agent is busy" in adapter.sent_responses[0]
 
     @pytest.mark.asyncio
     async def test_file_path_not_treated_as_command(self):
@@ -390,7 +392,8 @@ class TestNonBypassStillQueued:
         await adapter.handle_message(_make_event("/path/to/file.py"))
 
         assert sk in adapter._pending_messages
-        assert len(adapter.sent_responses) == 0
+        assert len(adapter.sent_responses) == 1
+        assert "⏳ Agent is busy" in adapter.sent_responses[0]
 
 
 # ---------------------------------------------------------------------------

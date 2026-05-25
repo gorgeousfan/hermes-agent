@@ -1274,9 +1274,9 @@ def skill_view(
         if isinstance(metadata, dict):
             hermes_meta = metadata.get("hermes", {}) or {}
 
-        tags = _parse_tags(hermes_meta.get("tags") or frontmatter.get("tags", ""))
+        tags = _parse_tags(hermes_meta.get("tags") or frontmatter.get("tags") or (metadata.get("tags") if isinstance(metadata, dict) else "") or "")
         related_skills = _parse_tags(
-            hermes_meta.get("related_skills") or frontmatter.get("related_skills", "")
+            hermes_meta.get("related_skills") or frontmatter.get("related_skills") or (metadata.get("related_skills") if isinstance(metadata, dict) else "") or ""
         )
 
         # Build linked files structure for clear discovery
