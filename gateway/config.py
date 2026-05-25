@@ -298,6 +298,20 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Override target for restart/shutdown notifications on this platform.
+    # When set, lifecycle notifications go to THIS chat instead of the
+    # active session sources. Useful when you want operators in an ops
+    # channel to know about restarts but don't want customer-facing
+    # channels to receive the "Gateway shutting down" pings during active
+    # conversations.
+    #
+    # Format: "chat_id" or "chat_id:thread_id" (Slack-style "C0ABC123" or
+    # "C0ABC123:1234567.890123" for forum/thread targeting). When set, the
+    # active-session loop is skipped and a single notification lands here.
+    # Has no effect if `gateway_restart_notification` is False (which fully
+    # suppresses lifecycle pings on this platform).
+    gateway_restart_notification_channel: Optional[str] = None
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -308,6 +322,8 @@ class PlatformConfig:
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
         }
+        if self.gateway_restart_notification_channel:
+            result["gateway_restart_notification_channel"] = self.gateway_restart_notification_channel
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -329,6 +345,9 @@ class PlatformConfig:
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
+        _grn_chan = data.get("gateway_restart_notification_channel")
+        if _grn_chan is None:
+            _grn_chan = data.get("extra", {}).get("gateway_restart_notification_channel")
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
@@ -337,6 +356,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            gateway_restart_notification_channel=_grn_chan if _grn_chan else None,
             extra=data.get("extra", {}),
         )
 

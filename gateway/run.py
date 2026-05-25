@@ -3275,6 +3275,13 @@ class GatewayRunner:
         Called at the very start of stop() — adapters are still connected so
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
+
+        Per-platform override: when a platform's
+        ``gateway_restart_notification_channel`` is set, the per-session loop
+        is skipped FOR THAT PLATFORM and a single notification lands in the
+        override chat instead. Used to keep restart pings out of customer-
+        facing channels (where active sessions live during normal work) and
+        route them to an ops-only channel instead.
         """
         active = self._snapshot_running_agents()
 
@@ -3286,6 +3293,43 @@ class GatewayRunner:
             else "Your current task will be interrupted."
         )
         msg = f"⚠️ Gateway {action} — {hint}"
+
+        # Per-platform override: if a platform has a configured override
+        # channel, send ONE notification there and skip the per-session
+        # loop for that platform. Tracked via a set so the per-session
+        # loop below knows to skip these platforms.
+        override_sent_platforms: set[str] = set()
+        for platform, platform_cfg in self.config.platforms.items():
+            if platform_cfg is None or not platform_cfg.enabled:
+                continue
+            if not platform_cfg.gateway_restart_notification:
+                continue
+            override_target = getattr(
+                platform_cfg, "gateway_restart_notification_channel", None
+            )
+            if not override_target:
+                continue
+            adapter = self.adapters.get(platform)
+            if not adapter:
+                continue
+            # Parse "chat_id" or "chat_id:thread_id" format
+            if ":" in override_target:
+                override_chat_id, override_thread_id = override_target.split(":", 1)
+            else:
+                override_chat_id, override_thread_id = override_target, None
+            metadata = {"thread_id": override_thread_id} if override_thread_id else None
+            try:
+                await adapter.send(override_chat_id, msg, metadata=metadata)
+                logger.info(
+                    "Shutdown notification routed to override channel for %s: %s",
+                    platform.value, override_chat_id,
+                )
+                override_sent_platforms.add(platform.value)
+            except Exception as e:
+                logger.debug(
+                    "Failed to send override-channel shutdown notification for %s: %s",
+                    platform.value, e,
+                )
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -3338,6 +3382,12 @@ class GatewayRunner:
                         "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
                         platform_str,
                     )
+                    continue
+
+                # If this platform has an override channel configured, the
+                # single override notification was already sent above —
+                # skip the per-session loop to avoid double-pinging.
+                if platform_str in override_sent_platforms:
                     continue
 
                 # Include thread_id if present so the message lands in the
