@@ -337,7 +337,17 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    try:
+        return agent.chat(prompt) or ""
+    finally:
+        # Shut down memory providers (mem0-oss, etc.) so background gRPC/daemon
+        # threads are joined before interpreter exit.  Without this, plugins that
+        # use gRPC (e.g. Qdrant client inside mem0) trigger SIGABRT during Python
+        # shutdown due to pthread forced-unwind in native code.  See #27832.
+        try:
+            agent.shutdown_memory_provider()
+        except Exception:
+            pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:
