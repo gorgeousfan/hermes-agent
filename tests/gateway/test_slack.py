@@ -86,10 +86,31 @@ def adapter():
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
-    """Point document cache to tmp_path so tests don't touch ~/.hermes."""
+    """Point document cache to tmp_path and isolate Slack env knobs."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
     )
+    # The developer's real gateway may be locked to one Slack user/channel.
+    # Unit tests build synthetic events from many fake users/channels, so clear
+    # these env-level gates unless an individual test opts into them.
+    monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("SLACK_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("SLACK_RESTRICT_DM_CHANNELS", raising=False)
+
+
+class _FakeSlackResponse:
+    """SlackResponse-like object exposing error data via .data."""
+
+    def __init__(self, error: str):
+        self.data = {"error": error}
+
+
+class _FakeSlackApiError(Exception):
+    """Minimal SlackApiError stand-in with SlackResponse-like .response.data."""
+
+    def __init__(self, error: str):
+        super().__init__(f"Slack API error: {error}")
+        self.response = _FakeSlackResponse(error)
 
 
 # ---------------------------------------------------------------------------
@@ -2474,6 +2495,113 @@ class TestMessageSplitting:
         await adapter.send("C123", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
+
+
+class TestInaccessibleDmFallback:
+    def test_slack_error_code_reads_slack_response_data(self):
+        assert SlackAdapter._slack_error_code(_FakeSlackApiError("channel_not_found")) == "channel_not_found"
+
+    def test_dm_user_map_is_bounded(self, adapter, monkeypatch):
+        monkeypatch.setattr(_slack_mod, "_MAX_DM_USER_CACHE_SIZE", 2)
+
+        adapter._remember_dm_user("D_ONE", "U1")
+        adapter._remember_dm_user("D_TWO", "U2")
+        adapter._remember_dm_user("D_THREE", "U3")
+
+        assert list(adapter._dm_user_by_channel) == ["D_TWO", "D_THREE"]
+
+    @pytest.mark.asyncio
+    async def test_dm_message_records_user_for_send_fallback(self, adapter):
+        adapter._resolve_user_name = AsyncMock(return_value="Test User")
+        event = {
+            "type": "message",
+            "channel": "D_BAD",
+            "channel_type": "im",
+            "user": "U123",
+            "text": "hello",
+            "ts": "1779464112.265589",
+            "team": "T123",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        assert adapter._dm_user_by_channel["D_BAD"] == "U123"
+
+    @pytest.mark.asyncio
+    async def test_send_reroutes_channel_not_found_dm_to_open_user_dm(self, adapter):
+        adapter._dm_user_by_channel["D_BAD"] = "U123"
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[
+                _FakeSlackApiError("channel_not_found"),
+                {"ts": "fallback_ts"},
+            ]
+        )
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"channel": {"id": "D_GOOD"}}
+        )
+
+        result = await adapter.send(
+            "D_BAD",
+            "hello",
+            metadata={"thread_id": "1779464112.265589"},
+        )
+
+        assert result.success
+        assert result.message_id == "fallback_ts"
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123")
+        first_call = adapter._app.client.chat_postMessage.await_args_list[0].kwargs
+        assert first_call["channel"] == "D_BAD"
+        assert first_call["thread_ts"] == "1779464112.265589"
+        fallback_call = adapter._app.client.chat_postMessage.await_args_list[1].kwargs
+        assert fallback_call["channel"] == "D_GOOD"
+        assert "thread_ts" not in fallback_call
+
+    @pytest.mark.asyncio
+    async def test_dm_fallback_refuses_non_allowed_user(self, adapter, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_ALLOWED")
+        adapter._dm_user_by_channel["D_BAD"] = "U_BLOCKED"
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"channel": {"id": "D_SHOULD_NOT_OPEN"}}
+        )
+
+        fallback = await adapter._fallback_dm_channel_for_unpostable_channel("D_BAD")
+
+        assert fallback is None
+        adapter._app.client.conversations_open.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dm_fallback_honors_restricted_dm_channel_allowlist(self, adapter, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", "D_ALLOWED")
+        monkeypatch.setenv("SLACK_RESTRICT_DM_CHANNELS", "true")
+        adapter._dm_user_by_channel["D_BAD"] = "U123"
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"channel": {"id": "D_OTHER"}}
+        )
+
+        fallback = await adapter._fallback_dm_channel_for_unpostable_channel("D_BAD")
+
+        assert fallback is None
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123")
+        assert "D_OTHER" not in adapter._dm_user_by_channel
+
+    @pytest.mark.asyncio
+    async def test_allowed_channels_can_restrict_dm_surfaces(self, adapter, monkeypatch):
+        monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", "D_HOME")
+        monkeypatch.setenv("SLACK_RESTRICT_DM_CHANNELS", "true")
+        adapter._resolve_user_name = AsyncMock(return_value="Test User")
+        event = {
+            "type": "message",
+            "channel": "D_OTHER",
+            "channel_type": "im",
+            "user": "U123",
+            "text": "hello",
+            "ts": "1779464112.265589",
+            "team": "T123",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

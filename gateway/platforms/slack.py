@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 
@@ -62,14 +63,18 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_slash_user_id", default=None,
 )
 
+_MAX_DM_USER_CACHE_SIZE = 1024
+
 
 @dataclass
 class _ThreadContextCache:
     """Cache entry for fetched thread context."""
+
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+
 
 
 def check_slack_requirements() -> bool:
@@ -315,16 +320,28 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
+        # DM channel → user_id mapping learned from inbound message/slash events.
+        # Slack Assistant/App surfaces can emit DM-like channel IDs that the bot
+        # can read from Socket Mode but cannot post back to with chat.postMessage
+        # (Slack returns channel_not_found). The user_id lets send() open the
+        # normal bot DM as a safe fallback instead of going silent. Bound the
+        # cache so transient App/Assistant DM surfaces cannot grow memory without
+        # limit in long-lived gateways.
+        self._dm_user_by_channel: OrderedDict[str, str] = OrderedDict()
+
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
+
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
+
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
@@ -755,6 +772,119 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    def _remember_dm_user(self, channel_id: str, user_id: str) -> None:
+        """Remember a bounded DM channel → user mapping for fallback routing."""
+        if not channel_id or not user_id or not str(channel_id).startswith("D"):
+            return
+        key = str(channel_id)
+        if key in self._dm_user_by_channel:
+            self._dm_user_by_channel.move_to_end(key)
+        self._dm_user_by_channel[key] = str(user_id)
+        while len(self._dm_user_by_channel) > _MAX_DM_USER_CACHE_SIZE:
+            self._dm_user_by_channel.popitem(last=False)
+
+    @staticmethod
+    def _slack_error_code(exc: Exception) -> str:
+        """Extract a Slack API error code from SlackApiError-like exceptions."""
+        response = getattr(exc, "response", None)
+        response_data = getattr(response, "data", None)
+        if isinstance(response_data, dict):
+            error = response_data.get("error")
+            if error:
+                return str(error)
+        if hasattr(response, "get"):
+            try:
+                error = response.get("error")
+                if error:
+                    return str(error)
+            except Exception:
+                pass
+        message = str(exc)
+        if "channel_not_found" in message:
+            return "channel_not_found"
+        return ""
+
+    async def _fallback_dm_channel_for_unpostable_channel(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Open the user's normal bot DM when a DM-like channel is not postable."""
+        if not str(chat_id).startswith("D"):
+            return None
+
+        md = metadata or {}
+        user_id = (
+            md.get("slack_user_id")
+            or md.get("user_id")
+            or self._dm_user_by_channel.get(chat_id)
+        )
+        if not user_id:
+            return None
+        if not self._slack_user_allowed(str(user_id)):
+            logger.info(
+                "[Slack] Refusing DM fallback for non-allowed user: %s",
+                user_id,
+            )
+            return None
+
+        result = await self._get_client(chat_id).conversations_open(users=str(user_id))
+        channel = result.get("channel", {}) if hasattr(result, "get") else {}
+        fallback_chat_id = channel.get("id") if isinstance(channel, dict) else None
+        if not fallback_chat_id or fallback_chat_id == chat_id:
+            return None
+
+        allowed_channels = self._slack_allowed_channels()
+        if (
+            self._slack_restrict_dm_channels()
+            and allowed_channels
+            and "*" not in allowed_channels
+            and str(fallback_chat_id) not in allowed_channels
+        ):
+            logger.info(
+                "[Slack] Refusing DM fallback to non-allowed DM channel: %s",
+                fallback_chat_id,
+            )
+            return None
+
+        self._remember_dm_user(str(fallback_chat_id), str(user_id))
+        team_id = self._channel_team.get(chat_id)
+        if team_id:
+            self._channel_team[str(fallback_chat_id)] = team_id
+        logger.warning(
+            "[Slack] Channel %s is not postable; rerouting DM response to opened DM %s",
+            chat_id,
+            fallback_chat_id,
+        )
+        return str(fallback_chat_id)
+
+    async def _chat_post_message_with_dm_fallback(
+        self,
+        chat_id: str,
+        kwargs: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Post a message, falling back from non-postable assistant DMs if needed."""
+        try:
+            return await self._get_client(chat_id).chat_postMessage(**kwargs)
+        except Exception as exc:
+            if self._slack_error_code(exc) != "channel_not_found":
+                raise
+            fallback_chat_id = await self._fallback_dm_channel_for_unpostable_channel(
+                chat_id,
+                metadata,
+            )
+            if not fallback_chat_id:
+                raise
+
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs["channel"] = fallback_chat_id
+            # The original thread_ts belongs to the non-postable assistant/App
+            # surface channel. It is invalid in the newly opened normal DM.
+            fallback_kwargs.pop("thread_ts", None)
+            fallback_kwargs.pop("reply_broadcast", None)
+            return await self._get_client(fallback_chat_id).chat_postMessage(**fallback_kwargs)
+
     async def send(
         self,
         chat_id: str,
@@ -803,7 +933,11 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                last_result = await self._chat_post_message_with_dm_fallback(
+                    chat_id,
+                    kwargs,
+                    metadata,
+                )
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1919,6 +2053,9 @@ class SlackAdapter(BasePlatformAdapter):
         user_id = event.get("user") or assistant_meta.get("user_id", "")
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
+        if not self._slack_user_allowed(str(user_id or "")):
+            logger.info("[Slack] Ignoring message from non-allowed user: %s", user_id or "<missing>")
+            return
         team_id = (
             event.get("team")
             or event.get("team_id")
@@ -1934,6 +2071,8 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+        if is_dm and channel_id and user_id:
+            self._remember_dm_user(channel_id, user_id)
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -1962,12 +2101,18 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
+        allowed_channels = self._slack_allowed_channels()
+        if allowed_channels and (
+            not is_dm or self._slack_restrict_dm_channels()
+        ) and channel_id not in allowed_channels:
+            logger.info(
+                "[Slack] Ignoring message in non-allowed %s: %s",
+                "DM" if is_dm else "channel",
+                channel_id,
+            )
+            return
+
         if not is_dm and bot_uid:
-            # Check allowed channels — if set, only respond in these channels (whitelist)
-            allowed_channels = self._slack_allowed_channels()
-            if allowed_channels and channel_id not in allowed_channels:
-                logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
-                return
 
             if channel_id in self._slack_free_response_channels():
                 pass  # Free-response channel — always process
@@ -2806,6 +2951,8 @@ class SlackAdapter(BasePlatformAdapter):
         # keep group semantics so different users do not collide into one
         # session key.
         is_dm = str(channel_id).startswith("D")
+        if is_dm and channel_id and user_id:
+            self._remember_dm_user(channel_id, user_id)
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
@@ -2966,6 +3113,19 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ── Channel mention gating ─────────────────────────────────────────────
 
+    def _slack_user_allowed(self, user_id: str) -> bool:
+        """Return whether a Slack sender is allowed past the adapter.
+
+        gateway.run has its own allowlist check, but doing a Slack-side prefilter
+        prevents App/Assistant surface oddities and DM fallback paths from ever
+        opening or messaging a non-allowed user's normal DM.
+        """
+        raw = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if not raw:
+            return True
+        allowed = {part.strip() for part in raw.split(",") if part.strip()}
+        return "*" in allowed or bool(user_id and user_id in allowed)
+
     def _slack_require_mention(self) -> bool:
         """Return whether channel messages require an explicit bot mention.
 
@@ -3014,14 +3174,29 @@ class SlackAdapter(BasePlatformAdapter):
         """Return the whitelist of channel IDs the bot will respond in.
 
         When non-empty, messages from channels NOT in this set are silently
-        ignored — even if the bot is @mentioned.  DMs are never filtered.
-        Empty set means no restriction (fully backward compatible).
+        ignored — even if the bot is @mentioned.  DMs are filtered too when
+        ``SLACK_RESTRICT_DM_CHANNELS=true`` or
+        ``platforms.slack.extra.restrict_dm_channels`` is truthy.  Empty set
+        means no restriction (fully backward compatible).
         """
         raw = self.config.extra.get("allowed_channels")
-        if raw is None:
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
             raw = os.getenv("SLACK_ALLOWED_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _slack_restrict_dm_channels(self) -> bool:
+        """Return whether allowed_channels should also gate Slack DMs.
+
+        Slack App/Assistant surfaces can emit non-postable DM-like channel IDs.
+        If the adapter processes those, every progress/edit fallback may open a
+        normal bot DM and spam the user.  Keep legacy behavior by default, but
+        let operators pin Slack processing to an explicit home DM/channel.
+        """
+        raw = self.config.extra.get("restrict_dm_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_RESTRICT_DM_CHANNELS", "false")
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}

@@ -174,6 +174,46 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_windows_pythonw_gateway_uses_console_python_for_stdout(self, cron_env, tmp_path, monkeypatch):
+        """Hidden Windows gateways run under pythonw.exe; cron scripts need python.exe.
+
+        A migrated digest exposed this because script stdout was empty
+        only under the hidden gateway scheduler path.  Verify the scheduler swaps
+        sibling python.exe in before spawning .py scripts.
+        """
+        import cron.scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "stdout_required.py"
+        script.write_text('print("cron stdout matters")\n')
+        pythonw = tmp_path / "pythonw.exe"
+        python = tmp_path / "python.exe"
+        pythonw.write_text("placeholder")
+        python.write_text("placeholder")
+
+        class _Completed:
+            stdout = "captured\n"
+            stderr = ""
+            returncode = 0
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return _Completed()
+
+        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sched_mod.sys, "executable", str(pythonw))
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0)
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert output == "captured"
+        assert calls[0][0][0] == str(python)
+        assert calls[0][0][1] == str(script.resolve())
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

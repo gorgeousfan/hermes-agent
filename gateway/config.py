@@ -927,6 +927,8 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ac, list):
                         ac = ",".join(str(v) for v in ac)
                     os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+                if "restrict_dm_channels" in slack_cfg and not os.getenv("SLACK_RESTRICT_DM_CHANNELS"):
+                    os.environ["SLACK_RESTRICT_DM_CHANNELS"] = str(slack_cfg["restrict_dm_channels"]).lower()
 
             # Bridge top-level require_mention to Telegram when the telegram: section
             # does not already provide one.  Users often write "require_mention: true"

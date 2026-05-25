@@ -877,10 +877,22 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             )
         argv = [_bash, str(path)]
     else:
-        argv = [sys.executable, str(path)]
+        # When the Windows gateway is launched hidden via pythonw.exe, using
+        # sys.executable for cron scripts silently drops stdout/stderr. Cron
+        # scripts rely on captured stdout, so run them with the console
+        # interpreter from the same venv when available.
+        python_executable = sys.executable
+        if sys.platform == "win32":
+            current_python = Path(sys.executable)
+            if current_python.name.lower() == "pythonw.exe":
+                console_python = current_python.with_name("python.exe")
+                if console_python.exists():
+                    python_executable = str(console_python)
+        argv = [python_executable, str(path)]
 
     run_env = os.environ.copy()
     run_env["HERMES_HOME"] = str(_get_hermes_home())
+
     try:
         from hermes_constants import get_subprocess_home
 
