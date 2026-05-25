@@ -8411,6 +8411,16 @@ class GatewayRunner:
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
+                                    # Bump the running agent's activity timestamp
+                                    # before blocking compression in the executor.
+                                    # Without this heartbeat, stale-lock eviction
+                                    # can fire and spawn a parallel agent instance
+                                    # if a second message arrives while the executor
+                                    # thread is busy — forking the session transcript.
+                                    _running = self._running_agents.get(session_key)
+                                    if _running and hasattr(_running, "_touch_activity"):
+                                        _running._touch_activity("session hygiene compression")
+
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
                                         None,
@@ -8419,6 +8429,11 @@ class GatewayRunner:
                                             approx_tokens=_approx_tokens,
                                         ),
                                     )
+                                    # Bump the activity timestamp again after compression
+                                    # so the "just finished" time is visible to diagnostics.
+                                    _running = self._running_agents.get(session_key)
+                                    if _running and hasattr(_running, "_touch_activity"):
+                                        _running._touch_activity("session hygiene compression done")
 
                                     # _compress_context ends the old session and creates
                                     # a new session_id.  Write compressed messages into
@@ -12099,11 +12114,21 @@ class GatewayRunner:
                 if not compressor.has_content_to_compress(msgs):
                     return t("gateway.compress.nothing_to_do")
 
+                # Bump the running agent's activity timestamp before blocking
+                # compression in the executor. Without this heartbeat, stale-lock
+                # eviction can fire during compression and spawn a parallel agent.
+                _running = self._running_agents.get(session_key)
+                if _running and hasattr(_running, "_touch_activity"):
+                    _running._touch_activity("session hygiene compression (/compact)")
+
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
                     lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
                 )
+                _running = self._running_agents.get(session_key)
+                if _running and hasattr(_running, "_touch_activity"):
+                    _running._touch_activity("session hygiene compression done (/compact)")
 
                 # _compress_context already calls end_session() on the old session
                 # (preserving its full transcript in SQLite) and creates a new
