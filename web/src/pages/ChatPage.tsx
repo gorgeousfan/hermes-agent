@@ -156,7 +156,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // SessionsPage may intentionally navigate to the *same* resume target again
+  // after a previous dashboard PTY has ended.  React keeps ChatPage mounted
+  // persistently so ordinary tab switches preserve the live PTY, which also
+  // means a same-URL resume click would otherwise leave the stale terminal on
+  // screen forever.  `resumeNonce` is a route-level "start a fresh PTY for this
+  // resume click" signal. It is folded into the opaque dashboard event channel
+  // id that is sent to the backend; the backend never interprets it as resume
+  // state or forwards it to the TUI child.
+  const resumeNonce = searchParams.get("resumeNonce");
+  const channel = useMemo(
+    () =>
+      ["chat", resumeParam ?? "new", resumeNonce ?? "0", generateChannelId()].join(
+        "_",
+      ),
+    [resumeParam, resumeNonce],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -650,7 +665,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, resumeNonce]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

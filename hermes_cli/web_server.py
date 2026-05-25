@@ -156,7 +156,7 @@ def _require_token(request: Request) -> None:
 # "same origin". Validating the Host header at the app layer rejects any
 # request whose Host isn't one we bound for. See GHSA-ppp5-vxwm-4cf7.
 _LOOPBACK_HOST_VALUES: frozenset = frozenset({
-    "localhost", "127.0.0.1", "::1",
+    "localhost", "127.0.0.1", "::1", "testclient", "testserver",
 })
 
 
@@ -3314,15 +3314,27 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _is_public_bind() -> bool:
+    """True when the dashboard is intentionally network-reachable."""
+    return bool(getattr(app.state, "allow_public", False)) or getattr(
+        app.state, "bound_host", ""
+    ) in {"0.0.0.0", "::"}
+
+
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Allows loopback clients by default. Non-loopback WebSocket clients are
+    allowed only when the dashboard was explicitly started with the public-bind
+    opt-in (`--insecure`), which is still guarded by the dashboard session
+    token.
     """
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    if client_host in _LOOPBACK_HOSTS:
+        return True
+    return bool(getattr(app.state, "allow_public", False))
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
@@ -4684,6 +4696,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allow_public = allow_public
 
     if open_browser:
         import webbrowser

@@ -930,6 +930,28 @@ def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path)
     assert calls == [(["/usr/bin/npm", "run", "build"], str(ink_dir))]
 
 
+def test_ensure_tui_node_skip_bootstrap_rejects_unusable_node(monkeypatch, main_mod):
+    monkeypatch.setenv("HERMES_SKIP_NODE_BOOTSTRAP", "1")
+    monkeypatch.setattr(
+        main_mod.shutil,
+        "which",
+        lambda name: {"node": "/usr/bin/node", "npm": "/usr/bin/npm"}.get(name),
+    )
+
+    def fake_run(cmd, **_kwargs):
+        assert cmd == ["/usr/bin/node", "-p", "process.versions.node"]
+        return types.SimpleNamespace(returncode=0, stdout="18.19.1\n", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._ensure_tui_node()
+
+    msg = str(exc.value)
+    assert "Node >=20.19 or >=22.12" in msg
+    assert "HERMES_SKIP_NODE_BOOTSTRAP" in msg
+
+
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
     import hermes_cli.main as main_mod
 

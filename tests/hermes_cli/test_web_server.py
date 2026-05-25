@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -2086,6 +2087,8 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "allow_public", False, raising=False)
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -2147,6 +2150,110 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_allows_pty_when_dashboard_bound_to_explicit_network_host(self, monkeypatch):
+        """Explicit VPN/LAN binds are intentional network exposure.
+
+        The dashboard CLI requires ``--insecure`` for non-loopback hosts and
+        stores that operator opt-in as ``app.state.allow_public`` before this
+        server starts. Once it is running there, /api/pty must allow
+        non-loopback websocket clients that have the session token; otherwise
+        Sessions → Resume in Chat closes before accept and the browser can only
+        show the generic "[session ended]" line.
+        """
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "192.0.2.10",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "allow_public",
+            True,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (
+                ["/bin/sh", "-c", "printf network-pty-ok"],
+                None,
+                None,
+            ),
+        )
+
+        with self.client.websocket_connect(
+            self._url(), headers={"host": "192.0.2.10"}
+        ) as conn:
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    frame = conn.receive_bytes()
+                except Exception:
+                    break
+                if frame:
+                    buf += frame
+                if b"network-pty-ok" in buf:
+                    break
+
+            assert b"network-pty-ok" in buf
+
+    def test_ws_client_guard_allows_non_loopback_when_bound_to_network_host(self, monkeypatch):
+        """Unit-test the guard directly so TestClient's loopback peer cannot mask regressions."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "192.0.2.10",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "allow_public",
+            True,
+            raising=False,
+        )
+        ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
+
+        assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is True
+
+    def test_ws_client_guard_rejects_non_loopback_without_insecure_opt_in(self, monkeypatch):
+        """A specific network bind is only public if start_server recorded --insecure."""
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "192.0.2.10",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "allow_public",
+            False,
+            raising=False,
+        )
+        ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
+
+        assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is False
+
+    def test_ws_client_guard_rejects_non_loopback_when_bound_to_loopback(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "bound_host",
+            "127.0.0.1",
+            raising=False,
+        )
+        ws = SimpleNamespace(client=SimpleNamespace(host="198.51.100.23"))
+
+        assert self.ws_module._ws_client_is_allowed(cast(Any, ws)) is False
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
