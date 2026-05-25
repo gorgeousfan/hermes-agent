@@ -372,6 +372,17 @@ def run_conversation(
         _msg_preview,
     )
 
+    # ACP Copilot and some adapter paths can pass a non-iterable
+    # (e.g. SimpleNamespace) instead of a list, which would crash on
+    # len()/list()/reversed() below.  Normalise once up-front so every
+    # downstream consumer sees a real list.
+    try:
+        from run_agent import normalize_conversation_history
+        conversation_history = normalize_conversation_history(conversation_history)
+    except Exception:
+        if conversation_history is None:
+            conversation_history = []
+
     # Initialize conversation (copy to avoid mutating the caller's list)
     messages = list(conversation_history) if conversation_history else []
 
