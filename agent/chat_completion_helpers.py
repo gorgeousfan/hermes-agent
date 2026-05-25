@@ -227,17 +227,30 @@ def interruptible_api_call(agent, api_kwargs: dict):
         _elapsed = time.time() - _call_start
         if _elapsed > _stale_timeout:
             _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            _silent_hint = None
+            _hint_fn = getattr(agent, "_codex_silent_hang_hint", None)
+            if callable(_hint_fn):
+                try:
+                    _silent_hint = _hint_fn(model=api_kwargs.get("model"))
+                except Exception:
+                    _silent_hint = None
             logger.warning(
                 "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                 "model=%s context=~%s tokens. Killing connection.",
                 _elapsed, _stale_timeout,
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
-            agent._emit_status(
-                f"⚠️ No response from provider for {int(_elapsed)}s "
-                f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                f"Aborting call."
-            )
+            if _silent_hint:
+                agent._emit_status(
+                    f"⚠️ No response from openai-codex for {int(_elapsed)}s. "
+                    f"{_silent_hint}"
+                )
+            else:
+                agent._emit_status(
+                    f"⚠️ No response from provider for {int(_elapsed)}s "
+                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"Aborting call."
+                )
             try:
                 if agent.api_mode == "anthropic_messages":
                     agent._anthropic_client.close()
@@ -252,10 +265,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
-                result["error"] = TimeoutError(
-                    f"Non-streaming API call timed out after {int(_elapsed)}s "
-                    f"with no response (threshold: {int(_stale_timeout)}s)"
-                )
+                if _silent_hint:
+                    result["error"] = TimeoutError(
+                        f"Non-streaming API call timed out after {int(_elapsed)}s "
+                        f"with no response (threshold: {int(_stale_timeout)}s). "
+                        f"{_silent_hint}"
+                    )
+                else:
+                    result["error"] = TimeoutError(
+                        f"Non-streaming API call timed out after {int(_elapsed)}s "
+                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                    )
             break
 
         if agent._interrupt_requested:

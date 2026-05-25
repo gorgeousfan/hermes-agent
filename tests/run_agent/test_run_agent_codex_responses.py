@@ -1960,3 +1960,183 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+# ---------------------------------------------------------------------------
+# Issue #21444: Codex backend silent-hang messaging
+# ---------------------------------------------------------------------------
+#
+# When openai-codex/gpt-5.5 is the primary model the ChatGPT Codex backend
+# silently drops the request and the non-stream stale detector ends a 5min
+# hang with a generic "timed out" error.  These tests pin a heuristic that
+# substitutes an actionable message pointing at gpt-5.4-codex as a workaround.
+
+
+def _build_codex_agent_with_model(monkeypatch, *, model: str, provider: str = "openai-codex",
+                                  base_url: str = "https://chatgpt.com/backend-api/codex"):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    return agent
+
+
+def test_codex_silent_hang_hint_fires_for_gpt_5_5_on_codex_backend(monkeypatch):
+    """gpt-5.5 + openai-codex + chatgpt.com/backend-api/codex must yield a hint."""
+    agent = _build_codex_agent_with_model(monkeypatch, model="gpt-5.5")
+    agent.api_mode = "codex_responses"
+    hint = agent._codex_silent_hang_hint()
+    assert hint is not None
+    assert "gpt-5.4-codex" in hint
+    assert "openai/codex/issues/19654" in hint
+
+
+def test_codex_silent_hang_hint_no_false_positive_for_gpt_5_4_codex(monkeypatch):
+    """gpt-5.4-codex on the same OAuth profile works — must NOT yield a hint."""
+    agent = _build_codex_agent_with_model(monkeypatch, model="gpt-5.4-codex")
+    agent.api_mode = "codex_responses"
+    assert agent._codex_silent_hang_hint() is None
+
+
+def test_codex_silent_hang_hint_no_false_positive_for_gpt_5_5_off_codex_backend(monkeypatch):
+    """gpt-5.5 against a non-Codex base_url (e.g. Nous, OpenAI) is unaffected."""
+    agent = _build_codex_agent_with_model(
+        monkeypatch,
+        model="gpt-5.5",
+        provider="nous",
+        base_url="https://inference-api.nousresearch.com/v1",
+    )
+    agent.api_mode = "codex_responses"
+    assert agent._codex_silent_hang_hint() is None
+
+
+def test_codex_silent_hang_hint_no_false_positive_for_chat_completions(monkeypatch):
+    """Different api_mode (chat_completions) is unaffected even with gpt-5.5."""
+    agent = _build_codex_agent_with_model(monkeypatch, model="gpt-5.5")
+    agent.api_mode = "chat_completions"
+    assert agent._codex_silent_hang_hint() is None
+
+
+def test_codex_silent_hang_hint_handles_vendor_prefixed_model(monkeypatch):
+    """openai/gpt-5.5 (vendor-prefixed) on the Codex backend must also match."""
+    agent = _build_codex_agent_with_model(monkeypatch, model="openai/gpt-5.5")
+    agent.api_mode = "codex_responses"
+    hint = agent._codex_silent_hang_hint()
+    assert hint is not None
+    assert "gpt-5.4-codex" in hint
+
+
+def test_codex_silent_hang_hint_uses_explicit_model_arg(monkeypatch):
+    """The optional model arg overrides self.model for per-request matching."""
+    agent = _build_codex_agent_with_model(monkeypatch, model="gpt-5.4-codex")
+    agent.api_mode = "codex_responses"
+    # Self model is fine, but this turn's api_kwargs uses gpt-5.5 → hint fires.
+    assert agent._codex_silent_hang_hint(model="gpt-5.5") is not None
+    # And the inverse: explicit safe model wins.
+    agent.model = "gpt-5.5"
+    assert agent._codex_silent_hang_hint(model="gpt-5.4-codex") is None
+
+
+def test_interruptible_api_call_stale_timeout_surfaces_codex_hint(monkeypatch):
+    """End-to-end: when _interruptible_api_call hits the non-stream stale
+    detector with a known-silent-reject codex config, the resulting
+    TimeoutError must include the actionable workaround text."""
+    import threading
+
+    agent = _build_codex_agent_with_model(monkeypatch, model="gpt-5.5")
+    agent.api_mode = "codex_responses"
+
+    # Drive the stale detector quickly: 0.5s threshold, 5s fake API hang.
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda messages: 0.5
+    )
+
+    # Stub the path the non-streaming dispatcher takes for codex_responses.
+    started = threading.Event()
+    release = threading.Event()
+
+    def _fake_stream(api_kwargs, client=None, on_first_delta=None):
+        started.set()
+        # Hang until released — emulates the silent-reject backend.
+        release.wait(timeout=5.0)
+        return SimpleNamespace(output=[], status="completed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", _fake_stream)
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **kw: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda *a, **k: None
+    )
+    monkeypatch.setattr(agent, "_touch_activity", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "_emit_status", lambda *a, **k: None)
+
+    api_kwargs = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            agent._interruptible_api_call(api_kwargs)
+    finally:
+        # Let the worker thread exit cleanly.
+        release.set()
+
+    assert started.is_set()
+    msg = str(excinfo.value)
+    assert "timed out" in msg.lower()
+    # The actionable workaround MUST be embedded in the error.
+    assert "gpt-5.4-codex" in msg
+    assert "openai/codex/issues/19654" in msg
+
+
+def test_interruptible_api_call_stale_timeout_no_hint_for_safe_model(monkeypatch):
+    """Same stale-timeout path with a safe model (gpt-5.4-codex) must NOT
+    inject the hint — generic message only.  Guards against false positives."""
+    import threading
+
+    agent = _build_codex_agent_with_model(monkeypatch, model="gpt-5.4-codex")
+    agent.api_mode = "codex_responses"
+
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda messages: 0.5
+    )
+
+    release = threading.Event()
+
+    def _fake_stream(api_kwargs, client=None, on_first_delta=None):
+        release.wait(timeout=5.0)
+        return SimpleNamespace(output=[], status="completed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", _fake_stream)
+    monkeypatch.setattr(
+        agent,
+        "_create_request_openai_client",
+        lambda **kw: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda *a, **k: None
+    )
+    monkeypatch.setattr(agent, "_touch_activity", lambda *a, **k: None)
+    monkeypatch.setattr(agent, "_emit_status", lambda *a, **k: None)
+
+    api_kwargs = {"model": "gpt-5.4-codex", "messages": [{"role": "user", "content": "hi"}]}
+
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            agent._interruptible_api_call(api_kwargs)
+    finally:
+        release.set()
+
+    msg = str(excinfo.value)
+    assert "timed out" in msg.lower()
+    # No false-positive workaround text — must not name another model.
+    assert "gpt-5.4-codex" not in msg
+    assert "19654" not in msg

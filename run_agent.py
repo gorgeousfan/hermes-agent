@@ -916,6 +916,55 @@ class AIAgent:
             return max(stale_base, 450.0)
         return stale_base
 
+    def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
+        """Return an actionable hint when this request matches a known
+        Codex silent-reject configuration, else ``None``.
+
+        Some ChatGPT Codex backend (``chatgpt.com/backend-api/codex``)
+        configurations silently drop the request: the connection is
+        accepted but no stream events are emitted and no error is raised.
+        The non-stream stale-call detector ends the hang after ~300s, but
+        a generic "timed out" message gives the user no path forward.
+
+        Currently flagged: ``gpt-5.5`` family on the Codex backend. See
+        upstream ``openai/codex#19654`` and hermes-agent #21444 for the
+        backend-side root cause (still unresolved at the protocol level).
+        ``gpt-5.4-codex`` works fine on the same OAuth profile, so we
+        recommend that as a workaround.
+
+        This helper does NOT fix the backend issue. It only converts the
+        opaque stale-timeout into an actionable error so users do not
+        burn 5 minutes per turn before learning a workaround exists.
+        """
+        if self.api_mode != "codex_responses":
+            return None
+        is_codex_backend = (
+            self.provider == "openai-codex"
+            or (
+                getattr(self, "_base_url_hostname", "") == "chatgpt.com"
+                and "/backend-api/codex" in (getattr(self, "_base_url_lower", "") or "")
+            )
+        )
+        if not is_codex_backend:
+            return None
+        eff_model = (model if model is not None else self.model) or ""
+        model_lower = eff_model.lower()
+        # Match the gpt-5.5 family — bare ``gpt-5.5``, ``gpt-5.5-codex``,
+        # vendor-prefixed variants like ``openai/gpt-5.5``, and any future
+        # ``gpt-5.5-*`` SKU. Avoid matching unrelated tokens like ``gpt-5.50``
+        # by anchoring at a word boundary on either side.
+        if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
+            return None
+        return (
+            f"openai-codex appears to be silently rejecting model {eff_model!r} "
+            "on the ChatGPT Codex backend (chatgpt.com/backend-api/codex). "
+            "This is a known backend-side issue — the request is accepted but "
+            "no response is ever returned. "
+            "Workaround: try `gpt-5.4-codex` on the same OAuth profile, "
+            "or switch to a different provider in your fallback chain. "
+            "See https://github.com/openai/codex/issues/19654 for upstream status."
+        )
+
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
