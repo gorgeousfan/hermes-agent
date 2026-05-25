@@ -379,6 +379,122 @@ class TestMemoryManager:
         assert result == "works fine"
 
 
+class TestMemoryManagerConcurrency:
+    """Thread-safety tests for MemoryManager."""
+
+    def test_concurrent_add_provider_no_duplicates(self):
+        """Multiple threads adding the same provider should not create duplicates."""
+        import threading
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_tool", "description": "Tool", "parameters": {}},
+        ])
+
+        def adder():
+            mgr.add_provider(ext)
+
+        threads = [threading.Thread(target=adder) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Only one provider should be registered
+        assert len(mgr.providers) == 1
+        assert mgr.providers[0].name == "ext"
+        assert mgr.has_tool("ext_tool")
+
+    def test_concurrent_add_different_providers(self):
+        """Multiple threads adding different providers — only first external wins."""
+        import threading
+        mgr = MemoryManager()
+        providers = [
+            FakeMemoryProvider(f"ext{i}", tools=[
+                {"name": f"ext{i}_tool", "description": "Tool", "parameters": {}},
+            ])
+            for i in range(5)
+        ]
+
+        threads = [threading.Thread(target=mgr.add_provider, args=(p,)) for p in providers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Upstream only allows one external provider — the rest are rejected
+        ext_count = sum(1 for p in mgr.providers if p.name != "builtin")
+        assert ext_count == 1
+        # Exactly one tool should be registered
+        assert sum(1 for i in range(5) if mgr.has_tool(f"ext{i}_tool")) == 1
+
+    def test_concurrent_add_and_read(self):
+        """Concurrent add and providers access should not corrupt state."""
+        import threading
+        mgr = MemoryManager()
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_tool", "description": "Tool", "parameters": {}},
+        ])
+        mgr.add_provider(ext)
+
+        def adder():
+            # Try to add again (should be rejected as duplicate)
+            mgr.add_provider(ext)
+
+        def reader():
+            # Read providers list concurrently
+            _ = mgr.providers
+            _ = mgr.has_tool("ext_tool")
+
+        threads = []
+        for _ in range(5):
+            threads.append(threading.Thread(target=adder))
+            threads.append(threading.Thread(target=reader))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # State should be consistent: provider still present
+        assert len(mgr.providers) == 1
+        assert mgr.providers[0].name == "ext"
+        assert mgr.has_tool("ext_tool")
+
+    def test_concurrent_tool_routing_while_adding(self):
+        """Tool calls during provider addition should not crash."""
+        import threading
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_tool", "description": "Builtin", "parameters": {}},
+        ])
+        mgr.add_provider(builtin)
+
+        ext = FakeMemoryProvider("ext", tools=[
+            {"name": "ext_tool", "description": "External", "parameters": {}},
+        ])
+
+        results = []
+        def router():
+            try:
+                result = mgr.handle_tool_call("builtin_tool", {})
+                results.append(("ok", result))
+            except Exception as e:
+                results.append(("err", str(e)))
+
+        threads = [threading.Thread(target=router) for _ in range(20)]
+        threads.append(threading.Thread(target=mgr.add_provider, args=(ext,)))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All routing calls should have succeeded
+        errors = [r for r in results if r[0] == "err"]
+        assert len(errors) == 0, f"Concurrent routing errors: {errors}"
+        assert mgr.has_tool("ext_tool")
+
+
 class TestPluginMemoryDiscovery:
     """Memory providers are discovered from plugins/memory/ directory."""
 

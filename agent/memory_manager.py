@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import re
 import inspect
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -252,6 +253,7 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self._lock = threading.RLock()
 
     # -- Registration --------------------------------------------------------
 
@@ -261,50 +263,54 @@ class MemoryManager:
         Built-in provider (name ``"builtin"``) is always accepted.
         Only **one** external (non-builtin) provider is allowed — a second
         attempt is rejected with a warning.
+
+        Thread-safe: protected by ``self._lock``.
         """
-        is_builtin = provider.name == "builtin"
+        with self._lock:
+            is_builtin = provider.name == "builtin"
 
-        if not is_builtin:
-            if self._has_external:
-                existing = next(
-                    (p.name for p in self._providers if p.name != "builtin"), "unknown"
-                )
-                logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.",
-                    provider.name, existing,
-                )
-                return
-            self._has_external = True
+            if not is_builtin:
+                if self._has_external:
+                    existing = next(
+                        (p.name for p in self._providers if p.name != "builtin"), "unknown"
+                    )
+                    logger.warning(
+                        "Rejected memory provider '%s' — external provider '%s' is "
+                        "already registered. Only one external memory provider is "
+                        "allowed at a time. Configure which one via memory.provider "
+                        "in config.yaml.",
+                        provider.name, existing,
+                    )
+                    return
+                self._has_external = True
 
-        self._providers.append(provider)
+            self._providers.append(provider)
 
-        # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
-            if tool_name and tool_name not in self._tool_to_provider:
-                self._tool_to_provider[tool_name] = provider
-            elif tool_name in self._tool_to_provider:
-                logger.warning(
-                    "Memory tool name conflict: '%s' already registered by %s, "
-                    "ignoring from %s",
-                    tool_name,
-                    self._tool_to_provider[tool_name].name,
-                    provider.name,
-                )
+            # Index tool names → provider for routing
+            for schema in provider.get_tool_schemas():
+                tool_name = schema.get("name", "")
+                if tool_name and tool_name not in self._tool_to_provider:
+                    self._tool_to_provider[tool_name] = provider
+                elif tool_name in self._tool_to_provider:
+                    logger.warning(
+                        "Memory tool name conflict: '%s' already registered by %s, "
+                        "ignoring from %s",
+                        tool_name,
+                        self._tool_to_provider[tool_name].name,
+                        provider.name,
+                    )
 
-        logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
-        )
+            logger.info(
+                "Memory provider '%s' registered (%d tools)",
+                provider.name,
+                len(provider.get_tool_schemas()),
+            )
 
     @property
     def providers(self) -> List[MemoryProvider]:
         """All registered providers in order."""
-        return list(self._providers)
+        with self._lock:
+            return list(self._providers)
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         """Get a provider by name, or None if not registered."""
