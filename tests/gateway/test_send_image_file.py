@@ -49,6 +49,28 @@ class TestExtractMediaImages:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
 
+    def test_markdown_doc_extracted(self):
+        """MEDIA: tags with .md extension should be extracted as documents."""
+        content = "Here is the report:\nMEDIA:/tmp/report.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/report.md"
+        assert "MEDIA:" not in cleaned
+
+    def test_html_doc_extracted(self):
+        """MEDIA: tags with .html/.htm extension should be extracted as documents."""
+        for ext in (".html", ".htm"):
+            content = f"MEDIA:/tmp/page{ext}"
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"failed for {ext}"
+
+    def test_markdown_case_insensitive(self):
+        """.MD and .Md variants should also be recognized."""
+        for ext in (".MD", ".Md", ".mD"):
+            content = f"MEDIA:/tmp/doc{ext}"
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"failed for {ext}"
+
     def test_mixed_audio_and_image(self):
         content = "MEDIA:/audio.ogg\nMEDIA:/screenshot.png"
         media, _ = BasePlatformAdapter.extract_media(content)
