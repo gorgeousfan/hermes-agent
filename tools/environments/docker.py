@@ -5,6 +5,8 @@ configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -185,6 +187,33 @@ def _build_security_args(run_as_host_user: bool) -> list[str]:
     if run_as_host_user:
         return list(_BASE_SECURITY_ARGS)
     return list(_BASE_SECURITY_ARGS) + list(_PRIVDROP_CAP_ARGS)
+
+
+# Hermes-owned identity labels applied to every persistent container we
+# create. They let ``_try_reuse_persistent_container`` reject any same-name
+# container that wasn't created by Hermes (or was created under a different
+# security/config posture) before it would otherwise be exec'd into and
+# fed init-time env forwarding. See PR #30511 review.
+_HERMES_OWNER_LABEL = "org.hermes-agent.container"
+_SANDBOX_KEY_LABEL = "org.hermes-agent.sandbox-key"
+_CONFIG_FP_LABEL = "org.hermes-agent.config-fingerprint"
+
+
+def _compute_config_fingerprint(image: str, cwd: str, run_args: list[str]) -> str:
+    """Deterministic fingerprint of the security-relevant container config.
+
+    Persists on the container as a label so a later Hermes process can
+    detect drift (extra volumes, looser caps, changed user/network args,
+    altered env config) and refuse to reuse a stale container that was
+    created under a different security posture.
+
+    ``run_args`` is the assembled list passed to ``docker run`` minus the
+    name/labels (which are not part of the security surface). Order is
+    preserved because the docker CLI is order-sensitive for some flags.
+    """
+    parts = [image, cwd, *run_args]
+    blob = "\x00".join(parts).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
 
 
 def _resolve_host_user_spec() -> Optional[str]:
@@ -504,27 +533,69 @@ class DockerEnvironment(BaseEnvironment):
         # /usr/local/bin is not in PATH (common on macOS gateway/service).
         self._docker_exe = find_docker() or "docker"
 
-        # Start the container directly via `docker run -d`.
-        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
-        run_cmd = [
-            self._docker_exe, "run", "-d",
-            "--init",           # tini/catatonit as PID 1 — reaps zombie children
-            "--name", container_name,
-            "-w", cwd,
-            *all_run_args,
-            image,
-            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
-        ]
-        logger.debug(f"Starting container: {' '.join(run_cmd)}")
-        result = subprocess.run(
-            run_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # image pull may take a while
-            check=True,
-        )
-        self._container_id = result.stdout.strip()
-        logger.info(f"Started container {container_name} ({self._container_id[:12]})")
+        # Persistent containers reuse a deterministic name derived from the
+        # per-(profile, task_id) sandbox path so successive Hermes processes
+        # reconnect to the same container instead of leaving a trail of
+        # orphaned ``sleep infinity`` containers. Non-persistent containers
+        # stay ephemeral with a random name (no reuse semantics).
+        if self._persistent:
+            sandbox_key = str(get_sandbox_dir() / "docker" / task_id)
+            name_suffix = hashlib.sha1(sandbox_key.encode("utf-8")).hexdigest()[:12]
+            container_name = f"hermes-{name_suffix}"
+        else:
+            sandbox_key = ""
+            name_suffix = ""
+            container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        self._container_name = container_name
+
+        # Identity + config fingerprint labels — only meaningful in
+        # persistent mode (the only path that reuses an existing container).
+        # Computed from the same arg list that goes into ``docker run`` so a
+        # later inspect can detect drift in any security-relevant input.
+        config_fingerprint = _compute_config_fingerprint(image, cwd, all_run_args)
+        if self._persistent:
+            self._sandbox_key_suffix = name_suffix
+            self._config_fingerprint = config_fingerprint
+            label_args = [
+                "--label", f"{_HERMES_OWNER_LABEL}=true",
+                "--label", f"{_SANDBOX_KEY_LABEL}={name_suffix}",
+                "--label", f"{_CONFIG_FP_LABEL}={config_fingerprint}",
+            ]
+        else:
+            self._sandbox_key_suffix = ""
+            self._config_fingerprint = ""
+            label_args = []
+
+        reused = False
+        if self._persistent:
+            reused = self._try_reuse_persistent_container(
+                container_name,
+                expected_sandbox_key=name_suffix,
+                expected_config_fingerprint=config_fingerprint,
+            )
+
+        if not reused:
+            # Start the container directly via `docker run -d`.
+            run_cmd = [
+                self._docker_exe, "run", "-d",
+                "--init",           # tini/catatonit as PID 1 — reaps zombie children
+                "--name", container_name,
+                "-w", cwd,
+                *label_args,
+                *all_run_args,
+                image,
+                "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+            ]
+            logger.debug(f"Starting container: {' '.join(run_cmd)}")
+            result = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # image pull may take a while
+                check=True,
+            )
+            self._container_id = result.stdout.strip()
+            logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
         # Build the init-time env forwarding args (used only by init_session
         # to inject host env vars into the snapshot; subsequent commands get
@@ -533,6 +604,141 @@ class DockerEnvironment(BaseEnvironment):
 
         # Initialize session snapshot inside the container
         self.init_session()
+
+    def _try_reuse_persistent_container(
+        self,
+        container_name: str,
+        expected_sandbox_key: str,
+        expected_config_fingerprint: str,
+    ) -> bool:
+        """Reattach to an existing persistent container with this name, if any.
+
+        Returns True when ``self._container_id`` was populated from an existing
+        container (running or restarted), False when the caller should create a
+        new container. Any docker-side failure falls back to creation rather
+        than blocking the agent.
+
+        Security gate: only containers we labeled ourselves under the same
+        sandbox key AND with a matching config fingerprint are eligible for
+        reuse. An unlabeled same-name container (created outside Hermes, or
+        by an older Hermes version, or after a config change) is force-removed
+        and the caller creates a fresh container under the current security
+        posture. Without this gate, a pre-existing local container could be
+        adopted with looser caps / different mounts / different user and then
+        receive init-time env forwarding from ``init_session()``.
+        """
+        try:
+            inspect = subprocess.run(
+                [self._docker_exe, "inspect", "--format",
+                 "{{.State.Status}}\t{{.Id}}\t{{json .Config.Labels}}",
+                 container_name],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.debug("docker inspect failed for %s: %s", container_name, exc)
+            return False
+        if inspect.returncode != 0:
+            return False
+        parts = inspect.stdout.strip().split("\t", 2)
+        if len(parts) != 3 or not parts[1]:
+            return False
+        status, container_id, labels_json = parts
+        try:
+            labels = json.loads(labels_json) if labels_json else {}
+        except json.JSONDecodeError:
+            labels = {}
+        if not isinstance(labels, dict):
+            labels = {}
+
+        if not self._labels_match_expected(
+            labels, expected_sandbox_key, expected_config_fingerprint
+        ):
+            logger.warning(
+                "Refusing to reuse container %s (%s): labels missing or do not "
+                "match this Hermes config — recreating under current security "
+                "posture",
+                container_name, container_id[:12],
+            )
+            self._force_remove_stale_container(container_name)
+            return False
+
+        if status != "running":
+            try:
+                start = subprocess.run(
+                    [self._docker_exe, "start", container_name],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                logger.warning(
+                    "docker start failed for %s (status=%s): %s",
+                    container_name, status, exc,
+                )
+                return False
+            if start.returncode != 0:
+                logger.warning(
+                    "docker start refused container %s (status=%s): %s",
+                    container_name, status, start.stderr.strip(),
+                )
+                return False
+
+        self._container_id = container_id
+        logger.info(
+            "Reusing persistent container %s (%s, prior status=%s)",
+            container_name, container_id[:12], status,
+        )
+        return True
+
+    @staticmethod
+    def _labels_match_expected(
+        labels: dict,
+        expected_sandbox_key: str,
+        expected_config_fingerprint: str,
+    ) -> bool:
+        """Return True iff every Hermes identity label is present and matches.
+
+        Owner label must be the literal string ``"true"`` — its presence
+        AND value together prove Hermes set it (a stray ``--label
+        org.hermes-agent.container`` from outside would not have the value
+        either). Sandbox key must match the per-task suffix we expect.
+        Config fingerprint must match the current run's fingerprint —
+        catches drift in image / cwd / mounts / caps / user / network /
+        env / extra args.
+        """
+        if labels.get(_HERMES_OWNER_LABEL) != "true":
+            return False
+        if labels.get(_SANDBOX_KEY_LABEL) != expected_sandbox_key:
+            return False
+        if labels.get(_CONFIG_FP_LABEL) != expected_config_fingerprint:
+            return False
+        return True
+
+    def _force_remove_stale_container(self, container_name: str) -> None:
+        """Best-effort ``docker rm -f`` of a mismatched same-name container.
+
+        Failing closed instead would leave the agent unable to start at all
+        whenever a stray same-name container existed; failing open by reusing
+        the mismatched container is the exact security regression this gate
+        was added to prevent. Force-remove with a loud warning is the
+        documented behaviour.
+        """
+        try:
+            result = subprocess.run(
+                [self._docker_exe, "rm", "-f", container_name],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning(
+                "docker rm -f failed for stale container %s: %s — fresh "
+                "create may fail with a name conflict",
+                container_name, exc,
+            )
+            return
+        if result.returncode != 0:
+            logger.warning(
+                "docker rm -f refused to remove stale container %s: %s — "
+                "fresh create may fail with a name conflict",
+                container_name, result.stderr.strip(),
+            )
 
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.
