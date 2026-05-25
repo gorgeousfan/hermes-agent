@@ -270,9 +270,15 @@ def run_conversation(
     # default. Idempotent — fine to call every turn.
     try:
         from agent.auxiliary_client import set_runtime_main
+        _runtime_headers = None
+        try:
+            _runtime_headers = (getattr(agent, "_current_main_runtime")() or {}).get("default_headers")
+        except Exception:
+            _runtime_headers = getattr(agent, "_default_headers", None)
         set_runtime_main(
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
+            default_headers=_runtime_headers,
         )
     except Exception:
         pass

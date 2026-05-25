@@ -1167,6 +1167,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             api_key=result.api_key,
             base_url=result.base_url,
             api_mode=result.api_mode,
+            default_headers=result.default_headers,
         )
         _restart_slash_worker(session)
         _emit("session.info", sid, _session_info(agent))
@@ -1968,6 +1969,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": getattr(agent, "_fallback_model", None),
+        "default_headers": getattr(agent, "_default_headers", None),
     }
 
 
@@ -2022,6 +2024,8 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         requested=requested_provider,
         target_model=model or None,
     )
+    # Resolve provider-level default_headers (e.g. custom_provider.headers)
+    _default_headers = runtime.get("default_headers")
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -2045,6 +2049,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         session_id=session_id or key,
         session_db=_get_db(),
         ephemeral_system_prompt=system_prompt or None,
+        default_headers=_default_headers,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
@@ -3549,6 +3554,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             ):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    agent = session.get("agent")
 
                     maybe_auto_title(
                         _get_db(),
@@ -3556,6 +3562,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         text,
                         raw,
                         session.get("history", []),
+                        main_runtime={
+                            "model": getattr(agent, "model", None),
+                            "provider": getattr(agent, "provider", None),
+                            "base_url": getattr(agent, "base_url", None),
+                            "api_key": getattr(agent, "api_key", None),
+                            "api_mode": getattr(agent, "api_mode", None),
+                            "default_headers": getattr(agent, "_default_headers", None),
+                        } if agent else None,
                     )
                 except Exception:
                     pass

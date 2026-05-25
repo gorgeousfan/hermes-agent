@@ -1080,6 +1080,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "default_headers": runtime.get("default_headers"),
     }
 
 
@@ -1123,6 +1124,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "default_headers": runtime.get("default_headers"),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -2347,6 +2349,7 @@ class GatewayRunner:
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "default_headers": override.get("default_headers"),
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -2418,6 +2421,7 @@ class GatewayRunner:
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "default_headers": runtime_kwargs.get("default_headers"),
         }
         route = {
             "model": model,
@@ -10161,6 +10165,7 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    default_headers=result.default_headers,
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -10179,6 +10184,7 @@ class GatewayRunner:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "default_headers": result.default_headers,
                         }
 
                         # Evict cached agent so the next turn creates a fresh
@@ -10298,6 +10304,7 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    default_headers=result.default_headers,
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -10319,6 +10326,7 @@ class GatewayRunner:
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            "default_headers": result.default_headers,
         }
 
         # Evict cached agent so the next turn creates a fresh agent from the
@@ -17093,6 +17101,7 @@ class GatewayRunner:
                             "base_url": getattr(agent, "base_url", None),
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
+                            "default_headers": getattr(agent, "_default_headers", None),
                         } if agent else None,
                     }
                     if self._is_telegram_topic_lane(source):
