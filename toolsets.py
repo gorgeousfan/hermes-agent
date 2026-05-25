@@ -282,43 +282,25 @@ TOOLSETS = {
 
     "yuanbao": {
         "description": "Yuanbao platform tools - group info, member queries, DM, stickers",
+        "tools": ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"],
+        "includes": []
+    },
+
+    "bitget": {
+        "description": "Bitget crypto exchange — market data, account balance, positions, and order execution (USDT-FUTURES perpetual)",
         "tools": [
-            "yb_query_group_info",
-            "yb_query_group_members",
-            "yb_send_dm",
-            "yb_search_sticker",
-            "yb_send_sticker",
+            "bitget_ticker", "bitget_candles", "bitget_balance",
+            "bitget_positions", "bitget_all_positions",
+            "bitget_open_long", "bitget_open_short",
+            "bitget_close_long", "bitget_close_short",
+            "bitget_set_leverage", "bitget_place_limit_order",
         ],
         "includes": []
     },
 
-    "feishu_doc": {
-        "description": "Read Feishu/Lark document content",
-        "tools": ["feishu_doc_read"],
-        "includes": []
-    },
-
-    "feishu_drive": {
-        "description": "Feishu/Lark document comment operations (list, reply, add)",
-        "tools": [
-            "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
-            "feishu_drive_reply_comment", "feishu_drive_add_comment",
-        ],
-        "includes": []
-    },
-
-    "spotify": {
-        "description": "Native Spotify playback, search, playlist, album, and library tools",
-        "tools": [
-            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-            "spotify_playlists", "spotify_albums", "spotify_library",
-        ],
-        "includes": []
-    },
 
 
     # Scenario-specific toolsets
-    
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal", "process"],

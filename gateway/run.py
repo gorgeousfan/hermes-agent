@@ -18086,6 +18086,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
 
+    # Load permanent command-allowlist so gateway respects CLI-approved patterns
+    try:
+        from tools.approval import load_permanent_allowlist
+        load_permanent_allowlist()
+    except Exception:
+        pass
+
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).
     # Idempotent, so repeated calls from AIAgent.__init__ won't duplicate.
