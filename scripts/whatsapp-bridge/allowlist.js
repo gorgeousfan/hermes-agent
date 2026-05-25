@@ -18,6 +18,34 @@ export function parseAllowedUsers(rawValue) {
   );
 }
 
+export function parseAllowedGroups(rawValue) {
+  const groups = new Set();
+  const normalizedGroups = new Set();
+
+  for (const entry of String(rawValue || '').split(',')) {
+    const value = String(entry || '').trim();
+    if (!value) {
+      continue;
+    }
+
+    groups.add(value);
+
+    if (value !== '*') {
+      const normalized = normalizeWhatsAppIdentifier(value);
+      if (normalized) {
+        normalizedGroups.add(normalized);
+      }
+    }
+  }
+
+  return { groups, normalizedGroups };
+}
+
+export function parseAllowAllFlag(rawValue) {
+  const value = String(rawValue || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
 function readMappingFile(sessionDir, identifier, suffix = '') {
   const filePath = path.join(sessionDir, `lid-mapping-${identifier}${suffix}.json`);
   if (!existsSync(filePath)) {
@@ -85,4 +113,34 @@ export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
   }
 
   return false;
+}
+
+export function isSenderAllowed({
+  senderId,
+  chatId,
+  isGroup,
+  allowedUsers,
+  allowedGroups,
+  normalizedAllowedGroups,
+  allowAllUsers,
+  sessionDir,
+}) {
+  if (allowAllUsers) {
+    return true;
+  }
+
+  if (isGroup) {
+    if (allowedGroups?.has('*')) {
+      return true;
+    }
+
+    const rawChatId = String(chatId || '').trim();
+    const normalizedChatId = normalizeWhatsAppIdentifier(rawChatId);
+
+    if ((rawChatId && allowedGroups?.has(rawChatId)) || (normalizedChatId && normalizedAllowedGroups?.has(normalizedChatId))) {
+      return true;
+    }
+  }
+
+  return matchesAllowedUser(senderId, allowedUsers, sessionDir);
 }

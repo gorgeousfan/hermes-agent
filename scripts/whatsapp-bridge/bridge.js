@@ -28,7 +28,7 @@ import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { isSenderAllowed, parseAllowAllFlag, parseAllowedGroups, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -51,6 +51,8 @@ const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cac
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const { groups: GROUP_ALLOWED_USERS, normalizedGroups: NORMALIZED_GROUP_ALLOWED_USERS } = parseAllowedGroups(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
+const ALLOW_ALL_USERS = parseAllowAllFlag(process.env.WHATSAPP_ALLOW_ALL_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -301,7 +303,16 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (!isSenderAllowed({
+          senderId,
+          chatId,
+          isGroup,
+          allowedUsers: ALLOWED_USERS,
+          allowedGroups: GROUP_ALLOWED_USERS,
+          normalizedAllowedGroups: NORMALIZED_GROUP_ALLOWED_USERS,
+          allowAllUsers: ALLOW_ALL_USERS,
+          sessionDir: SESSION_DIR,
+        })) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -722,6 +733,12 @@ if (PAIR_ONLY) {
       console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
       console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
+    }
+    if (GROUP_ALLOWED_USERS.size > 0) {
+      console.log(`👥 Allowed groups: ${Array.from(GROUP_ALLOWED_USERS).join(', ')}`);
+    }
+    if (ALLOW_ALL_USERS) {
+      console.log(`⚠️  WHATSAPP_ALLOW_ALL_USERS enabled — all senders are allowed`);
     }
     console.log();
     startSocket();

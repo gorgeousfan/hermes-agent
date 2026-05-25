@@ -6,6 +6,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   expandWhatsAppIdentifiers,
+  isSenderAllowed,
+  parseAllowAllFlag,
+  parseAllowedGroups,
   matchesAllowedUser,
   normalizeWhatsAppIdentifier,
   parseAllowedUsers,
@@ -74,6 +77,68 @@ test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () =
     // Null/undefined allowlist (defensive) also rejects.
     assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', null, sessionDir), false);
     assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', undefined, sessionDir), false);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('parseAllowedGroups keeps raw group ids and normalized aliases', () => {
+  const { groups, normalizedGroups } = parseAllowedGroups('1203630@g.us, +1203631@g.us, *');
+  assert.equal(groups.has('1203630@g.us'), true);
+  assert.equal(groups.has('+1203631@g.us'), true);
+  assert.equal(groups.has('*'), true);
+  assert.equal(normalizedGroups.has('1203630'), true);
+  assert.equal(normalizedGroups.has('1203631'), true);
+});
+
+test('parseAllowAllFlag accepts gateway-compatible truthy values', () => {
+  assert.equal(parseAllowAllFlag('true'), true);
+  assert.equal(parseAllowAllFlag('YES'), true);
+  assert.equal(parseAllowAllFlag('1'), true);
+  assert.equal(parseAllowAllFlag('on'), false);
+  assert.equal(parseAllowAllFlag('0'), false);
+  assert.equal(parseAllowAllFlag(''), false);
+});
+
+test('isSenderAllowed allows non-allowlisted group member in allowlisted group', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const allowedUsers = parseAllowedUsers('+19175395595');
+    const { groups, normalizedGroups } = parseAllowedGroups('1203630@g.us');
+
+    assert.equal(isSenderAllowed({
+      senderId: '188012763865257@lid',
+      chatId: '1203630@g.us',
+      isGroup: true,
+      allowedUsers,
+      allowedGroups: groups,
+      normalizedAllowedGroups: normalizedGroups,
+      allowAllUsers: false,
+      sessionDir,
+    }), true);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});
+
+test('isSenderAllowed still blocks DMs not in allowed users when group allowlist is set', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const allowedUsers = parseAllowedUsers('+19175395595');
+    const { groups, normalizedGroups } = parseAllowedGroups('1203630@g.us');
+
+    assert.equal(isSenderAllowed({
+      senderId: '188012763865257@lid',
+      chatId: '188012763865257@s.whatsapp.net',
+      isGroup: false,
+      allowedUsers,
+      allowedGroups: groups,
+      normalizedAllowedGroups: normalizedGroups,
+      allowAllUsers: false,
+      sessionDir,
+    }), false);
   } finally {
     rmSync(sessionDir, { recursive: true, force: true });
   }
