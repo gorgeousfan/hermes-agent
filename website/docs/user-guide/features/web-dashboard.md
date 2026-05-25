@@ -296,6 +296,129 @@ Enables or disables a skill. Body: `{"name": "skill-name", "enabled": true}`.
 
 Returns all toolsets with their label, description, tools list, and active/configured status.
 
+## OAuth Authentication (gated mode)
+
+When the dashboard is bound to a public address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an OAuth-based auth gate. Every request must carry a verified session cookie or it's bounced through a full OAuth round-trip via the Nous Portal.
+
+This is intended for hosted deployments (typically Fly.io) where the dashboard is reachable over the public internet. Operator-owned dashboards bound to loopback are unaffected.
+
+### When the gate engages
+
+| Flags | Auth gate | Use case |
+|-------|-----------|----------|
+| `hermes dashboard` (default — binds to `127.0.0.1`) | OFF | Local development |
+| `hermes dashboard --host 0.0.0.0` | **ON** | Production / Fly.io deployment |
+| `hermes dashboard --host 192.168.1.10 --insecure` | OFF | Trusted LAN; user opts into legacy session-token auth |
+
+The gate is on if and only if:
+
+1. The bind host is not `127.0.0.1`, `::1`, `localhost`, or `0.0.0.0` AND
+2. The `--insecure` flag is **not** set.
+
+Setting `--insecure` keeps the existing single-process session-token behaviour — no OAuth dance, no provider plugins required. Use only on networks where you trust every client.
+
+### Fail-closed semantics
+
+If the gate would engage but **no** `DashboardAuthProvider` is registered (no Nous plugin, no custom plugin), `hermes dashboard` refuses to bind with an explicit error message. There is no "default-deny but accept everything" fallback — a misconfigured gated dashboard never starts.
+
+### Default provider: Nous Research
+
+The bundled `plugins/dashboard_auth/nous` plugin is **always installed** and auto-loaded. It auto-registers a `DashboardAuthProvider` named `nous` when the per-instance client ID is set:
+
+| Env var | Required? | Format | Provisioned by |
+|---------|-----------|--------|----------------|
+| `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | **yes** | `agent:{instance_id}` | Nous Portal at Fly.io provisioning time |
+| `HERMES_DASHBOARD_PORTAL_URL` | no | `https://portal.nousresearch.com` (default) | Portal — override only for staging or a custom deployment |
+
+`HERMES_DASHBOARD_OAUTH_CLIENT_ID` is the only required variable; it's injected automatically when you deploy through the Nous Portal. The portal URL defaults to production, so the typical operator never touches it — set it explicitly only if you're pointing at staging (`portal.rewbs.uk`) or a custom Portal deployment.
+
+If `HERMES_DASHBOARD_OAUTH_CLIENT_ID` is absent or malformed, the plugin reports the specific reason and the dashboard's fail-closed bind error tells you exactly what to fix:
+
+```
+Refusing to bind dashboard to 0.0.0.0 — the OAuth auth gate engages on
+non-loopback binds, but no auth providers are registered.
+
+Bundled providers reported these issues:
+  • nous: HERMES_DASHBOARD_OAUTH_CLIENT_ID is not set. The Nous Portal
+    provisions this env var (shape 'agent:{instance_id}') when it
+    deploys a Hermes Agent instance — set it to your provisioned
+    client id, or pass --insecure to skip the OAuth gate entirely.
+
+Or pass --insecure to skip the auth gate (NOT recommended on untrusted
+networks).
+```
+
+### OAuth flow
+
+The provider implements the [Nous Portal OAuth contract v1](https://github.com/NousResearch/nous-account-service/blob/main/docs/agent-dashboard-oauth-contract.md) — authorization-code grant with PKCE (S256):
+
+1. User hits `/` without a session cookie → gate redirects to `/login`.
+2. Login page shows a "Continue with Nous Research" button → `/auth/login?provider=nous`.
+3. Server stashes PKCE state in a short-lived cookie, redirects user to `https://portal.nousresearch.com/oauth/authorize?…`.
+4. User authenticates with Portal, lands at `/auth/callback?code=…&state=…`.
+5. Server exchanges the code for an access token at `POST /api/oauth/token`, verifies the JWT signature against the Portal's JWKS (`/.well-known/jwks.json`), and sets the `hermes_session_at` cookie.
+6. User is redirected to `/` (or to the original deep-link path via the `next=` query parameter).
+
+Access tokens have a 15-minute TTL. **There is no refresh token in contract v1** — when the token expires, the SPA's fetch wrapper detects the 401 envelope and full-page-navigates back to `/login` to re-run the flow.
+
+### Cookies set
+
+| Name | Lifetime | Notes |
+|------|----------|-------|
+| `hermes_session_at` | Token TTL (15 min) | HttpOnly, SameSite=Lax, Secure-when-HTTPS |
+| `hermes_session_pkce` | 10 min | HttpOnly; holds the PKCE verifier + provider hint during the round trip |
+| `hermes_session_rt` | unused in v1 | Reserved for forward-compat; not written when `refresh_token` is empty |
+
+All three are `Path=/` and `SameSite=Lax`. The `Secure` flag is set when the dashboard is reached over HTTPS (detected via the request URL scheme — honours `X-Forwarded-Proto` from Fly's TLS terminator under `proxy_headers=True`).
+
+### Logout
+
+The sidebar widget shows `Logged in as <user_id…> via nous` with a logout icon. Clicking it POSTs `/auth/logout`, which clears all dashboard-auth cookies and redirects back to `/login`.
+
+### Audit log
+
+Every login start, success, failure, and session-verify failure is written as a JSON line to `$HERMES_HOME/logs/dashboard-auth.log`. Sensitive fields (`access_token`, `refresh_token`, `code`, `code_verifier`, `state`, `Authorization` header) are redacted before logging.
+
+### Custom providers
+
+To plug a non-Nous OAuth provider (e.g. Google, GitHub, custom OIDC), create a plugin that registers a `DashboardAuthProvider`:
+
+```python
+# ~/.hermes/plugins/dashboard-auth-myidp/__init__.py
+from hermes_cli.dashboard_auth import DashboardAuthProvider, Session, LoginStart
+
+class MyIdPProvider(DashboardAuthProvider):
+    name = "myidp"
+    display_name = "My Identity Provider"
+
+    def start_login(self, *, redirect_uri): ...
+    def complete_login(self, *, code, state, code_verifier, redirect_uri): ...
+    def verify_session(self, *, access_token): ...
+    def refresh_session(self, *, refresh_token): ...
+    def revoke_session(self, *, refresh_token): ...
+
+def register(ctx):
+    ctx.register_dashboard_auth_provider(MyIdPProvider())
+```
+
+The login page lists all registered providers; multiple providers can be stacked and the user picks one at `/login`.
+
+### Verifying the gate is on
+
+```bash
+# Run the dashboard with the gate engaged (Fly.io shape).
+# HERMES_DASHBOARD_PORTAL_URL is optional — defaults to production.
+HERMES_DASHBOARD_OAUTH_CLIENT_ID=agent:test \
+  hermes dashboard --host 0.0.0.0
+
+# Hit /api/status to see the gate state:
+curl -s http://127.0.0.1:9119/api/status | jq '.auth_required, .auth_providers'
+# true
+# ["nous"]
+```
+
+The dashboard's React StatusPage shows the same fields under "Web server". A sidebar AuthWidget surfaces the current identity once you've signed in.
+
 ## CORS
 
 The web server restricts CORS to localhost origins only:
