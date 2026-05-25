@@ -3317,8 +3317,12 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Allows loopback clients only.  When the server is started with
+    ``--insecure`` (non-loopback binding), the IP restriction is lifted
+    because the operator has explicitly opted out of localhost-only mode.
     """
+    if getattr(app.state, "insecure", False):
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -4684,6 +4688,10 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    # Expose allow_public on app.state so WebSocket security guards can read
+    # it at request time.  Without this, every getattr(app.state, "insecure",
+    # False) call evaluates to False regardless of the flag passed by the user.
+    app.state.insecure = allow_public
 
     if open_browser:
         import webbrowser
