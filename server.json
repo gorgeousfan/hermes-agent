@@ -1,0 +1,44 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nousresearch/hermes-agent",
+  "title": "Hermes Agent",
+  "description": "Expose Hermes Agent sessions, conversations, messages, and attachments to MCP-compatible clients.",
+  "websiteUrl": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp",
+  "repository": {
+    "url": "https://github.com/NousResearch/hermes-agent",
+    "source": "github",
+    "id": "1024554267"
+  },
+  "version": "0.14.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "hermes-agent",
+      "version": "0.14.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "io.github.nousresearch/hermes-agent": {
+        "installExtra": "mcp",
+        "recommendedInstall": "pip install \"hermes-agent[mcp]\"",
+        "launchCommand": "hermes mcp serve",
+        "docs": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp"
+      }
+    }
+  }
+}

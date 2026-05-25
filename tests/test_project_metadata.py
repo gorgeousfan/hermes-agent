@@ -11,11 +11,15 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def _load_package_data():
+def _load_setuptools_config():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
-    return tool["setuptools"]["package-data"]
+    return tool["setuptools"]
+
+
+def _load_package_data():
+    return _load_setuptools_config()["package-data"]
 
 
 def test_matrix_extra_not_in_all():
@@ -110,6 +114,13 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
 
     feishu_extra = optional_dependencies["feishu"]
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
+
+
+def test_mcp_server_module_is_packaged_for_cli_entrypoint():
+    """`hermes mcp serve` imports top-level mcp_serve from wheel installs."""
+    setuptools_config = _load_setuptools_config()
+
+    assert "mcp_serve" in setuptools_config["py-modules"]
 
 
 def test_dashboard_plugin_manifests_and_assets_are_packaged():
