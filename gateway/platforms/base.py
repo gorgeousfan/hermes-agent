@@ -2362,9 +2362,10 @@ class BasePlatformAdapter(ABC):
 
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png)
         #             and relative paths (./foo.png)
-        # (?:~/|/)    anchors to absolute or home-relative paths
+        # (?:~/|/|<drive>:[/\\]) anchors to absolute or home-relative paths,
+        #             including Windows drive-letter paths (C:/..., C:\...).
         path_re = re.compile(
-            r'(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:' + ext_part + r')\b',
+            r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
             re.IGNORECASE,
         )
 
