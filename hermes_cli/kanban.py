@@ -15,6 +15,7 @@ Exposes the full Kanban command surface documented in the design spec
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
@@ -1021,7 +1022,10 @@ def _board_task_counts(slug: str) -> dict[str, int]:
         path = kb.kanban_db_path(board=slug)
         if not path.exists():
             return {}
-        with kb.connect(board=slug) as conn:
+        # ``sqlite3.Connection.__enter__`` manages only transaction scope; it
+        # does not close the DB handle. boards list can touch many board DBs in
+        # one long-lived process (gateway/web UI), so close explicitly here.
+        with contextlib.closing(kb.connect(board=slug)) as conn:
             rows = conn.execute(
                 "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
             ).fetchall()

@@ -28,6 +28,7 @@ _WORKTREE = Path(__file__).resolve().parents[2]
 if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
+from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 
 
@@ -557,3 +558,41 @@ class TestCLI:
         res = _cli(["boards", "list", "--json"], env_extra=env)
         slugs = [b["slug"] for b in json.loads(res.stdout)]
         assert "rmme" not in slugs
+
+
+class TestBoardTaskCounts:
+    def test_board_task_counts_closes_sqlite_like_connection(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "board.db"
+        db_path.write_text("", encoding="utf-8")
+
+        class FakeRow(dict):
+            pass
+
+        class FakeConn:
+            def __init__(self):
+                self.closed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def execute(self, *_args, **_kwargs):
+                class _Cursor:
+                    def fetchall(self_inner):
+                        return [FakeRow(status="todo", n=2), FakeRow(status="done", n=1)]
+
+                return _Cursor()
+
+            def close(self):
+                self.closed = True
+
+        fake = FakeConn()
+        monkeypatch.setattr(kc.kb, "kanban_db_path", lambda board=None: db_path)
+        monkeypatch.setattr(kc.kb, "connect", lambda board=None: fake)
+
+        counts = kc._board_task_counts("alpha")
+
+        assert counts == {"todo": 2, "done": 1}
+        assert fake.closed is True
