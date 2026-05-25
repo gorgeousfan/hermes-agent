@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -181,6 +182,110 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    def test_provider_rotation_skips_cooled_down_fallback_entry(self, tmp_path):
+        """Rotation mode should preserve priority while skipping exhausted entries."""
+        fbs = [
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            {"provider": "google-gemini-cli", "model": "gemini-3-pro-preview"},
+        ]
+        token = set_hermes_home_override(tmp_path)
+        try:
+            from agent.provider_rotation import ProviderRotationState
+
+            ProviderRotationState.load().mark_unavailable(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                reason="rate_limit",
+                cooldown_seconds=3600,
+                now=1000.0,
+            )
+            agent = _make_agent(fallback_model=fbs)
+            called = []
+
+            def _resolve(provider, model=None, raw_codex=False, **kwargs):
+                called.append((provider, model))
+                return _mock_client(), model
+
+            with (
+                patch("hermes_cli.config.load_config", return_value={"provider_rotation": {"enabled": True}}),
+                patch("time.time", return_value=1200.0),
+                patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve),
+                patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+            ):
+                assert agent._try_activate_fallback() is True
+
+            assert called == [("google-gemini-cli", "gemini-3-pro-preview")]
+            assert agent.model == "gemini-3-pro-preview"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_provider_rotation_marks_failed_provider_unavailable(self, tmp_path):
+        """Capacity failover should persist cooldown state for next turns/sessions."""
+        from agent.error_classifier import FailoverReason
+        from agent.provider_rotation import ProviderRotationState
+
+        token = set_hermes_home_override(tmp_path)
+        try:
+            fbs = [{"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+            agent = _make_agent(fallback_model=fbs)
+            agent.provider = "openai-codex"
+            agent.model = "gpt-5.3-codex"
+
+            with (
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={
+                        "provider_rotation": {
+                            "enabled": True,
+                            "cooldown_seconds_by_reason": {"rate_limit": 7200},
+                        }
+                    },
+                ),
+                patch("time.time", return_value=2000.0),
+                patch("time.monotonic", return_value=2000.0),
+                patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "claude-sonnet-4-6")),
+            ):
+                assert agent._try_activate_fallback(FailoverReason.rate_limit) is True
+
+            state = ProviderRotationState.load()
+            assert state.is_unavailable("openai-codex", "gpt-5.3-codex", now=9000.0)
+            assert not state.is_unavailable("openai-codex", "gpt-5.3-codex", now=9201.0)
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_provider_rotation_uses_fallback_at_turn_start_when_primary_is_cooling_down(self, tmp_path):
+        """A new prompt should skip primary while persisted cooldown is active."""
+        from agent.provider_rotation import ProviderRotationState
+
+        token = set_hermes_home_override(tmp_path)
+        try:
+            fbs = [{"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+            agent = _make_agent(fallback_model=fbs)
+            agent.provider = "openai-codex"
+            agent.model = "gpt-5.3-codex"
+            agent._primary_runtime["provider"] = "openai-codex"
+            agent._primary_runtime["model"] = "gpt-5.3-codex"
+            ProviderRotationState.load().mark_unavailable(
+                provider="openai-codex",
+                model="gpt-5.3-codex",
+                reason="rate_limit",
+                cooldown_seconds=3600,
+                now=1000.0,
+            )
+
+            with (
+                patch("hermes_cli.config.load_config", return_value={"provider_rotation": {"enabled": True}}),
+                patch("time.time", return_value=1200.0),
+                patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), "claude-sonnet-4-6")),
+            ):
+                assert agent._restore_primary_runtime() is True
+
+            assert agent.provider == "anthropic"
+            assert agent.model == "claude-sonnet-4-6"
+            assert agent._fallback_activated is True
+        finally:
+            reset_hermes_home_override(token)
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

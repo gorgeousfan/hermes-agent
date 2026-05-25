@@ -752,6 +752,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    rotation_enabled = False
+    rotation_config = {}
     if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
@@ -761,11 +763,58 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
+    try:
+        from hermes_cli.config import load_config
+        from agent.provider_rotation import (
+            ProviderRotationState,
+            cooldown_for_reason,
+            is_rotation_enabled,
+        )
+
+        rotation_config = load_config()
+        rotation_enabled = is_rotation_enabled(rotation_config)
+        if rotation_enabled and reason in {FailoverReason.rate_limit, FailoverReason.billing}:
+            current_provider_for_state = (getattr(agent, "provider", "") or "").strip()
+            current_model_for_state = (getattr(agent, "model", "") or "").strip()
+            if current_provider_for_state and current_model_for_state:
+                ProviderRotationState.load().mark_unavailable(
+                    provider=current_provider_for_state,
+                    model=current_model_for_state,
+                    reason=getattr(reason, "value", str(reason)),
+                    cooldown_seconds=cooldown_for_reason(
+                        rotation_config,
+                        getattr(reason, "value", str(reason)),
+                    ),
+                )
+    except Exception:
+        logger.debug("Provider rotation state update skipped", exc_info=True)
+
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 
     fb = agent._fallback_chain[agent._fallback_index]
     agent._fallback_index += 1
+    if rotation_enabled:
+        try:
+            from agent.provider_rotation import ProviderRotationState
+
+            while (
+                isinstance(fb, dict)
+                and ProviderRotationState.load().is_unavailable(
+                    fb.get("provider") or "",
+                    fb.get("model") or "",
+                )
+                and agent._fallback_index < len(agent._fallback_chain)
+            ):
+                fb = agent._fallback_chain[agent._fallback_index]
+                agent._fallback_index += 1
+            if isinstance(fb, dict) and ProviderRotationState.load().is_unavailable(
+                fb.get("provider") or "",
+                fb.get("model") or "",
+            ):
+                return False
+        except Exception:
+            logger.debug("Provider rotation filtering skipped", exc_info=True)
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
     if not fb_provider or not fb_model:

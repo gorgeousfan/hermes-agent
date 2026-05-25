@@ -118,8 +118,45 @@ When triggered, Hermes:
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
 :::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+Fallback is **turn-scoped** by default: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback walks the ordered fallback chain; if every fallback also fails, normal error handling returns the final error.
 :::
+
+### Optional: Provider Rotation Cooldowns
+
+If you want Hermes to use your subscriptions like a priority queue — for example ChatGPT/Codex first, then Claude, then Gemini, then Grok — enable provider rotation on top of `fallback_providers`:
+
+```yaml
+model:
+  provider: openai-codex
+  default: gpt-5.3-codex
+
+fallback_providers:
+  - provider: anthropic
+    model: claude-sonnet-4-6
+  - provider: google-gemini-cli
+    model: gemini-3-pro-preview
+  - provider: xai-oauth
+    model: grok-4
+
+provider_rotation:
+  enabled: true
+  cooldown_seconds: 21600              # default: 6 hours
+  cooldown_seconds_by_reason:
+    rate_limit: 21600                  # subscription/rate-limit capacity errors
+    billing: 86400                     # billing/quota exhaustion
+```
+
+When rotation is enabled, Hermes persists provider/model cooldowns in `~/.hermes/provider_rotation_state.json`. On a capacity failure (rate-limit or billing/quota exhaustion), Hermes marks the current provider unavailable for the configured cooldown and moves to the next fallback. Future prompts skip cooled-down providers until their cooldown expires, even across new Hermes processes.
+
+Inspect or override cooldown state with:
+
+```bash
+hermes rotation list
+hermes rotation reset openai-codex --model gpt-5.3-codex
+hermes rotation clear
+```
+
+This first implementation is intentionally **reactive**: it learns from provider errors. Some subscription-backed providers do not expose reliable public usage APIs, so Hermes cannot always preflight exact remaining quota before a request. Providers that do expose quota endpoints can add proactive probes later without changing the user-facing rotation config.
 
 ### Examples
 

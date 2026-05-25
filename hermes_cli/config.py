@@ -504,6 +504,17 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    "provider_rotation": {
+        "enabled": False,
+        # Persist cooldowns after provider capacity errors so new prompts skip
+        # exhausted providers until the window expires. Reactive by default:
+        # providers without quota APIs still participate after first failure.
+        "cooldown_seconds": 21600,
+        "cooldown_seconds_by_reason": {
+            "rate_limit": 21600,
+            "billing": 86400,
+        },
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
@@ -3320,7 +3331,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "provider_rotation", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",

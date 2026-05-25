@@ -10727,7 +10727,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
-        "send", "sessions", "setup",
+        "rotation", "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
@@ -11114,6 +11114,38 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # rotation command — inspect/reset provider rotation cooldowns
+    # =========================================================================
+    from hermes_cli.rotation_cmd import cmd_rotation
+
+    rotation_parser = subparsers.add_parser(
+        "rotation",
+        help="Inspect or reset provider rotation cooldowns",
+        description=(
+            "Inspect and reset provider rotation cooldowns written when "
+            "provider_rotation.enabled is true and a provider hits rate-limit "
+            "or billing/quota exhaustion."
+        ),
+    )
+    rotation_subparsers = rotation_parser.add_subparsers(dest="rotation_command")
+    rotation_subparsers.add_parser(
+        "list",
+        aliases=["ls"],
+        help="Show active provider rotation cooldowns (default when no subcommand)",
+    )
+    rotation_reset = rotation_subparsers.add_parser(
+        "reset",
+        help="Reset cooldowns for a provider, optionally one model",
+    )
+    rotation_reset.add_argument("provider", help="Provider name to reset")
+    rotation_reset.add_argument("--model", help="Specific model to reset")
+    rotation_subparsers.add_parser(
+        "clear",
+        help="Clear all provider rotation cooldowns",
+    )
+    rotation_parser.set_defaults(func=cmd_rotation)
 
     # =========================================================================
     # secrets command — external secret managers (currently: Bitwarden)

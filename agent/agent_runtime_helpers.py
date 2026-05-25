@@ -860,6 +860,27 @@ def restore_primary_runtime(agent) -> bool:
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
         agent._fallback_index = 0
+        try:
+            from hermes_cli.config import load_config
+            from agent.provider_rotation import ProviderRotationState, is_rotation_enabled
+
+            rotation_config = load_config()
+            primary_provider = ((agent._primary_runtime or {}).get("provider") or getattr(agent, "provider", "") or "").strip()
+            primary_model = ((agent._primary_runtime or {}).get("model") or getattr(agent, "model", "") or "").strip()
+            if (
+                is_rotation_enabled(rotation_config)
+                and primary_provider
+                and primary_model
+                and ProviderRotationState.load().is_unavailable(primary_provider, primary_model)
+            ):
+                logging.info(
+                    "Provider rotation: primary %s (%s) is cooling down; trying fallback",
+                    primary_model,
+                    primary_provider,
+                )
+                return bool(agent._try_activate_fallback())
+        except Exception:
+            logging.debug("Provider rotation turn-start check skipped", exc_info=True)
         return False
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
