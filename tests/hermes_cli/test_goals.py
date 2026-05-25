@@ -252,10 +252,59 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_task_snapshot_created_and_persisted(self, hermes_home):
+        from hermes_cli.goals import GoalManager, load_goal_task_snapshot
+
+        mgr = GoalManager(session_id="task-sid-1", default_max_turns=5)
+        mgr.set("ship the docs")
+
+        snap = load_goal_task_snapshot("task-sid-1")
+        assert snap is not None
+        assert snap.session_id == "task-sid-1"
+        assert snap.source == "goal"
+        assert snap.objective == "ship the docs"
+        assert snap.status == "active"
+        assert snap.next_action == "continue goal loop"
+        assert snap.last_verified_progress_at == 0.0
+        assert snap.last_user_visible_update_at >= snap.created_at > 0
+
+        mgr2 = GoalManager(session_id="task-sid-1")
+        snap2 = load_goal_task_snapshot("task-sid-1")
+        assert mgr2.state is not None
+        assert snap2 is not None
+        assert snap2.objective == "ship the docs"
+        assert snap2.status == "active"
+
+    def test_task_snapshot_tracks_pause_resume_clear(self, hermes_home):
+        from hermes_cli.goals import GoalManager, load_goal_task_snapshot
+
+        mgr = GoalManager(session_id="task-sid-2")
+        mgr.set("stabilize gateway")
+
+        mgr.pause(reason="user-paused")
+        paused = load_goal_task_snapshot("task-sid-2")
+        assert paused is not None
+        assert paused.status == "paused"
+        assert paused.last_reason == "user-paused"
+        assert paused.next_action == "await user input"
+
+        mgr.resume()
+        resumed = load_goal_task_snapshot("task-sid-2")
+        assert resumed is not None
+        assert resumed.status == "active"
+        assert resumed.next_action == "continue goal loop"
+        assert resumed.stall_notified_at is None
+
+        mgr.clear()
+        cleared = load_goal_task_snapshot("task-sid-2")
+        assert cleared is not None
+        assert cleared.status == "cleared"
+        assert cleared.next_action == "goal cleared"
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_cli.goals import GoalManager, load_goal_task_snapshot
 
         mgr = GoalManager(session_id="eval-sid-1")
         mgr.set("ship it")
@@ -263,11 +312,43 @@ class TestGoalManager:
         with patch.object(goals, "judge_goal", return_value=("done", "shipped", False)):
             decision = mgr.evaluate_after_turn("I shipped the feature.")
 
+        snap = load_goal_task_snapshot("eval-sid-1")
         assert decision["verdict"] == "done"
         assert decision["should_continue"] is False
         assert decision["continuation_prompt"] is None
         assert mgr.state.status == "done"
         assert mgr.state.turns_used == 1
+        assert snap is not None
+        assert snap.status == "complete"
+        assert snap.last_reason == "shipped"
+        assert snap.next_action == "goal complete"
+        assert snap.last_verified_progress_at > 0
+
+    def test_evaluate_after_turn_refreshes_snapshot_progress(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal_task_snapshot, update_goal_task_snapshot
+
+        mgr = GoalManager(session_id="eval-sid-progress", default_max_turns=5)
+        mgr.set("make progress")
+        update_goal_task_snapshot(
+            "eval-sid-progress",
+            status="stalled",
+            stall_notified_at=123.0,
+            last_verified_progress_at=1.0,
+        )
+
+        with patch.object(goals, "judge_goal", return_value=("continue", "more work", False)):
+            decision = mgr.evaluate_after_turn("made some progress")
+
+        snap = load_goal_task_snapshot("eval-sid-progress")
+        assert decision["verdict"] == "continue"
+        assert decision["should_continue"] is True
+        assert snap is not None
+        assert snap.status == "active"
+        assert snap.last_reason == "more work"
+        assert snap.next_action == "continue goal loop"
+        assert snap.last_verified_progress_at > 1.0
+        assert snap.stall_notified_at is None
 
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals

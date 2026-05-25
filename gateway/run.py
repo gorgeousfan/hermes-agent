@@ -10579,6 +10579,101 @@ class GatewayRunner:
         except Exception:
             return 20
 
+    def _goal_stall_timeout_minutes_from_config(self) -> int:
+        """Resolve the no-progress timeout for gateway /goal stall detection."""
+        try:
+            gateway_cfg = (
+                (self.config or {}).get("gateway", {})
+                if isinstance(self.config, dict)
+                else getattr(self.config, "gateway", {}) or {}
+            )
+            if not gateway_cfg:
+                from hermes_cli.config import load_config
+
+                gateway_cfg = (load_config() or {}).get("gateway") or {}
+            value = int(gateway_cfg.get("goal_stall_timeout_minutes", 15) or 15)
+            return max(value, 1)
+        except Exception:
+            return 15
+
+    @staticmethod
+    def _goal_task_source_fields(source: Any) -> dict[str, Any]:
+        if source is None:
+            return {}
+        platform = getattr(source, "platform", None)
+        return {
+            "platform": getattr(platform, "value", platform),
+            "chat_id": getattr(source, "chat_id", None),
+            "thread_id": getattr(source, "thread_id", None),
+            "owner_agent": "gateway",
+        }
+
+    async def _maybe_mark_stalled_goal_before_continuation(self, *, session_id: str, source: Any) -> bool:
+        """Return True when a queued /goal continuation may proceed.
+
+        If the durable goal snapshot shows the active goal has gone too long
+        without verified progress, mark it stalled, persist a one-shot notice
+        marker, emit one actionable status message, and suppress the queued
+        continuation.
+        """
+        if not session_id:
+            return False
+        try:
+            from hermes_cli.goals import GoalManager, load_goal_task_snapshot, update_goal_task_snapshot
+        except Exception as exc:
+            logger.debug("goal continuation: stall-check imports unavailable: %s", exc)
+            return False
+
+        mgr = GoalManager(session_id=session_id)
+        if not mgr.is_active():
+            return False
+
+        snapshot = load_goal_task_snapshot(session_id)
+        if snapshot is None:
+            return True
+        if str(snapshot.status or "") == "stalled":
+            return False
+
+        last_progress = float(snapshot.last_verified_progress_at or 0.0)
+        if last_progress <= 0:
+            return True
+
+        now = time.time()
+        timeout_seconds = float(self._goal_stall_timeout_minutes_from_config()) * 60.0
+        if now - last_progress < timeout_seconds:
+            return True
+
+        if snapshot.stall_notified_at:
+            update_goal_task_snapshot(
+                session_id,
+                **self._goal_task_source_fields(source),
+                status="stalled",
+                next_action="check provider/tool failure or ask user for guidance",
+                _now=now,
+            )
+            return False
+
+        age_minutes = max((now - last_progress) / 60.0, 0.0)
+        update_goal_task_snapshot(
+            session_id,
+            **self._goal_task_source_fields(source),
+            status="stalled",
+            last_reason=f"no verified progress for {age_minutes:.1f} minutes",
+            next_action="check provider/tool failure or ask user for guidance",
+            stall_notified_at=now,
+            last_user_visible_update_at=now,
+            _now=now,
+        )
+        objective = snapshot.objective or (mgr.state.goal if mgr.state else "standing goal")
+        await self._send_goal_status_notice(
+            source,
+            (
+                f"⏸ Goal stalled: {objective} — no verified progress for {age_minutes:.1f} minutes. "
+                "Next action: check provider/tool failure or ask user for guidance."
+            ),
+        )
+        return False
+
     def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
 
@@ -10624,8 +10719,20 @@ class GatewayRunner:
 
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
+            sid = getattr(session_entry, "session_id", None)
             if state is None:
                 return t("gateway.goal.no_goal_set")
+            if sid:
+                try:
+                    from hermes_cli.goals import update_goal_task_snapshot
+
+                    update_goal_task_snapshot(
+                        sid,
+                        objective=state.goal,
+                        **self._goal_task_source_fields(event.source),
+                    )
+                except Exception as exc:
+                    logger.debug("goal pause: snapshot sync failed: %s", exc)
             try:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
@@ -10637,13 +10744,38 @@ class GatewayRunner:
 
         if lower == "resume":
             state = mgr.resume()
+            sid = getattr(session_entry, "session_id", None)
             if state is None:
                 return t("gateway.goal.no_resume")
+            if sid:
+                try:
+                    from hermes_cli.goals import update_goal_task_snapshot
+
+                    update_goal_task_snapshot(
+                        sid,
+                        objective=state.goal,
+                        **self._goal_task_source_fields(event.source),
+                    )
+                except Exception as exc:
+                    logger.debug("goal resume: snapshot sync failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
+            sid = getattr(session_entry, "session_id", None)
+            goal_text = mgr.state.goal if mgr.state else ""
             mgr.clear()
+            if sid:
+                try:
+                    from hermes_cli.goals import update_goal_task_snapshot
+
+                    update_goal_task_snapshot(
+                        sid,
+                        objective=goal_text,
+                        **self._goal_task_source_fields(event.source),
+                    )
+                except Exception as exc:
+                    logger.debug("goal clear: snapshot sync failed: %s", exc)
             try:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
@@ -10658,6 +10790,19 @@ class GatewayRunner:
             state = mgr.set(args)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
+
+        sid = getattr(session_entry, "session_id", None)
+        if sid:
+            try:
+                from hermes_cli.goals import update_goal_task_snapshot
+
+                update_goal_task_snapshot(
+                    sid,
+                    objective=state.goal,
+                    **self._goal_task_source_fields(event.source),
+                )
+            except Exception as exc:
+                logger.debug("goal set: snapshot sync failed: %s", exc)
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
@@ -10809,7 +10954,7 @@ class GatewayRunner:
         queue and takes priority naturally.
         """
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import GoalManager, update_goal_task_snapshot
         except Exception as exc:
             logger.debug("goal continuation: goals module unavailable: %s", exc)
             return
@@ -10825,6 +10970,14 @@ class GatewayRunner:
             return
 
         decision = mgr.evaluate_after_turn(final_response or "", user_initiated=True)
+        try:
+            update_goal_task_snapshot(
+                sid,
+                objective=(mgr.state.goal if mgr.state else None) or getattr(getattr(mgr, "state", None), "goal", None),
+                **self._goal_task_source_fields(source),
+            )
+        except Exception as exc:
+            logger.debug("goal continuation: snapshot source sync failed: %s", exc)
         msg = decision.get("message") or ""
 
         # Defer the status line until after the adapter has delivered the
@@ -17651,12 +17804,16 @@ class GatewayRunner:
                 next_channel_prompt = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
-                    if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
-                        logger.info(
-                            "Discarding stale goal continuation for session %s — goal is no longer active",
-                            session_key or "?",
-                        )
-                        return result
+                    if self._is_goal_continuation_event(pending_event):
+                        if not await self._maybe_mark_stalled_goal_before_continuation(
+                            session_id=session_id,
+                            source=next_source,
+                        ):
+                            logger.info(
+                                "Discarding stale goal continuation for session %s — goal is no longer active or is stalled",
+                                session_key or "?",
+                            )
+                            return result
                     next_message = await self._prepare_inbound_message_text(
                         event=pending_event,
                         source=next_source,

@@ -194,6 +194,59 @@ class GoalState:
         return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
 
 
+@dataclass
+class GoalTaskSnapshot:
+    """Operator-facing durable status record for /goal work."""
+
+    session_id: str
+    source: str = "goal"
+    objective: str = ""
+    status: str = "active"  # active | paused | stalled | error | complete | cleared
+    platform: Optional[str] = None
+    chat_id: Optional[str] = None
+    thread_id: Optional[str] = None
+    owner_agent: Optional[str] = None
+    created_at: float = 0.0
+    updated_at: float = 0.0
+    last_verified_progress_at: float = 0.0
+    last_user_visible_update_at: float = 0.0
+    last_reason: Optional[str] = None
+    next_action: Optional[str] = None
+    artifact_refs: List[str] = field(default_factory=list)
+    stall_notified_at: Optional[float] = None
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, raw: str) -> "GoalTaskSnapshot":
+        data = json.loads(raw)
+        artifact_refs = data.get("artifact_refs") or []
+        if not isinstance(artifact_refs, list):
+            artifact_refs = []
+        return cls(
+            session_id=str(data.get("session_id") or ""),
+            source=str(data.get("source") or "goal"),
+            objective=str(data.get("objective") or ""),
+            status=str(data.get("status") or "active"),
+            platform=data.get("platform"),
+            chat_id=data.get("chat_id"),
+            thread_id=data.get("thread_id"),
+            owner_agent=data.get("owner_agent"),
+            created_at=float(data.get("created_at", 0.0) or 0.0),
+            updated_at=float(data.get("updated_at", 0.0) or 0.0),
+            last_verified_progress_at=float(data.get("last_verified_progress_at", 0.0) or 0.0),
+            last_user_visible_update_at=float(data.get("last_user_visible_update_at", 0.0) or 0.0),
+            last_reason=data.get("last_reason"),
+            next_action=data.get("next_action"),
+            artifact_refs=[str(ref) for ref in artifact_refs if str(ref).strip()],
+            stall_notified_at=(
+                float(data.get("stall_notified_at"))
+                if data.get("stall_notified_at") not in (None, "")
+                else None
+            ),
+        )
+
 # ──────────────────────────────────────────────────────────────────────
 # Persistence (SessionDB state_meta)
 # ──────────────────────────────────────────────────────────────────────
@@ -201,6 +254,22 @@ class GoalState:
 
 def _meta_key(session_id: str) -> str:
     return f"goal:{session_id}"
+
+
+def _task_meta_key(session_id: str) -> str:
+    return f"goal-task:{session_id}"
+
+
+def _goal_task_next_action(status: str) -> str:
+    mapping = {
+        "active": "continue goal loop",
+        "paused": "await user input",
+        "stalled": "check provider/tool failure or ask user for guidance",
+        "complete": "goal complete",
+        "cleared": "goal cleared",
+        "error": "inspect failure and recover",
+    }
+    return mapping.get(status, "continue goal loop")
 
 
 _DB_CACHE: Dict[str, Any] = {}
@@ -270,6 +339,64 @@ def save_goal(session_id: str, state: GoalState) -> None:
         logger.debug("GoalManager: set_meta failed: %s", exc)
 
 
+def load_goal_task_snapshot(session_id: str) -> Optional[GoalTaskSnapshot]:
+    if not session_id:
+        return None
+    db = _get_session_db()
+    if db is None:
+        return None
+    try:
+        raw = db.get_meta(_task_meta_key(session_id))
+    except Exception as exc:
+        logger.debug("GoalTaskSnapshot: get_meta failed: %s", exc)
+        return None
+    if not raw:
+        return None
+    try:
+        return GoalTaskSnapshot.from_json(raw)
+    except Exception as exc:
+        logger.warning("GoalTaskSnapshot: could not parse stored snapshot for %s: %s", session_id, exc)
+        return None
+
+
+def save_goal_task_snapshot(session_id: str, snapshot: GoalTaskSnapshot) -> None:
+    if not session_id:
+        return
+    db = _get_session_db()
+    if db is None:
+        return
+    try:
+        db.set_meta(_task_meta_key(session_id), snapshot.to_json())
+    except Exception as exc:
+        logger.debug("GoalTaskSnapshot: set_meta failed: %s", exc)
+
+
+def update_goal_task_snapshot(session_id: str, **updates: Any) -> Optional[GoalTaskSnapshot]:
+    if not session_id:
+        return None
+    now = float(updates.pop("_now", time.time()))
+    snapshot = load_goal_task_snapshot(session_id)
+    if snapshot is None:
+        snapshot = GoalTaskSnapshot(
+            session_id=session_id,
+            created_at=now,
+            updated_at=now,
+            last_user_visible_update_at=now,
+            next_action=_goal_task_next_action("active"),
+        )
+    if not snapshot.created_at:
+        snapshot.created_at = now
+    for key, value in updates.items():
+        if hasattr(snapshot, key):
+            setattr(snapshot, key, value)
+    status = str(snapshot.status or "active")
+    if not snapshot.next_action:
+        snapshot.next_action = _goal_task_next_action(status)
+    snapshot.updated_at = now
+    save_goal_task_snapshot(session_id, snapshot)
+    return snapshot
+
+
 def clear_goal(session_id: str) -> None:
     """Mark a goal cleared in the DB (preserved for audit, status=cleared)."""
     state = load_goal(session_id)
@@ -277,6 +404,14 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+    update_goal_task_snapshot(
+        session_id,
+        objective=state.goal,
+        status="cleared",
+        last_reason="goal cleared",
+        next_action=_goal_task_next_action("cleared"),
+        last_user_visible_update_at=time.time(),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -523,50 +658,107 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        now = time.time()
         state = GoalState(
             goal=goal,
             status="active",
             turns_used=0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
-            created_at=time.time(),
+            created_at=now,
             last_turn_at=0.0,
         )
         self._state = state
         save_goal(self.session_id, state)
+        update_goal_task_snapshot(
+            self.session_id,
+            objective=goal,
+            status="active",
+            last_reason=None,
+            next_action=_goal_task_next_action("active"),
+            created_at=now,
+            last_user_visible_update_at=now,
+            last_verified_progress_at=0.0,
+            stall_notified_at=None,
+            artifact_refs=[],
+            _now=now,
+        )
         return state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
             return None
+        now = time.time()
         self._state.status = "paused"
         self._state.paused_reason = reason
         save_goal(self.session_id, self._state)
+        update_goal_task_snapshot(
+            self.session_id,
+            objective=self._state.goal,
+            status="paused",
+            last_reason=reason,
+            next_action=_goal_task_next_action("paused"),
+            last_user_visible_update_at=now,
+            _now=now,
+        )
         return self._state
 
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None
+        now = time.time()
         self._state.status = "active"
         self._state.paused_reason = None
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
+        update_goal_task_snapshot(
+            self.session_id,
+            objective=self._state.goal,
+            status="active",
+            last_reason=self._state.last_reason,
+            next_action=_goal_task_next_action("active"),
+            last_user_visible_update_at=now,
+            stall_notified_at=None,
+            _now=now,
+        )
         return self._state
 
     def clear(self) -> None:
         if self._state is None:
             return
+        now = time.time()
         self._state.status = "cleared"
         save_goal(self.session_id, self._state)
+        update_goal_task_snapshot(
+            self.session_id,
+            objective=self._state.goal,
+            status="cleared",
+            last_reason="goal cleared",
+            next_action=_goal_task_next_action("cleared"),
+            last_user_visible_update_at=now,
+            _now=now,
+        )
         self._state = None
 
     def mark_done(self, reason: str) -> None:
         if not self._state:
             return
+        now = time.time()
         self._state.status = "done"
         self._state.last_verdict = "done"
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
+        update_goal_task_snapshot(
+            self.session_id,
+            objective=self._state.goal,
+            status="complete",
+            last_reason=reason,
+            next_action=_goal_task_next_action("complete"),
+            last_verified_progress_at=now,
+            last_user_visible_update_at=now,
+            stall_notified_at=None,
+            _now=now,
+        )
 
     # --- /subgoal user controls ---------------------------------------
 
@@ -649,8 +841,9 @@ class GoalManager:
             }
 
         # Count the turn that just finished.
+        now = time.time()
         state.turns_used += 1
-        state.last_turn_at = time.time()
+        state.last_turn_at = now
 
         verdict, reason, parse_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None
@@ -669,6 +862,17 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
+            update_goal_task_snapshot(
+                self.session_id,
+                objective=state.goal,
+                status="complete",
+                last_verified_progress_at=now,
+                last_user_visible_update_at=now,
+                last_reason=reason,
+                next_action=_goal_task_next_action("complete"),
+                stall_notified_at=None,
+                _now=now,
+            )
             return {
                 "status": "done",
                 "should_continue": False,
@@ -690,6 +894,16 @@ class GoalManager:
                 f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
             )
             save_goal(self.session_id, state)
+            update_goal_task_snapshot(
+                self.session_id,
+                objective=state.goal,
+                status="paused",
+                last_verified_progress_at=now,
+                last_user_visible_update_at=now,
+                last_reason=state.paused_reason,
+                next_action=_goal_task_next_action("paused"),
+                _now=now,
+            )
             return {
                 "status": "paused",
                 "should_continue": False,
@@ -712,6 +926,16 @@ class GoalManager:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
             save_goal(self.session_id, state)
+            update_goal_task_snapshot(
+                self.session_id,
+                objective=state.goal,
+                status="paused",
+                last_verified_progress_at=now,
+                last_user_visible_update_at=now,
+                last_reason=state.paused_reason,
+                next_action=_goal_task_next_action("paused"),
+                _now=now,
+            )
             return {
                 "status": "paused",
                 "should_continue": False,
@@ -725,6 +949,17 @@ class GoalManager:
             }
 
         save_goal(self.session_id, state)
+        update_goal_task_snapshot(
+            self.session_id,
+            objective=state.goal,
+            status="active",
+            last_verified_progress_at=now,
+            last_user_visible_update_at=now,
+            last_reason=reason,
+            next_action=_goal_task_next_action("active"),
+            stall_notified_at=None,
+            _now=now,
+        )
         return {
             "status": "active",
             "should_continue": True,
@@ -749,6 +984,7 @@ class GoalManager:
 
 __all__ = [
     "GoalState",
+    "GoalTaskSnapshot",
     "GoalManager",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
@@ -758,5 +994,8 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "load_goal_task_snapshot",
+    "save_goal_task_snapshot",
+    "update_goal_task_snapshot",
     "judge_goal",
 ]
