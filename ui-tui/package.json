@@ -42,5 +42,8 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.3"
+  },
+  "overrides": {
+    "@babel/plugin-proposal-private-methods": "npm:@babel/plugin-transform-private-methods@^7.28.6"
   }
 }
