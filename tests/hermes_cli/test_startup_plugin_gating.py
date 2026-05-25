@@ -178,3 +178,78 @@ def test_builtin_set_has_no_phantom_entries():
         f"_BUILTIN_SUBCOMMANDS has entries that are not registered as "
         f"top-level subparsers: {sorted(phantom)}"
     )
+
+
+# ── deprecated `hermes login` subparser is hidden from --help (#24756) ─────
+
+
+def _hermes_help_text() -> str:
+    """Capture ``hermes --help`` output via in-process invocation."""
+    from hermes_cli import main as _main
+
+    argv_backup = sys.argv[:]
+    sys.argv = ["hermes", "--help"]
+    buf = io.StringIO()
+    try:
+        with patch.object(_main, "_plugin_cli_discovery_needed", return_value=False):
+            with redirect_stdout(buf):
+                with pytest.raises(SystemExit):
+                    _main.main()
+    finally:
+        sys.argv = argv_backup
+    return buf.getvalue()
+
+
+def test_login_subparser_hidden_from_help_description():
+    """The deprecated `hermes login` subcommand must not advertise itself.
+
+    `hermes login` is a removed command whose runtime (`login_command` in
+    `hermes_cli/auth.py`) prints a deprecation message and exits.  Until #5670
+    only the documentation/error-message references were migrated to `hermes
+    auth` — the subparser itself was still registered with a help string
+    ("Authenticate with an inference provider") that made it look like a
+    working command in `hermes --help`.  Issue #24756 flagged the
+    inconsistency: users discover the command from `--help`, run it, and are
+    told it has been removed.
+
+    Hiding the description row via `help=argparse.SUPPRESS` is the minimum
+    surgical fix.  Old scripts that invoke `hermes login [--flags]` still get
+    the actionable deprecation message rather than an argparse error.
+    """
+    text = _hermes_help_text()
+    # The misleading description row that pointed users at a removed command:
+    assert "Authenticate with an inference provider" not in text, (
+        "Deprecated `hermes login` description still shown in --help: \n" + text
+    )
+    # Sanity check: actually-functional auth subcommand is still listed.
+    assert "auth" in text
+
+
+def test_login_command_still_responds_with_deprecation_message():
+    """Hidden-from-help must NOT mean removed-from-argv.
+
+    Old scripts/aliases invoking `hermes login [--flags]` should keep
+    receiving the existing "command has been removed → use `hermes auth`"
+    message rather than an argparse "invalid choice: 'login'" error.
+    """
+    from hermes_cli.auth import login_command
+
+    class _Args:
+        provider = None
+        portal_url = None
+        inference_url = None
+        client_id = None
+        scope = None
+        no_browser = False
+        timeout = 15.0
+        ca_bundle = None
+        insecure = False
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        with pytest.raises(SystemExit) as exc_info:
+            login_command(_Args())
+    assert exc_info.value.code == 0
+    out = buf.getvalue()
+    assert "has been removed" in out
+    assert "hermes auth" in out
