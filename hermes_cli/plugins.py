@@ -1092,8 +1092,8 @@ class PluginManager:
             if not is_enabled:
                 loaded = LoadedPlugin(manifest=manifest, enabled=False)
                 loaded.error = (
-                    "not enabled in config (run `hermes plugins enable {}` to activate)"
-                    .format(lookup_key)
+                    f"not enabled in config (run `hermes plugins enable {lookup_key}` to activate)"
+                    
                 )
                 self._plugins[lookup_key] = loaded
                 logger.debug(
