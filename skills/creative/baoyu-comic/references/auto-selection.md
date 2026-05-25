@@ -26,7 +26,7 @@ Content signals determine default art + tone + layout (or preset).
 
 ### ohmsha
 - **Triggers**: Tutorial, technical, educational, computing, programming, how-to, beginner
-- **Special rules**: Visual metaphors, NO talking heads, gadget reveals, Doraemon-style characters
+- **Special rules**: Visual metaphors, NO talking heads, gadget reveals, original mascot-style characters (never trademarked IP)
 - **Base**: manga + neutral + webtoon/dense
 
 ### wuxia

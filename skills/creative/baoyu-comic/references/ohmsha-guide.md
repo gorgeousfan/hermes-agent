@@ -4,13 +4,15 @@ Guidelines for educational manga comics using the `ohmsha` preset.
 
 ## Character Setup
 
-| Role | Default | Traits |
-|------|---------|--------|
-| Student (Role A) | 大雄 | Confused, asks basic but crucial questions, represents reader |
-| Mentor (Role B) | 哆啦A梦 | Knowledgeable, patient, uses gadgets as technical metaphors |
-| Antagonist (Role C, optional) | 胖虎 | Represents misunderstanding, or "noise" in the data |
+**Always invent original characters.** Do NOT use named characters from existing manga/anime/comic franchises — only role archetypes.
 
-Custom characters: ask the user for role → name mappings (e.g., `Student:小明, Mentor:教授, Antagonist:Bug怪`).
+| Role | Archetype | Traits |
+|------|-----------|--------|
+| Student (Role A) | Curious learner (original character) | Confused, asks basic but crucial questions, represents reader |
+| Mentor (Role B) | Knowledgeable guide (original character) | Knowledgeable, patient, uses invented gadgets as technical metaphors |
+| Antagonist (Role C, optional) | Skeptic / disruptor (original character) | Represents misunderstanding, or "noise" in the data |
+
+Custom characters: ask the user for role → name mappings (e.g., `Student:Mio, Mentor:Professor Bolt, Antagonist:Glitch`). If the user requests a trademarked character likeness, decline and offer an original substitute.
 
 ## Character Reference Sheet Style
 
@@ -46,16 +48,16 @@ Every ohmsha outline must start with:
 
 | Concept | Bad (Talking Heads) | Good (Visual Metaphor) |
 |---------|---------------------|------------------------|
-| Word embeddings | Characters discussing vectors | 哆啦A梦拿出"词向量压缩机"，把书本压缩成彩色小球 |
-| Gradient descent | Explaining math formula | 大雄在山谷地形上滚球，寻找最低点 |
-| Neural network | Diagram on whiteboard | 角色走进由发光节点组成的网络迷宫 |
+| Word embeddings | Characters discussing vectors | Mentor pulls out a "Word Vector Compressor" gadget that squeezes books into colored spheres |
+| Gradient descent | Explaining math formula | Student rolls a ball through a valley landscape, hunting the lowest point |
+| Neural network | Diagram on whiteboard | Characters step into a maze of glowing network nodes |
 
 ## Page Title Convention
 
 Avoid AI-style "Title: Subtitle" format. Use narrative descriptions:
 
-- ❌ "Page 3: Introduction to Neural Networks"
-- ✓ "Page 3: 大雄被海量单词淹没，哆啦A梦拿出'词向量压缩机'"
+- Bad: "Page 3: Introduction to Neural Networks"
+- Good: "Page 3: Mio is drowning in a flood of words; Professor Bolt pulls out the Word Vector Compressor"
 
 ## Ending Requirements
 

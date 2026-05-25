@@ -17,6 +17,10 @@ Adapted from [baoyu-comic](https://github.com/JimLiu/baoyu-skills) for Hermes Ag
 
 Create original knowledge comics with flexible art style × tone combinations.
 
+## Intellectual Property Policy (READ FIRST)
+
+This skill MUST only produce **original characters**. Do NOT name, describe, or render any character, mascot, or setting taken from existing manga, anime, comics, films, games, or other trademarked franchises (including but not limited to Doraemon, Naruto, One Piece, Dragon Ball, Pokémon, Demon Slayer, Studio Ghibli works, Disney/Marvel/DC properties, etc.). If the user requests a likeness of a copyrighted or trademarked character, politely decline and offer to design an original substitute that fills the same role. Any prior reference templates that named third-party characters have been replaced with neutral original placeholders.
+
 ## When to Use
 
 Trigger this skill when the user asks to create a knowledge/educational comic, biography comic, tutorial comic, or uses terms like "知识漫画", "教育漫画", or "Logicomix-style". The user provides content (text, file path, URL, or topic) and optionally specifies art style, tone, layout, aspect ratio, or language.

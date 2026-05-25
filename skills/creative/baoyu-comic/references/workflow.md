@@ -188,18 +188,18 @@ Create storyboard and character definitions using the confirmed style from Step 
    - Visual specs matching the art style (in user's preferred language)
    - Include Reference Sheet Prompt for later image generation
    - Reference: `character-template.md`
-   - **If using ohmsha preset**: Use default Doraemon characters (see below)
+   - **If using ohmsha preset**: Generate ORIGINAL placeholder characters (see below) — do NOT use named characters from existing franchises.
 
-**Ohmsha Default Characters** (use these unless user specifies custom characters):
+**Ohmsha Default Characters** (original placeholders — replace with user-provided originals if specified; never use trademarked characters):
 
 | Role | Character | Visual Description |
 |------|-----------|-------------------|
-| Student | 大雄 (Nobita) | Japanese boy, 10yo, round glasses, black hair parted in middle, yellow shirt, navy shorts |
-| Mentor | 哆啦 A 梦 (Doraemon) | Round blue robot cat, big white eyes, red nose, whiskers, white belly with 4D pocket, golden bell, no ears |
-| Challenge | 胖虎 (Gian) | Stocky boy, rough features, small eyes, orange shirt |
-| Support | 静香 (Shizuka) | Cute girl, black short hair, pink dress, gentle expression |
+| Student | Mio | Young learner, simple distinctive silhouette, one signature accessory (e.g., oversized round glasses, a notebook satchel) — invent specific details per comic |
+| Mentor | Professor Bolt | Original stylized helper (e.g., a small tin owl, a sprite, a compact robot) with a clear signature color and a pocket of metaphorical gadgets |
+| Challenge | Rook | Contrasting silhouette and color from Student, slightly older, expressive scowl |
+| Support | Lin | Calm, complementary palette to Student, attentive expression |
 
-These are the canonical ohmsha-style characters. Do NOT create custom characters for ohmsha unless explicitly requested.
+These are ORIGINAL placeholder archetypes for ohmsha-style comics. Do NOT substitute trademarked characters even if the user names them; if the user requests a likeness of a copyrighted/trademarked character, politely decline and offer to design an original substitute.
 
 **After generation**:
 - If `skip_outline_review` is true → Skip Step 4, go directly to Step 5
@@ -358,8 +358,8 @@ Character sheet is recommended for multi-page comics with recurring characters, 
 # Page 01: [Title]
 
 ## Character Reference (embedded inline — maintain consistency)
-- 大雄：Japanese boy, round glasses, yellow shirt, navy shorts, worried expression...
-- 哆啦 A 梦：Round blue robot cat, white belly, red nose, golden bell, 4D pocket...
+- Mio: young learner, round glasses, yellow shirt, navy shorts, worried expression...
+- Professor Bolt: small tin owl with brass accents, leather gadget pouch, calm posture...
 
 ## Page Content
 [Original page prompt body — panels, dialogue, visual metaphors]

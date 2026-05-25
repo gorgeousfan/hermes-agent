@@ -41,25 +41,25 @@ Every technical concept MUST be visualized as a metaphor:
 
 ### Character Roles (Required)
 
-**DEFAULT: Use Doraemon characters** unless user explicitly specifies custom characters.
+**DEFAULT: Generate ORIGINAL characters** filling each role archetype below. Do NOT reference, name, or visually copy any existing manga / anime / comic IP — invent fresh designs.
 
-| Role | Default Character | Visual | Traits |
-|------|-------------------|--------|--------|
-| Student (Role A) | 大雄 (Nobita) | Boy, 10yo, round glasses, black hair, yellow shirt, navy shorts | Confused, asks basic but crucial questions, represents reader |
-| Mentor (Role B) | 哆啦A梦 (Doraemon) | Blue robot cat, white belly, 4D pocket, red nose, golden bell | Knowledgeable, patient, uses gadgets as technical metaphors |
-| Challenge (Role C) | 胖虎 (Gian) | Stocky boy, small eyes, orange shirt | Represents misunderstanding, or "noise" in the data |
-| Support (Role D) | 静香 (Shizuka) | Cute girl, black short hair, pink dress | Asks clarifying questions, provides alternative perspectives |
+| Role | Archetype | Suggested Visual Direction (invent specifics) | Traits |
+|------|-----------|-----------------------------------------------|--------|
+| Student (Role A) | Curious learner | Young human, simple distinctive silhouette, one signature accessory | Confused, asks basic but crucial questions, represents reader |
+| Mentor (Role B) | Knowledgeable guide | Non-human or stylized helper (robot, sprite, animal companion) with a recognizable color and prop | Patient, produces metaphorical gadgets to explain concepts |
+| Challenge (Role C) | Skeptic / disruptor | Contrasting silhouette and color from Student | Represents misunderstanding, or "noise" in the data |
+| Support (Role D) | Clarifier | Calm, complementary palette to Student | Asks clarifying questions, provides alternative perspectives |
 
-**IMPORTANT**: These Doraemon characters ARE the default for ohmsha preset. Generate character definitions using these exact characters unless user requests otherwise.
+**IMPORTANT**: Do not use named characters from existing franchises. Always invent original names and visual designs. If the user asks for likenesses of trademarked characters, decline and offer to design originals instead.
 
-To use custom characters: ask the user to provide role → character mappings (e.g., `Student:小明, Mentor:教授`).
+To customize: ask the user to provide role → name + 1-sentence visual mappings (e.g., `Student:Mio, a girl in a green raincoat; Mentor:Professor Bolt, a tin owl`).
 
 ### Page Title Convention
 
 Every page MUST have a narrative title (not section header):
 
 **Wrong**: "Chapter 1: Introduction to Transformers"
-**Right**: "The Day Nobita Couldn't Understand Anyone"
+**Right**: "The Day Mio Couldn't Understand Anyone"
 
 ### Gadget Reveal Pattern
 
