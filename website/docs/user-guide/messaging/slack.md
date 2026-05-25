@@ -416,6 +416,37 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+### Bot-to-Bot Messaging
+
+By default Hermes ignores messages sent by other bots. Enable bot-to-bot messaging when you want Hermes to participate in A2A orchestration or receive notifications from other bots in the same channel or thread.
+
+```bash
+SLACK_ALLOW_BOTS=mentions   # default: none
+```
+
+| Value | Behavior |
+|-------|----------|
+| `none` | Ignore all messages from other bots (default). |
+| `mentions` | Accept only when the peer bot @mentions Hermes. |
+| `all` | Accept every peer bot message. |
+
+:::warning
+Prefer `mentions` in shared or busy channels. `all` accepts every peer bot message and can sharply increase inbound traffic — including feedback loops with automations that react to Hermes' own replies (Hermes drops self-originated traffic, but other bots may not). Reserve `all` for tightly controlled environments where the set of peer bots is known and trusted.
+:::
+
+Also configurable as `platforms.slack.extra.allow_bots` in `config.yaml`:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      allow_bots: "mentions"
+```
+
+When both are set, `config.yaml` takes precedence over the environment variable (the env var is only consulted if `allow_bots` is missing or empty in config).
+
+Hermes never replies to its own messages regardless of this setting — the adapter compares the message sender against the bot's resolved user ID and drops self-originated traffic before further processing. Peer bots do not need to be added to `SLACK_ALLOWED_USERS`; that allowlist applies to human senders only.
+
 ### Unauthorized User Handling
 
 ```yaml
@@ -463,6 +494,7 @@ platforms:
     extra:
       reply_in_thread: true
       reply_broadcast: false
+      allow_bots: "none"        # "none" | "mentions" | "all"
 ```
 
 ---
