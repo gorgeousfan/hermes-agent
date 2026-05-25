@@ -473,10 +473,16 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 
 **Return value:** Ignored.
 
-**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, latency dashboards, per-tool budget alerts, sending notifications when specific tools complete.
+**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, latency dashboards, per-tool budget alerts, sending notifications when specific tools complete, and building audit or receipt-chain plugins that need a durable record of what the agent actually did.
+
+For compliance/audit integrations, prefer `post_tool_call` over scraping transcripts or terminal logs:
+
+- It fires for **all** tools, not only `terminal`.
+- It receives the exact tool name, model-supplied arguments, normalized JSON result, task/session identifier, and measured duration.
+- It runs after approvals, redaction, and tool dispatch, so the receipt represents an executed action rather than an intended action.
+- It is observer-only: returning data from the hook does not alter the model's next message. Use [`transform_tool_result`](#transform_tool_result) only when you intentionally need to change what the model sees.
 
 **Example — track tool usage metrics:**
-
 ```python
 from collections import Counter, defaultdict
 import json
@@ -498,6 +504,43 @@ def track_metrics(tool_name, result, duration_ms=0, **kwargs):
 def register(ctx):
     ctx.register_hook("post_tool_call", track_metrics)
 ```
+
+**Example — append tamper-evident tool receipts:**
+```python
+import hashlib
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+RECEIPTS = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "logs" / "tool-receipts.jsonl"
+_last_hash = "0" * 64
+
+def receipt_chain(tool_name, args, result, task_id="", duration_ms=0, **kwargs):
+    global _last_hash
+    RECEIPTS.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "session": task_id,
+        "tool": tool_name,
+        "args": args,
+        "result": result,
+        "duration_ms": duration_ms,
+        "prev_hash": _last_hash,
+    }
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    record["hash"] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    _last_hash = record["hash"]
+    with RECEIPTS.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")
+
+def register(ctx):
+    ctx.register_hook("post_tool_call", receipt_chain)
+```
+
+:::caution Secret handling
+`args` and `result` may include sensitive data such as command output, file contents, URLs, or tokens returned by a tool. If receipts leave the local machine, enable Hermes secret redaction or scrub/encrypt fields inside the plugin before writing or exporting them.
+:::
 
 ---
 
