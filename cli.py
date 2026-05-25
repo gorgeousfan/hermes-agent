@@ -169,6 +169,7 @@ from hermes_cli.browser_connect import (
 )
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches, is_truthy_value
+from agent import terminal_status as _terminal_status
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -10905,6 +10906,9 @@ class HermesCLI:
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
+        # Switch terminal status from spinning-work to question-waiting state
+        _terminal_status.ask_question()
+
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
@@ -10922,6 +10926,7 @@ class HermesCLI:
             try:
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = 0
+                _terminal_status.start_working("Working")
                 return result
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
@@ -10942,6 +10947,7 @@ class HermesCLI:
         self._clarify_deadline = 0
         self._invalidate()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+        _terminal_status.start_working("Working")
         return (
             "The user did not provide a response within the time limit. "
             "Use your best judgement to make the choice and proceed."
@@ -11453,7 +11459,9 @@ class HermesCLI:
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
-        
+
+        _terminal_status.start_working("Working")
+
         try:
             # Run the conversation with interrupt monitoring
             result = None
@@ -11847,6 +11855,17 @@ class HermesCLI:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
 
+            # Terminal status — completion state based on agent result.
+            if not result:
+                _terminal_status.error()
+            elif _interrupted_this_turn:
+                _terminal_status.clear()
+            elif result.get("failed") or result.get("partial"):
+                _terminal_status.error()
+            else:
+                _terminal_status.success()
+                time.sleep(0.4)
+
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
                 _api_calls = result.get("api_calls", 0)
@@ -11898,6 +11917,7 @@ class HermesCLI:
             return response
             
         except Exception as e:
+            _terminal_status.error()
             print(f"Error: {e}")
             return None
         finally:
@@ -14806,10 +14826,15 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
+                    _terminal_status.start_working("Working")
+                    try:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                    except Exception:
+                        _terminal_status.error()
+                        raise
                     # Sync session_id if mid-run compression created a
                     # continuation session. The exit line below reports
                     # session_id to stderr for automation wrappers; without
@@ -14835,7 +14860,15 @@ def main(
                         print(response)
                     # Session ID goes to stderr so piped stdout is clean.
                     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                    
+
+                    # Terminal status — result state
+                    if isinstance(result, dict) and (result.get("failed") or result.get("partial")):
+                        _terminal_status.error()
+                    else:
+                        _terminal_status.success()
+                        time.sleep(0.4)
+                        _terminal_status.clear()
+
                     # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
             
