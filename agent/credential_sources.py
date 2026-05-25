@@ -241,7 +241,7 @@ def _remove_nous_device_code(provider: str, removed) -> RemovalResult:
     """Nous OAuth lives in auth.json providers.nous — clear it and suppress.
 
     We suppress in addition to clearing because nothing else stops the
-    user's next `hermes login` run from writing providers.nous again
+    user's next `hermes auth add nous` run from writing providers.nous again
     before they decide to.  Suppression forces them to go through
     `hermes auth add nous` to re-engage, which is the documented re-add
     path and clears the suppression atomically.
