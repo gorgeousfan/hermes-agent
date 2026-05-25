@@ -548,7 +548,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help="Additional task ids to schedule with the same reason (bulk mode)")
 
     p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
-    p_unblock.add_argument("task_ids", nargs="+")
+    p_unblock.add_argument("task_id")
+    p_unblock.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
+    p_unblock.add_argument("--ids", nargs="+", default=None,
+                           help="Additional task ids to unblock with the same reason (bulk mode)")
 
     p_promote = sub.add_parser(
         "promote",
@@ -1974,18 +1977,22 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
 
 
 def _cmd_unblock(args: argparse.Namespace) -> int:
-    ids = list(args.task_ids or [])
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    ids = [args.task_id] + list(getattr(args, "ids", None) or [])
     if not ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
     failed: list[str] = []
     with kb.connect() as conn:
         for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"UNBLOCKED: {reason}")
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
-                print(f"Unblocked {tid}")
+                print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 
 
