@@ -15707,6 +15707,11 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        # Diff-aware preview truncation (truncate_middle):
+        last_progress_preview = [None]  # last untruncated preview
+        last_progress_preview_trunc = [None]  # its truncated form (cached so
+                                              # identical re-calls return the
+                                              # exact same string → (×N) dedup)
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
@@ -15816,13 +15821,26 @@ class GatewayRunner:
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
+            #
+            # Use diff-aware truncation: when the new preview shares a long
+            # common prefix with the previous one (e.g. successive
+            # `cd <same_path> && <different cmd>` calls), reveal the
+            # differing tail instead of head-cutting both to the same prefix.
+            # Identical inputs return the cached truncated form, so the
+            # dedup-by-equality below still collapses true repeats into a
+            # (×N) counter.
             if preview:
-                from agent.display import get_tool_preview_max_len
+                from agent.display import get_tool_preview_max_len, truncate_middle
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                truncated = truncate_middle(
+                    preview, _cap,
+                    prev=last_progress_preview[0],
+                    prev_trunc=last_progress_preview_trunc[0],
+                )
+                last_progress_preview[0] = preview
+                last_progress_preview_trunc[0] = truncated
+                msg = f"{emoji} {tool_name}: \"{truncated}\""
             else:
                 msg = f"{emoji} {tool_name}..."
             
