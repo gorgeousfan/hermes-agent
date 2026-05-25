@@ -15,6 +15,7 @@ Key design decisions:
 """
 
 import json
+import hashlib
 import logging
 import random
 import re
@@ -246,10 +247,29 @@ CREATE TABLE IF NOT EXISTS state_meta (
     value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tool_result_message_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    tool_name TEXT,
+    raw_ref TEXT NOT NULL,
+    old_sha256 TEXT NOT NULL,
+    new_sha256 TEXT NOT NULL,
+    old_chars INTEGER NOT NULL,
+    new_chars INTEGER NOT NULL,
+    metadata TEXT,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id),
+    FOREIGN KEY (message_id) REFERENCES messages(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_tool_result_audit_session
+    ON tool_result_message_audit(session_id, created_at DESC);
 """
 
 FTS_SQL = """
@@ -1627,6 +1647,136 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def get_tool_result_message(
+        self,
+        session_id: str,
+        tool_call_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the persisted tool-result message for a tool call, if unique."""
+        if not session_id or not tool_call_id:
+            return None
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND tool_call_id = ? "
+                "ORDER BY id",
+                (session_id, tool_call_id),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        msg = dict(rows[0])
+        if "content" in msg:
+            msg["content"] = self._decode_content(msg["content"])
+        if msg.get("tool_calls"):
+            try:
+                msg["tool_calls"] = json.loads(msg["tool_calls"])
+            except (json.JSONDecodeError, TypeError):
+                msg["tool_calls"] = []
+        return msg
+
+    def replace_tool_result_message(
+        self,
+        session_id: str,
+        tool_call_id: str,
+        new_content: str,
+        raw_ref: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Replace only the content of a persisted ``role=tool`` message.
+
+        This is intentionally narrower than :meth:`replace_messages`: it is for
+        background hygiene jobs that need to compact old tool output without
+        disturbing the assistant tool-call pairing.  The method refuses to
+        update user/assistant/system rows, duplicate tool_call_id rows, or
+        content that does not carry the caller's raw reference.
+        """
+        if not session_id:
+            raise ValueError("session_id is required")
+        if not tool_call_id:
+            raise ValueError("tool_call_id is required")
+        if not isinstance(new_content, str) or not new_content:
+            raise ValueError("new_content must be a non-empty string")
+        if not isinstance(raw_ref, str) or not raw_ref.startswith("tool-result://"):
+            raise ValueError("raw_ref must start with tool-result://")
+        is_restore = bool((metadata or {}).get("action") == "restore")
+        if not is_restore and raw_ref not in new_content:
+            raise ValueError("new_content must include raw_ref")
+
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT id, role, content, tool_call_id, tool_name, tool_calls "
+                "FROM messages WHERE session_id = ? AND tool_call_id = ? "
+                "ORDER BY id",
+                (session_id, tool_call_id),
+            ).fetchall()
+            if len(rows) != 1:
+                raise ValueError(
+                    f"expected exactly one message for tool_call_id={tool_call_id!r}; "
+                    f"found {len(rows)}"
+                )
+            row = rows[0]
+            role = row["role"] if hasattr(row, "keys") else row[1]
+            if role != "tool":
+                raise ValueError("target message is not role=tool")
+
+            message_id = row["id"] if hasattr(row, "keys") else row[0]
+            old_content = row["content"] if hasattr(row, "keys") else row[2]
+            tool_name = row["tool_name"] if hasattr(row, "keys") else row[4]
+            old_text = self._decode_content(old_content)
+            if old_text is None:
+                old_text = ""
+            if not isinstance(old_text, str):
+                old_text = json.dumps(old_text, ensure_ascii=False)
+            old_hash = hashlib.sha256(old_text.encode("utf-8")).hexdigest()
+            new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+
+            cursor = conn.execute(
+                "UPDATE messages SET content = ?, token_count = NULL "
+                "WHERE id = ? AND session_id = ? AND role = 'tool' "
+                "AND tool_call_id = ?",
+                (
+                    self._encode_content(new_content),
+                    message_id,
+                    session_id,
+                    tool_call_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("tool result replacement did not update a row")
+            conn.execute(
+                "INSERT INTO tool_result_message_audit "
+                "(session_id, message_id, tool_call_id, tool_name, raw_ref, "
+                "old_sha256, new_sha256, old_chars, new_chars, metadata, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    message_id,
+                    tool_call_id,
+                    tool_name,
+                    raw_ref,
+                    old_hash,
+                    new_hash,
+                    len(old_text),
+                    len(new_content),
+                    metadata_json,
+                    time.time(),
+                ),
+            )
+            return {
+                "success": True,
+                "message_id": message_id,
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "old_chars": len(old_text),
+                "new_chars": len(new_content),
+                "old_sha256": old_hash,
+                "new_sha256": new_hash,
+                "raw_ref": raw_ref,
+            }
+
+        return self._execute_write(_do)
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by insertion order."""
