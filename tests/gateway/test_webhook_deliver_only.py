@@ -251,6 +251,47 @@ class TestDeliverOnlyStatusCodes:
             assert "rate limited" not in json.dumps(data)
 
     @pytest.mark.asyncio
+    async def test_delivery_failure_does_not_poison_idempotency(self):
+        """A failed delivery may be retried with the same delivery id."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="rate limited by tg"),
+                SendResult(success=True),
+            ]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-fail-1"},
+            )
+            assert first.status == 502
+
+            second = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-fail-1"},
+            )
+            assert second.status == 200
+            data = await second.json()
+            assert data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_delivery_failure_can_ack_to_webhook_sender(self):
         """Routes can accept the webhook even if downstream delivery fails."""
         routes = {
@@ -470,6 +511,60 @@ class TestDeliverOnlyStatusCodes:
         release_send.set()
         await asyncio.sleep(0.05)
         mock_target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_busy_delivery_does_not_poison_idempotency(self):
+        """A 429 busy response should allow the provider to retry the same id."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "direct_delivery_timeout_seconds": 0.01,
+                "direct_delivery_max_inflight": 1,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        release_send = asyncio.Event()
+
+        async def slow_send(*_args, **_kwargs):
+            await release_send.wait()
+            return SendResult(success=True)
+
+        mock_target.send = AsyncMock(side_effect=slow_send)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "d-slow-limit-holder"},
+            )
+            assert first.status == 202
+
+            busy = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-busy-1"},
+            )
+            assert busy.status == 429
+
+            release_send.set()
+            await asyncio.sleep(0.05)
+
+            retry = await cli.post(
+                "/webhooks/r",
+                json={},
+                headers={"X-GitHub-Delivery": "retry-busy-1"},
+            )
+            assert retry.status == 200
+            data = await retry.json()
+            assert data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
 
     @pytest.mark.asyncio
     async def test_target_platform_not_connected_returns_502(self):

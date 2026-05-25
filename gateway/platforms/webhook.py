@@ -510,7 +510,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
+
+        def _mark_delivery_seen() -> None:
+            self._seen_deliveries[delivery_id] = now
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -643,6 +645,7 @@ class WebhookAdapter(BasePlatformAdapter):
                                 )
 
                         task.add_done_callback(_log_background_direct_delivery_failure)
+                        _mark_delivery_seen()
                         return web.json_response(
                             {
                                 "status": "accepted",
@@ -663,6 +666,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     delivery_id,
                 )
                 if route_config.get("direct_delivery_ack_on_failure"):
+                    _mark_delivery_seen()
                     return web.json_response(
                         {
                             "status": "accepted",
@@ -679,6 +683,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
             if result.success:
+                _mark_delivery_seen()
                 return web.json_response(
                     {
                         "status": "delivered",
@@ -697,6 +702,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 result.error,
             )
             if route_config.get("direct_delivery_ack_on_failure"):
+                _mark_delivery_seen()
                 return web.json_response(
                     {
                         "status": "accepted",
@@ -760,6 +766,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+        _mark_delivery_seen()
         return web.json_response(
             {
                 "status": "accepted",
