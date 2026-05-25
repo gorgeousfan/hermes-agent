@@ -671,12 +671,29 @@ class QQAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            # Drop any stale closed WebSocket so the next ``_read_events``
+            # call sees a missing socket and raises ``WebSocket not
+            # connected`` (rather than the closed socket silently
+            # short-circuiting the read loop).  This matters when
+            # ``_ensure_token`` or ``_get_gateway_url`` raises before
+            # ``_open_ws`` could clear ``self._ws`` itself — exactly the
+            # path observed in #31771 (`Failed to get QQ Bot gateway URL`).
+            if self._ws is not None and self._ws.closed:
+                self._ws = None
             return False
 
     async def _read_events(self) -> None:
         """Read WebSocket frames until connection closes."""
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
+        # Defensive: a stale closed socket left over from a failed reconnect
+        # — e.g. ``_ensure_token`` / ``_get_gateway_url`` raising before
+        # ``_open_ws`` clears the reference — would otherwise let the
+        # ``while not self._ws.closed`` loop exit immediately, return None,
+        # and busy-loop ``_listen_loop`` at 100% CPU.  Surface the closure
+        # so the outer loop's reconnect/backoff path runs.  See #31771.
+        if self._ws.closed:
+            raise RuntimeError("WebSocket closed before read")
 
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()
@@ -691,6 +708,15 @@ class QQAdapter(BasePlatformAdapter):
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
+
+        # If the loop exited because the socket vanished mid-read while the
+        # listener still wants to run (e.g. ``self._ws`` was nulled out by
+        # another task, or closed silently without surfacing CLOSE / CLOSED
+        # / ERROR frames), surface the closure so ``_listen_loop`` applies
+        # its reconnect/backoff path instead of treating the silent return
+        # as a successful read cycle.
+        if self._running:
+            raise RuntimeError("WebSocket closed during read")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
