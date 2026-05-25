@@ -81,6 +81,28 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Provider extra_body
+
+`providers.<id>.extra_body` lets you pin per-provider request fields once in `config.yaml` instead of threading them through every call site. Useful for OpenAI-compatible endpoints that accept non-standard parameters — e.g. DashScope-hosted Qwen3 models default to thinking mode, but accept `enable_thinking: false` to disable it cleanly:
+
+```yaml
+providers:
+  alibaba-coding-plan:
+    extra_body:
+      enable_thinking: false
+  dashscope:
+    extra_body:
+      enable_thinking: false
+```
+
+The dict is merged into the request's `extra_body` after profile defaults and caller-level additions but before per-call `request_overrides`, so:
+
+- A provider profile's defaults (e.g. Nous tags) still apply.
+- A per-call `request_overrides.extra_body` from CLI / API still wins (treated as the user's explicit per-call instruction).
+- The config block is the user's "always do this for this provider" baseline.
+
+Currently routes through the `chat_completions` transport (the OpenAI-compatible api_mode). Native paths like `anthropic_messages` and `codex_responses` ignore the override since they don't use `extra_body` in the same way.
+
 ## Terminal Backend Configuration
 
 Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.

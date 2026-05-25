@@ -10,6 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -17,6 +18,49 @@ from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+
+_logger = logging.getLogger(__name__)
+
+
+def _load_provider_extra_body_override(provider_name: str) -> dict:
+    """Return the user's `providers.<name>.extra_body` config as a dict.
+
+    Lets a user pin provider-specific request parameters (e.g.
+    ``enable_thinking: false`` for DashScope-hosted Qwen3 models) once
+    in ``~/.hermes/config.yaml`` instead of threading them through every
+    call site::
+
+        providers:
+          alibaba-coding-plan:
+            extra_body:
+              enable_thinking: false
+          dashscope:
+            extra_body:
+              enable_thinking: false
+
+    Returns an empty dict on any failure (missing config file, missing
+    `providers` key, missing `<name>` entry, missing `extra_body`,
+    non-dict shape) so the caller can always merge the result safely.
+    """
+    if not provider_name:
+        return {}
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        providers_cfg = cfg.get("providers")
+        if not isinstance(providers_cfg, dict):
+            return {}
+        provider_cfg = providers_cfg.get(provider_name)
+        if not isinstance(provider_cfg, dict):
+            return {}
+        override = provider_cfg.get("extra_body")
+        if not isinstance(override, dict):
+            return {}
+        return dict(override)
+    except Exception as exc:  # pragma: no cover — defensive
+        _logger.debug("Failed to load extra_body override for %r: %s", provider_name, exc)
+        return {}
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -412,6 +456,16 @@ class ChatCompletionsTransport(ProviderTransport):
         if additions:
             extra_body.update(additions)
 
+        # User-config override has the final word — `providers.<name>.extra_body`
+        # in `~/.hermes/config.yaml`. Lets users pin per-provider request
+        # parameters (e.g. `enable_thinking: false` for DashScope Qwen3) once
+        # instead of threading them through every call site. Documented at
+        # website/docs/user-guide/configuration.md → "Provider extra_body
+        # overrides".
+        config_override = _load_provider_extra_body_override(provider_name)
+        if config_override:
+            extra_body.update(config_override)
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
@@ -523,6 +577,21 @@ class ChatCompletionsTransport(ProviderTransport):
         additions = params.get("extra_body_additions")
         if additions:
             extra_body.update(additions)
+
+        # Config-driven override — `providers.<name>.extra_body` in
+        # `~/.hermes/config.yaml` lets users pin per-provider request
+        # parameters (e.g. `enable_thinking: false` for DashScope Qwen3)
+        # without threading them through every call site. Applied after
+        # caller additions so the user's standing intent wins, but before
+        # per-call request_overrides which represent the user's explicit
+        # per-call instruction. Documented at
+        # website/docs/user-guide/configuration.md → "Provider extra_body".
+        profile_provider_name = (
+            getattr(profile, "name", "") or str(params.get("provider_name") or "").strip().lower()
+        )
+        config_override = _load_provider_extra_body_override(profile_provider_name)
+        if config_override:
+            extra_body.update(config_override)
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")
