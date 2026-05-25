@@ -6278,6 +6278,24 @@ class HermesCLI:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
+        # Session-boundary background review (issue #31597).
+        # Fires after the old session is finalized but before the new session
+        # starts, so the review sees the full transcript of the session that
+        # just ended.
+        if (
+            self.agent
+            and getattr(self.agent, "_review_on_reset", False)
+            and hasattr(self.agent, "_spawn_background_review")
+        ):
+            try:
+                messages_snapshot = list(self.conversation_history)
+                self.agent._spawn_background_review(
+                    messages_snapshot=messages_snapshot,
+                    review_memory=True,
+                )
+            except Exception:
+                pass  # Background review is best-effort
+
         old_session_id = self.session_id
         if self._session_db and old_session_id:
             try:
