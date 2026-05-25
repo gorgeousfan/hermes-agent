@@ -316,8 +316,11 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-            smtp.starttls(context=ssl.create_default_context())
+            if self._smtp_port == 465:
+                smtp = smtplib.SMTP_SSL(self._smtp_host, self._smtp_port, timeout=30)
+            else:
+                smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+                smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
@@ -548,9 +551,12 @@ class EmailAdapter(BasePlatformAdapter):
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-        try:
+        if self._smtp_port == 465:
+            smtp = smtplib.SMTP_SSL(self._smtp_host, self._smtp_port, timeout=30)
+        else:
+            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
+        try:
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -670,9 +676,12 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-        try:
+        if self._smtp_port == 465:
+            smtp = smtplib.SMTP_SSL(self._smtp_host, self._smtp_port, timeout=30)
+        else:
+            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
+        try:
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -749,9 +758,12 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-        try:
+        if self._smtp_port == 465:
+            smtp = smtplib.SMTP_SSL(self._smtp_host, self._smtp_port, timeout=30)
+        else:
+            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
+        try:
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
