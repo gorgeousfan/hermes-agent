@@ -106,6 +106,12 @@ hermes skills uninstall <skill-name>
 | [**fastmcp**](/user-guide/skills/optional/mcp/mcp-fastmcp) | Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Use when creating a new MCP server, wrapping an API or database as MCP tools, exposing resources or prompts, or preparing a FastMCP server for Claude Code, Cur... |
 | [**mcporter**](/user-guide/skills/optional/mcp/mcp-mcporter) | Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation. |
 
+## media
+
+| Skill | Description |
+|-------|-------------|
+| [**youtube-unified-api**](/user-guide/skills/optional/media/media-youtube-unified-api) | Call YouTube APIs through MyBrandMetrics Discovery. |
+
 ## migration
 
 | Skill | Description |
@@ -150,6 +156,8 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**canvas**](/user-guide/skills/optional/productivity/productivity-canvas) | Canvas LMS integration — fetch enrolled courses and assignments using API token authentication. |
+| [**clawbus**](/user-guide/skills/optional/productivity/productivity-clawbus) | Search and install skills from the Clawbus library. |
+| [**google-workspace-cli**](/user-guide/skills/optional/productivity/productivity-google-workspace-cli) | Use Google Workspace CLI without Google Cloud setup. |
 | [**here.now**](/user-guide/skills/optional/productivity/productivity-here-now) | Publish static sites to &#123;slug&#125;.here.now and store private files in cloud Drives for agent-to-agent handoff. |
 | [**memento-flashcards**](/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcard system. Create cards from facts or text, chat with flashcards using free-text answers graded by the agent, generate quizzes from YouTube transcripts, review due cards with adaptive scheduling, and export/impor... |
 | [**shop-app**](/user-guide/skills/optional/productivity/productivity-shop-app) | Shop.app: product search, order tracking, returns, reorder. |
@@ -180,6 +188,13 @@ hermes skills uninstall <skill-name>
 | [**1password**](/user-guide/skills/optional/security/security-1password) | Set up and use 1Password CLI (op). Use when installing the CLI, enabling desktop app integration, signing in, and reading/injecting secrets for commands. |
 | [**oss-forensics**](/user-guide/skills/optional/security/security-oss-forensics) | Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories. Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence collection, hypothesis formation/validation, and st... |
 | [**sherlock**](/user-guide/skills/optional/security/security-sherlock) | OSINT username search across 400+ social networks. Hunt down social media accounts by username. |
+
+## social-media
+
+| Skill | Description |
+|-------|-------------|
+| [**instagram-publisher**](/user-guide/skills/optional/social-media/social-media-instagram-publisher) | Publish Instagram media through MyBrandMetrics. |
+| [**tiktok-publisher**](/user-guide/skills/optional/social-media/social-media-tiktok-publisher) | Publish TikTok videos through MyBrandMetrics. |
 
 ## software-development
 

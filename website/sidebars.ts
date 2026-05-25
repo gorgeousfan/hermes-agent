@@ -495,6 +495,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'media',
+                  key: 'skills-optional-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/media/media-youtube-unified-api',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'migration',
                   key: 'skills-optional-migration',
                   collapsed: true,
@@ -545,6 +554,8 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/productivity/productivity-canvas',
+                    'user-guide/skills/optional/productivity/productivity-clawbus',
+                    'user-guide/skills/optional/productivity/productivity-google-workspace-cli',
                     'user-guide/skills/optional/productivity/productivity-here-now',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-shop-app',
@@ -581,6 +592,16 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/security/security-1password',
                     'user-guide/skills/optional/security/security-oss-forensics',
                     'user-guide/skills/optional/security/security-sherlock',
+                  ],
+                },
+                {
+                  type: 'category',
+                  label: 'social-media',
+                  key: 'skills-optional-social-media',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/optional/social-media/social-media-instagram-publisher',
+                    'user-guide/skills/optional/social-media/social-media-tiktok-publisher',
                   ],
                 },
                 {
