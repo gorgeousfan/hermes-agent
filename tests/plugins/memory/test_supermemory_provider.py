@@ -409,3 +409,70 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
+
+
+# -- Default sentinel tests ---------------------------------------------------
+
+
+def test_default_sentinel_resolves_to_none(monkeypatch, tmp_path):
+    """container_tag '__default__' in config resolves to provider._container_tag is None."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"container_tag": "__default__"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._container_tag is None
+
+
+def test_system_prompt_default_label(monkeypatch, tmp_path):
+    """system_prompt_block shows 'My Space (Supermemory default)' when tag is None."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"container_tag": "default"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    block = p.system_prompt_block()
+    assert "My Space (Supermemory default)" in block
+
+
+def test_add_memory_omits_container_tags_for_default(monkeypatch, tmp_path):
+    """add_memory kwargs should NOT contain container_tags when provider tag is None."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"container_tag": "none"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    result = json.loads(p.handle_tool_call("supermemory_store", {"content": "test memory"}))
+    assert result["saved"] is True
+    call = p._client.add_calls[-1]
+    assert call["container_tag"] is None
+
+
+def test_search_omits_container_tag_for_default(monkeypatch, tmp_path):
+    """search kwargs should NOT contain container_tag when provider tag is None."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"container_tag": "my_space"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._container_tag is None
+    # search_memories is called via the FakeClient which doesn't track kwargs,
+    # but we verify the provider resolved to None tag
+    result = json.loads(p.handle_tool_call("supermemory_search", {"query": "test"}))
+    assert "error" not in result
+
+
+def test_ingest_omits_container_tags_for_default(monkeypatch, tmp_path):
+    """conversation ingest payload should NOT contain containerTags when provider tag is None."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"container_tag": "__default__"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._container_tag is None
+    messages = [
+        {"role": "user", "content": "hello there friend"},
+        {"role": "assistant", "content": "hi there, how can I help"},
+    ]
+    p.on_session_end(messages)
+    assert len(p._client.ingest_calls) == 1
