@@ -1468,12 +1468,46 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
-    """Context manager for an IMMEDIATE write transaction.
+    """Context manager for an IMMEDIATE write transaction with optional board-level lock.
 
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
+
+    On Unix, acquires an exclusive flock on ``<board_dir>/kanban.write.lock``
+    before BEGIN IMMEDIATE to serialize concurrent writers at the OS level,
+    reducing SQLITE_BUSY under heavy multi-process write load. Disabled on
+    Windows (fcntl unavailable) and for :memory: DBs. Falls through without
+    crash if the lock file cannot be created (e.g. read-only filesystem).
     """
+    import sys as _sys
+
+    lock_fd = None
+    if _sys.platform != "win32":
+        try:
+            row = conn.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row and row[2] else None
+        except Exception:
+            db_file = None
+        if db_file and db_file != ":memory:":
+            board_dir = os.path.dirname(db_file)
+            lock_path = os.path.join(board_dir, "kanban.write.lock")
+            try:
+                import fcntl as _fcntl
+
+                lock_fd = open(lock_path, "w", encoding="utf-8")
+                _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+            except OSError:
+                _log.debug(
+                    "write_txn: could not acquire board write lock at %s; proceeding",
+                    lock_path,
+                )
+                if lock_fd is not None:
+                    try:
+                        lock_fd.close()
+                    except OSError:
+                        pass
+                lock_fd = None
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
@@ -1482,6 +1516,15 @@ def write_txn(conn: sqlite3.Connection):
         raise
     else:
         conn.execute("COMMIT")
+    finally:
+        if lock_fd is not None:
+            try:
+                import fcntl as _fcntl
+
+                _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+                lock_fd.close()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------

@@ -16,9 +16,11 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -125,10 +127,22 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
     return f"{prefix}: {cause}{hint}."
 
 
+def _wal_init_lock_path(db_path: str) -> "Optional[str]":
+    """Return flock path for WAL init serialization, or None if not applicable."""
+    if db_path == ":memory:":
+        return None
+    if os.environ.get("HERMES_WAL_INIT_FLOCK_DISABLE"):
+        return None
+    if sys.platform == "win32":
+        return None
+    return db_path + ".wal-init.lock"
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
     db_label: str = "state.db",
+    db_path: "Optional[str]" = None,
 ) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
@@ -148,17 +162,55 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
     """
+    # Derive db_path from the connection's filename if not provided.
+    if db_path is None:
+        try:
+            row = conn.execute("PRAGMA database_list").fetchone()
+            if row and row[2]:
+                db_path = row[2]
+        except Exception:
+            pass
+
+    lock_path = _wal_init_lock_path(db_path) if db_path else None
+    lock_fd = None
+    if lock_path:
+        try:
+            import fcntl as _fcntl
+
+            lock_fd = open(lock_path, "w", encoding="utf-8")
+            _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+        except OSError:
+            logger.debug(
+                "apply_wal_with_fallback: could not acquire wal-init lock at %s; proceeding",
+                lock_path,
+            )
+            if lock_fd is not None:
+                try:
+                    lock_fd.close()
+                except OSError:
+                    pass
+            lock_fd = None
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        return "wal"
-    except sqlite3.OperationalError as exc:
-        msg = str(exc).lower()
-        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
-            raise
-        _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        return "delete"
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return "wal"
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+                # Unrelated OperationalError — don't silently swallow.
+                raise
+            _log_wal_fallback_once(db_label, exc)
+            conn.execute("PRAGMA journal_mode=DELETE")
+            return "delete"
+    finally:
+        if lock_fd is not None:
+            try:
+                import fcntl as _fcntl
+
+                _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+                lock_fd.close()
+            except OSError:
+                pass
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:

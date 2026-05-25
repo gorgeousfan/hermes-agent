@@ -13,7 +13,11 @@ See: https://www.sqlite.org/wal.html — "WAL does not work over a network
 filesystem".
 """
 
+import concurrent.futures
+import os
 import sqlite3
+import stat
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -142,16 +146,15 @@ class TestApplyWalWithFallback:
         with caplog.at_level("WARNING", logger="hermes_state"):
             # Three separate connections to "the same DB" via the same label
             for i in range(3):
-                conn, _ = _open_blocking(
-                    tmp_path / f"dup-{i}.db", isolation_level=None
-                )
+                conn, _ = _open_blocking(tmp_path / f"dup-{i}.db", isolation_level=None)
                 mode = apply_wal_with_fallback(conn, db_label="shared.db")
                 assert mode == "delete"
                 conn.close()
 
         # Exactly one warning across all three calls
         warnings = [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if r.levelname == "WARNING" and "shared.db" in r.getMessage()
         ]
         assert len(warnings) == 1, (
@@ -172,7 +175,9 @@ class TestApplyWalWithFallback:
 
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         labels_warned = {
-            lbl for r in warnings for lbl in ("state.db", "kanban.db")
+            lbl
+            for r in warnings
+            for lbl in ("state.db", "kanban.db")
             if lbl in r.getMessage()
         }
         assert labels_warned == {"state.db", "kanban.db"}, (
@@ -233,7 +238,9 @@ class TestGetLastInitError:
                 return super().execute(sql, *args, **kwargs)
 
         def gated_connect(*args, **kwargs):
-            return real_connect(str(target), factory=_BothPragmasFailConnection, **kwargs)
+            return real_connect(
+                str(target), factory=_BothPragmasFailConnection, **kwargs
+            )
 
         with patch("hermes_state.sqlite3.connect", side_effect=gated_connect):
             with pytest.raises(sqlite3.OperationalError):
@@ -303,3 +310,91 @@ class TestSessionDbUsesWalFallback:
             assert get_last_init_error() is None
         finally:
             db.close()
+
+
+class TestWalInitFlock:
+    def test_wal_init_flock_serializes_concurrent_callers(self, tmp_path):
+        """5 threads calling apply_wal_with_fallback concurrently all complete cleanly."""
+        db_file = tmp_path / "concurrent.db"
+
+        def _open_and_init():
+            conn = sqlite3.connect(str(db_file), isolation_level=None)
+            try:
+                apply_wal_with_fallback(
+                    conn, db_label="concurrent.db", db_path=str(db_file)
+                )
+                return True
+            finally:
+                conn.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(_open_and_init) for _ in range(5)]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+        assert all(results)
+
+        conn = sqlite3.connect(str(db_file), isolation_level=None)
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            assert row[0] == "ok"
+            mode_row = conn.execute("PRAGMA journal_mode").fetchone()
+            assert mode_row[0].lower() == "wal"
+        finally:
+            conn.close()
+
+    def test_wal_init_flock_disabled_by_env(self, tmp_path, monkeypatch):
+        """HERMES_WAL_INIT_FLOCK_DISABLE=1 prevents creation of .wal-init.lock file."""
+        db_file = tmp_path / "no-lock.db"
+        monkeypatch.setenv("HERMES_WAL_INIT_FLOCK_DISABLE", "1")
+
+        conn = sqlite3.connect(str(db_file), isolation_level=None)
+        try:
+            apply_wal_with_fallback(conn, db_label="no-lock.db", db_path=str(db_file))
+        finally:
+            conn.close()
+
+        lock_file = tmp_path / "no-lock.db.wal-init.lock"
+        assert not lock_file.exists()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="chmod read-only unreliable on Windows"
+    )
+    def test_wal_init_flock_graceful_on_readonly_lock_dir(self, tmp_path):
+        """apply_wal_with_fallback degrades gracefully when the lock file dir is read-only.
+
+        The DB itself is writable so WAL succeeds; the lock file path is inside
+        a read-only directory so open() raises OSError. The flock path must be
+        skipped without propagating the error.
+        """
+        db_file = tmp_path / "ok.db"
+        ro_dir = tmp_path / "readonly"
+        ro_dir.mkdir()
+
+        original_mode = ro_dir.stat().st_mode
+        try:
+            ro_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
+
+            # db_path points into the read-only dir so lock file creation fails,
+            # but the connection is on a writable db_file.
+            fake_db_path = str(ro_dir / "kanban.db")
+            conn = sqlite3.connect(str(db_file), isolation_level=None)
+            try:
+                mode = apply_wal_with_fallback(
+                    conn, db_label="readonly-lock.db", db_path=fake_db_path
+                )
+                assert mode == "wal"
+            finally:
+                conn.close()
+        finally:
+            ro_dir.chmod(original_mode)
+
+    def test_wal_init_flock_not_created_for_memory_db(self, tmp_path):
+        """No .wal-init.lock file is created for :memory: connections."""
+        conn = sqlite3.connect(":memory:", isolation_level=None)
+        try:
+            apply_wal_with_fallback(conn, db_label="memory.db", db_path=":memory:")
+        finally:
+            conn.close()
+
+        lock_files = list(tmp_path.glob("*.wal-init.lock"))
+        assert lock_files == []
