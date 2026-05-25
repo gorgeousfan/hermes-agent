@@ -540,6 +540,15 @@ class TestCLI:
         # the exit code stays 0 is a separate (pre-existing) issue.
         assert "does not exist" in r.stderr
 
+    def test_board_flag_after_subcommand_prints_placement_hint(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        r = _cli(["list", "--board", "incoming-knowledge"], env_extra=env)
+        assert r.returncode == 2
+        assert "--board is a kanban global option" in r.stderr
+        assert "hermes kanban --board incoming-knowledge list" in r.stderr
+        assert "hermes kanban list --board incoming-knowledge" in r.stderr
+        assert "unrecognized arguments" not in r.stderr
+
     def test_board_flag_rejects_empty_board_dir(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         ghost = tmp_path / "kanban" / "boards" / "ghost"

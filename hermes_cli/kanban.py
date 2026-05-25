@@ -43,6 +43,88 @@ _STATUS_ICONS = {
 }
 
 
+_TOP_LEVEL_VALUE_FLAGS = frozenset(
+    {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        "-c", "--continue",
+    }
+)
+
+
+def _format_board_placement_error(prog: str) -> str:
+    return (
+        "kanban: --board is a kanban global option and must appear before "
+        "the subcommand.\n"
+        "Try:\n"
+        f"  {prog} --board incoming-knowledge list\n"
+        f"  {prog} --board incoming-knowledge create \"Index notes\"\n"
+        "Invalid:\n"
+        f"  {prog} list --board incoming-knowledge"
+    )
+
+
+def _has_misplaced_board_flag(tokens: list[str]) -> bool:
+    """Return True when ``--board`` appears after the kanban action token."""
+    action_seen = False
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            return False
+        if token == "--board":
+            return action_seen
+        if token.startswith("--board="):
+            return action_seen
+        if not action_seen and not token.startswith("-"):
+            action_seen = True
+        i += 1
+    return False
+
+
+def board_placement_error(
+    argv: list[str],
+    *,
+    prog: str = "hermes kanban",
+    command_token: Optional[str] = "kanban",
+) -> Optional[str]:
+    """Return a targeted error for ``kanban <action> ... --board ...``.
+
+    ``argparse`` only accepts parent parser options before the selected
+    subparser. Without this preflight, misplaced ``--board`` falls through to
+    the top-level "unrecognized arguments" error, which hides the fix.
+    """
+    tokens = list(argv)
+    if command_token is not None:
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--":
+                return None
+            if token.startswith("-"):
+                if "=" in token:
+                    i += 1
+                    continue
+                if token in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(tokens):
+                    i += 2
+                    continue
+                i += 1
+                continue
+            if token != command_token:
+                return None
+            tokens = tokens[i + 1:]
+            break
+        else:
+            return None
+    if _has_misplaced_board_flag(tokens):
+        return _format_board_placement_error(prog)
+    return None
+
+
 def _fmt_ts(ts: Optional[int]) -> str:
     if not ts:
         return ""
@@ -203,6 +285,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban "
             "or docs/hermes-kanban-v1-spec.pdf for the full design."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Global option placement:\n"
+            "  --board belongs immediately after `hermes kanban`, before the subcommand.\n\n"
+            "Examples:\n"
+            "  hermes kanban --board incoming-knowledge list\n"
+            "  hermes kanban --board incoming-knowledge create \"Index notes\"\n"
+            "  /kanban --board incoming-knowledge list\n\n"
+            "Invalid:\n"
+            "  hermes kanban list --board incoming-knowledge"
+        ),
     )
     # --- global --board flag ---
     # Applies to every subcommand below. When set, scopes all reads and
@@ -217,7 +310,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
             "Board slug to operate on. Defaults to the current board "
             "(set via `hermes kanban boards switch <slug>` or the "
             "HERMES_KANBAN_BOARD env var). Use `hermes kanban boards list` "
-            "to see all boards."
+            "to see all boards. Must appear before the subcommand: "
+            "`hermes kanban --board <slug> list`."
         ),
     )
     sub = kanban_parser.add_subparsers(dest="kanban_action")
@@ -2679,6 +2773,9 @@ Common subcommands:
   `runs <id>`           Attempt history
   `log <id>`            Worker log
 
+Board override: put `--board <slug>` before the subcommand, e.g.
+  `/kanban --board incoming-knowledge list`
+
 Run `/kanban <subcommand> -h` for arguments. \
 Read-only commands are safe while an agent is running.\
 """
@@ -2702,6 +2799,14 @@ def run_slash(rest: str) -> str:
     # bubble).  Per-subcommand help still works via ``/kanban foo -h``.
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
         return _SLASH_KANBAN_HELP
+
+    placement_error = board_placement_error(
+        tokens,
+        prog="/kanban",
+        command_token=None,
+    )
+    if placement_error:
+        return f"⚠ /kanban usage error\n{placement_error}"
 
     # Single argparse tree rooted at "/kanban".  build_parser() expects a
     # subparsers action to attach to, so build a throwaway one and pull

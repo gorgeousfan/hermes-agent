@@ -458,6 +458,7 @@ def test_run_slash_bare_returns_curated_help(kanban_home):
     assert "/kanban" in out
     assert "list" in out
     assert "show" in out
+    assert "/kanban --board incoming-knowledge list" in out
     # Sanity: should be a chat-friendly size, not the raw usage tree.
     assert len(out) < 2000
     # Shouldn't surface argparse's usage-error sentinel.
@@ -499,6 +500,61 @@ def test_run_slash_missing_required_arg_friendly_error(kanban_home):
     out = kc.run_slash("show")
     assert "/kanban show" in out
     assert "task_id" in out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["kanban", "list", "--board", "incoming-knowledge"],
+        ["kanban", "list", "--board=incoming-knowledge"],
+        ["kanban", "ls", "--board", "incoming-knowledge"],
+        ["kanban", "boards", "list", "--board", "incoming-knowledge"],
+    ],
+)
+def test_board_placement_error_detects_board_after_subcommand(argv):
+    err = kc.board_placement_error(argv)
+    assert err is not None
+    assert "--board is a kanban global option" in err
+    assert "hermes kanban --board incoming-knowledge list" in err
+    assert "hermes kanban list --board incoming-knowledge" in err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["kanban", "--board", "incoming-knowledge", "list"],
+        ["kanban", "--board=incoming-knowledge", "list"],
+        ["kanban", "list", "--status", "ready"],
+        ["chat", "kanban", "list", "--board", "incoming-knowledge"],
+        ["chat", "-q", "kanban list --board incoming-knowledge"],
+        ["model", "list", "--board", "incoming-knowledge"],
+        ["--model", "kanban", "model", "list", "--board", "incoming-knowledge"],
+        ["--resume", "kanban", "model", "list", "--board", "incoming-knowledge"],
+    ],
+)
+def test_board_placement_error_ignores_valid_or_non_kanban_argv(argv):
+    assert kc.board_placement_error(argv) is None
+
+
+def test_run_slash_misplaced_board_flag_gets_targeted_hint(kanban_home):
+    out = kc.run_slash("list --board incoming-knowledge")
+    assert out.startswith("⚠ /kanban usage error")
+    assert "--board is a kanban global option" in out
+    assert "/kanban --board incoming-knowledge list" in out
+    assert "/kanban list --board incoming-knowledge" in out
+    assert "unrecognized arguments" not in out
+
+
+def test_kanban_help_documents_board_global_option_placement():
+    root = argparse.ArgumentParser(prog="hermes")
+    sub = root.add_subparsers(dest="cmd")
+    parser = kc.build_parser(sub)
+
+    help_text = parser.format_help()
+
+    assert "Global option placement" in help_text
+    assert "hermes kanban --board incoming-knowledge list" in help_text
+    assert "hermes kanban list --board incoming-knowledge" in help_text
 
 
 def test_run_slash_board_override_restores_prior_env(kanban_home, monkeypatch):

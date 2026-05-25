@@ -13802,6 +13802,16 @@ Examples:
 
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
 
+    try:
+        from hermes_cli.kanban import board_placement_error as _kanban_board_error
+
+        _kanban_board_hint = _kanban_board_error(_processed_argv)
+    except Exception:
+        _kanban_board_hint = None
+    if _kanban_board_hint:
+        print(_kanban_board_hint, file=sys.stderr)
+        sys.exit(2)
+
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route
     # subcommand tokens when the parent parser has nargs='?' optional

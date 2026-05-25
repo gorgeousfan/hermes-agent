@@ -318,6 +318,7 @@ A long tail of native-Windows fixes shipped alongside the beta — taskkill-base
 - **Keep notifier subscriptions alive across retry cycles** (salvage #21398) ([#23423](https://github.com/NousResearch/hermes-agent/pull/23423))
 - **Drop caller-controlled author override in `kanban_comment`** (salvage of #22109) (@kshitijk4poor) ([#22435](https://github.com/NousResearch/hermes-agent/pull/22435))
 - **Sanitize comment author rendering in `build_worker_context`** ([#22769](https://github.com/NousResearch/hermes-agent/pull/22769))
+- **Clarify `hermes kanban --board <slug> <subcommand>` placement errors** (#29284)
 
 ---
 

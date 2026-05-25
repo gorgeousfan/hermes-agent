@@ -593,8 +593,14 @@ The GUI is deliberately thin. Everything the plugin does is reachable from the C
 
 This is the surface **you** (or scripts, cron, the dashboard) use to drive the board. Workers running inside the dispatcher use the `kanban_*` [tool surface](#how-workers-interact-with-the-board) for the same operations — the CLI here and the tools there both route through `kanban_db`, so the two surfaces agree by construction.
 
+`--board` is a kanban global option, so put it before the subcommand:
+`hermes kanban --board incoming-knowledge list`. The reverse order
+(`hermes kanban list --board incoming-knowledge`) is invalid because the
+`list` subparser has already taken over option parsing.
+
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
+hermes kanban --board <slug> list                      # operate on a specific board
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--parent <id>]... [--tenant <name>]
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
