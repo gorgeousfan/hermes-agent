@@ -2445,27 +2445,49 @@ def run_conversation(
                     # Fall through to normal error handling if compression
                     # is exhausted or didn't help.
 
-                # Eager fallback for rate-limit errors (429 or quota exhaustion).
+                # Eager fallback for errors where retries won't help.
                 # When a fallback model is configured, switch immediately instead
                 # of burning through retries with exponential backoff -- the
                 # primary provider won't recover within the retry window.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
+                    FailoverReason.timeout,           # connection/read timeout (server down)
+                    FailoverReason.auth,              # auth failure (credentials broken)
+                    FailoverReason.model_not_found,   # model/endpoint doesn't exist there
                 }
                 if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
-                    # Don't eagerly fallback if credential pool rotation may
-                    # still recover.  See _pool_may_recover_from_rate_limit
+                    # For non-rate-limit errors (timeout, auth, model_not_found),
+                    # pool rotation won't help — skip straight to fallback.
+                    # For rate-limit errors, check if credential pool rotation
+                    # may still recover. See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
-                    # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
-                        agent._credential_pool,
-                        provider=agent.provider,
-                        base_url=getattr(agent, "base_url", None),
-                    )
+                    # exceptions. Fixes #11314 and #13636.
+                    if classified.reason == FailoverReason.timeout:
+                        pool_may_recover = False
+                    elif classified.reason == FailoverReason.auth:
+                        pool_may_recover = False
+                    elif classified.reason == FailoverReason.model_not_found:
+                        pool_may_recover = False
+                    else:
+                        pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                            agent._credential_pool,
+                            provider=agent.provider,
+                            base_url=getattr(agent, "base_url", None),
+                        )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
+                        if classified.reason == FailoverReason.rate_limit:
+                            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.timeout:
+                            agent._emit_status("⚠️ Connection timeout — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.auth:
+                            agent._emit_status("⚠️ Auth failure — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.model_not_found:
+                            agent._emit_status("⚠️ Model not found — switching to fallback provider...")
+                        elif classified.reason == FailoverReason.billing:
+                            agent._emit_status("⚠️ Billing error — switching to fallback provider...")
+                        _fb_result = agent._try_activate_fallback(reason=classified.reason)
+                        if _fb_result:
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False

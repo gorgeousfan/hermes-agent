@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.fallback_config import get_fallback_chain
 from utils import is_truthy_value
 from tui_gateway.transport import (
     StdioTransport,
@@ -126,6 +127,20 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
+_fallback_model: list | None = None
+
+
+def _load_fallback_model():
+    """Load fallback_providers from config.yaml, cached at startup."""
+    global _fallback_model
+    if _fallback_model is not None:
+        return _fallback_model
+    try:
+        cfg = _load_cfg()
+        _fallback_model = get_fallback_chain(cfg) or None
+    except Exception:
+        _fallback_model = None
+    return _fallback_model
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
 except (ValueError, TypeError):
@@ -2049,6 +2064,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
 

@@ -161,6 +161,7 @@ class TestRestorePrimaryRuntime:
 
         # Restore should bring back the primary
         with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._primary_healthy = True
             result = agent._restore_primary_runtime()
 
         assert result is True
@@ -184,8 +185,10 @@ class TestRestorePrimaryRuntime:
         assert agent._fallback_index == 1  # consumed one entry
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
-            agent._restore_primary_runtime()
+            agent._primary_healthy = True
+            result = agent._restore_primary_runtime()
 
+        assert result is True  # restore succeeded
         assert agent._fallback_index == 0  # reset for next turn
 
     def test_restores_compressor_state(self):
@@ -205,6 +208,7 @@ class TestRestorePrimaryRuntime:
         agent.context_compressor.threshold_tokens = 25600
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._primary_healthy = True
             agent._restore_primary_runtime()
 
         assert agent.context_compressor.context_length == original_ctx_len
@@ -219,6 +223,7 @@ class TestRestorePrimaryRuntime:
         agent._use_prompt_caching = not original_caching
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._primary_healthy = True
             agent._restore_primary_runtime()
 
         assert agent._use_prompt_caching == original_caching
@@ -460,6 +465,7 @@ class TestRestoreInRunConversation:
 
         # Turn 2: restore primary
         with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._primary_healthy = True
             assert agent._restore_primary_runtime() is True
 
         assert agent._fallback_activated is False
@@ -508,6 +514,7 @@ class TestRateLimitCooldown:
         agent._rate_limited_until = time.monotonic() - 1
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
+            agent._primary_healthy = True
             result = agent._restore_primary_runtime()
 
         assert result is True
