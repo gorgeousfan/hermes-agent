@@ -317,15 +317,46 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
+def _coerce_tool_result_content(content: Any) -> Any:
+    """Normalize tool-result ``content`` to a wire-valid shape.
+
+    The OpenAI Chat Completions spec requires ``role: "tool"`` message
+    ``content`` to be a string (or, for multimodal-capable providers, a
+    content-part list). Plugin tool handlers that return a ``Dict[str, Any]``
+    otherwise get persisted as a raw dict, which strict upstreams reject with
+    HTTP 400 (e.g. Z.ai 1210, Manifest fallback_exhausted). Strings and
+    multimodal results pass through unchanged; any other non-string value is
+    JSON-encoded with the same idiom already used elsewhere in this module.
+
+    ``None`` (a handler returning no output / silent success) maps to an empty
+    string rather than the literal ``"null"`` — strict providers reject a null
+    content field the same way they reject a dict, and ``"null"`` would be a
+    misleading tool result."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if _is_multimodal_tool_result(content):
+        return content
+    try:
+        return json.dumps(content, default=str)
+    except Exception:
+        return str(content)
+
+
 def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
-    ``tool_name`` field (written to the session DB messages table)."""
+    ``tool_name`` field (written to the session DB messages table).
+
+    ``content`` is normalized to a wire-valid shape (string, or a multimodal
+    content-part list) so plugin tools returning a dict cannot poison the next
+    request with a non-string ``content`` field."""
     return {
         "role": "tool",
         "name": name,
         "tool_name": name,
-        "content": content,
+        "content": _coerce_tool_result_content(content),
         "tool_call_id": tool_call_id,
     }
 
@@ -346,5 +377,6 @@ __all__ = [
     "_extract_file_mutation_targets",
     "_extract_error_preview",
     "_trajectory_normalize_msg",
+    "_coerce_tool_result_content",
     "make_tool_result_message",
 ]
