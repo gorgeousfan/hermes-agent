@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -535,6 +536,49 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
     return False, None
 
 
+def _runtime_status_recently_running(
+    runtime: dict | None,
+    *,
+    max_age_seconds: float = 180.0,
+    future_skew_seconds: float = 5.0,
+) -> bool:
+    """Return True when gateway_state.json is a fresh running heartbeat.
+
+    Stale, malformed, or future-dated runtime files (clock skew or corruption)
+    fall back to ``False`` so callers preserve the existing stopped behavior.
+    A small ``future_skew_seconds`` tolerance accommodates benign clock drift
+    between containers without trusting timestamps from the far future.
+    """
+    if not isinstance(runtime, dict) or runtime.get("gateway_state") != "running":
+        return False
+
+    updated_at = runtime.get("updated_at")
+    if not isinstance(updated_at, str) or not updated_at.strip():
+        return False
+
+    try:
+        stamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+
+    try:
+        stamp_seconds = stamp.timestamp()
+    except (OverflowError, OSError, ValueError):
+        # Extreme-but-parseable dates (e.g. year 9999) can blow up timestamp
+        # conversion on some platforms; treat them as not-fresh rather than
+        # bubbling up a 500 from /api/status.
+        return False
+
+    age = time.time() - stamp_seconds
+    if age < -future_skew_seconds:
+        # Timestamp is meaningfully in the future -> corrupted or skewed clock.
+        return False
+    return age <= max_age_seconds
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
@@ -576,8 +620,16 @@ async def get_status():
     # Prefer the detailed health endpoint response (has full state) when the
     # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
-    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+    if (
+        runtime is None
+        and remote_health_body
+        and remote_health_body.get("gateway_state")
+    ):
         runtime = remote_health_body
+    if not gateway_running and _runtime_status_recently_running(runtime):
+        gateway_running = True
+        if isinstance(runtime, dict):
+            gateway_pid = runtime.get("pid")
 
     if runtime:
         gateway_state = runtime.get("gateway_state")
