@@ -7687,6 +7687,7 @@ class GatewayRunner:
             # continuation prompt back through the adapter FIFO so the
             # next turn makes more progress. Wrapped in try/except so a
             # broken judge never breaks normal message handling.
+            _goal_continuation_enqueued = False
             try:
                 _final_text = ""
                 if isinstance(_agent_result, dict):
@@ -7702,7 +7703,7 @@ class GatewayRunner:
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
-                        await self._post_turn_goal_continuation(
+                        _goal_continuation_enqueued = await self._post_turn_goal_continuation(
                             session_entry=session_entry,
                             source=source,
                             final_response=_final_text,
@@ -7723,6 +7724,20 @@ class GatewayRunner:
                 self._running_agents_ts.pop(_quick_key, None)
                 if hasattr(self, "_busy_ack_ts"):
                     self._busy_ack_ts.pop(_quick_key, None)
+
+        # Goal continuation loop fix: if the judge enqueued a continuation
+        # event in _pending_messages, respawn session processing so it gets
+        # consumed immediately instead of waiting for the next user message.
+        # Follows the same pattern as _drain_pending_after_session_command in
+        # base.py: pop the pending event and feed it to _start_session_processing.
+        # The running_agents state was already released in the finally block
+        # above, so the new task won't collide with a busy sentinel (#28649).
+        if _goal_continuation_enqueued and _quick_key:
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                pending = getattr(adapter, "_pending_messages", {}).pop(_quick_key, None)
+                if pending is not None:
+                    adapter._start_session_processing(pending, _quick_key)
 
     async def _prepare_inbound_message_text(
         self,
@@ -10790,7 +10805,7 @@ class GatewayRunner:
         session_entry: Any,
         source: Any,
         final_response: str,
-    ) -> None:
+    ) -> bool:
         """Run the goal judge after a gateway turn and, if still active,
         enqueue a continuation prompt for the same session.
 
@@ -10800,22 +10815,26 @@ class GatewayRunner:
         We use the adapter's pending-message / FIFO machinery so any real
         user message that arrives simultaneously is handled by the same
         queue and takes priority naturally.
+
+        Returns:
+            True if a continuation event was enqueued (caller should
+            respawn processing), False otherwise.
         """
         try:
             from hermes_cli.goals import GoalManager
         except Exception as exc:
             logger.debug("goal continuation: goals module unavailable: %s", exc)
-            return
+            return False
 
         sid = getattr(session_entry, "session_id", None) or ""
         if not sid:
-            return
+            return False
 
         max_turns = self._goal_max_turns_from_config()
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         if not mgr.is_active():
-            return
+            return False
 
         decision = mgr.evaluate_after_turn(final_response or "", user_initiated=True)
         msg = decision.get("message") or ""
@@ -10830,11 +10849,11 @@ class GatewayRunner:
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
         if not decision.get("should_continue"):
-            return
+            return False
 
         prompt = decision.get("continuation_prompt") or ""
         if not prompt or source is None:
-            return
+            return False
 
         # Enqueue via the adapter's FIFO so a user message already in
         # flight preempts the continuation naturally.
@@ -10850,8 +10869,11 @@ class GatewayRunner:
                     channel_prompt=None,
                 )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
+                return True
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+        return False
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
