@@ -64,6 +64,43 @@ from utils import base_url_host_matches, base_url_hostname
 logger = logging.getLogger(__name__)
 
 
+def _api_payload_for_stale_timeout(api_kwargs: dict) -> list:
+    """Return the request payload used to estimate non-stream stale timeout.
+
+    Chat Completions requests carry ``messages``. Responses/Codex requests
+    carry ``input`` plus optional ``instructions`` and ``tools``. Without
+    this, large Responses requests are estimated as nearly empty and miss the
+    larger-context timeout bump.
+    """
+    messages = api_kwargs.get("messages")
+    if messages:
+        return messages if isinstance(messages, list) else [messages]
+
+    payload = []
+    instructions = api_kwargs.get("instructions")
+    if instructions:
+        payload.append({"role": "system", "content": instructions})
+
+    response_input = api_kwargs.get("input")
+    if isinstance(response_input, list):
+        payload.extend(response_input)
+    elif response_input:
+        payload.append(response_input)
+
+    tools = api_kwargs.get("tools")
+    if tools:
+        payload.append({"role": "system", "content": tools})
+    return payload
+
+
+def _estimate_payload_tokens(payload: object) -> int:
+    """Cheap, conservative token estimate for log messages/timeouts."""
+    if not payload:
+        return 0
+    items = payload if isinstance(payload, list) else [payload]
+    return sum(len(str(item)) for item in items) // 4
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -200,9 +237,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # httpx timeout (default 1800s) with zero feedback.  The stale
     # detector kills the connection early so the main retry loop can
     # apply richer recovery (credential rotation, provider fallback).
-    _stale_timeout = agent._compute_non_stream_stale_timeout(
-        api_kwargs.get("messages", [])
-    )
+    _stale_timeout = agent._compute_non_stream_stale_timeout(api_kwargs)
 
     _call_start = time.time()
     agent._touch_activity("waiting for non-streaming API response")
@@ -226,7 +261,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # arrives within the configured timeout.
         _elapsed = time.time() - _call_start
         if _elapsed > _stale_timeout:
-            _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            try:
+                _est_ctx = _ra()._estimate_non_stream_request_context_tokens(api_kwargs)
+            except Exception:
+                _est_ctx = _estimate_payload_tokens(_api_payload_for_stale_timeout(api_kwargs))
             logger.warning(
                 "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                 "model=%s context=~%s tokens. Killing connection.",
@@ -363,6 +401,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             request_overrides=agent.request_overrides,
+            timeout=agent._resolved_api_call_timeout(),
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
