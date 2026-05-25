@@ -379,7 +379,38 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
+        "skills": None,
     }
+
+
+def test_termux_fast_cli_launch_oneshot_passes_skills(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--skills", "demo-skill,other-skill"],
+    )
+    monkeypatch.setattr(main_mod, "_prepare_agent_startup", lambda args: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._try_termux_fast_cli_launch()
+
+    assert exc.value.code == 0
+    assert captured["prompt"] == "hello"
+    assert captured["skills"] == ["demo-skill,other-skill"]
 
 
 def test_termux_fast_cli_launch_version_skips_update_check(monkeypatch, main_mod):
@@ -617,6 +648,58 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "skills": None,
+    }
+
+
+def test_main_top_level_oneshot_accepts_skills(monkeypatch, main_mod):
+    captured = {}
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "-z", "hello", "--skills", "demo-skill"]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: None),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: None
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 0
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 0
+    assert captured == {
+        "prompt": "hello",
+        "model": None,
+        "provider": None,
+        "toolsets": None,
+        "skills": ["demo-skill"],
     }
 
 
@@ -802,6 +885,77 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+
+
+def test_oneshot_run_agent_preloads_skills(monkeypatch):
+    """hermes -z should inject --skills just like interactive chat does."""
+    from hermes_cli.oneshot import _run_agent
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def chat(self, prompt):
+            captured["prompt"] = prompt
+            return "ok"
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.skill_commands",
+        mod(
+            "agent.skill_commands",
+            build_preloaded_skills_prompt=lambda skills, task_id=None: (
+                "preloaded skill prompt",
+                ["demo-skill"],
+                [],
+            ),
+        ),
+    )
+
+    assert _run_agent("use the skill", skills=["demo-skill"]) == "ok"
+    assert captured["ephemeral_system_prompt"] == "preloaded skill prompt"
+    assert captured["prompt"] == "use the skill"
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
