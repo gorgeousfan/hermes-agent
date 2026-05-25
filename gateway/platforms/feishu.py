@@ -1450,6 +1450,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._connect_time: Optional[float] = None  # set in connect(); used to skip stale events on restart
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1670,6 +1671,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
+            self._connect_time = time.time()
             self._mark_connected()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
@@ -2404,6 +2406,23 @@ class FeishuAdapter(BasePlatformAdapter):
         if not message or not sender or not getattr(sender, "sender_id", None):
             logger.debug("[Feishu] Dropping malformed inbound event: missing message/sender")
             return
+
+        # Skip stale events that predate this adapter instance (e.g. queued
+        # before a gateway restart).  Feishu delivers create_time as a
+        # millisecond-precision Unix timestamp string.
+        create_time_raw = getattr(message, "create_time", None)
+        if create_time_raw is not None and self._connect_time is not None:
+            try:
+                create_ts = int(str(create_time_raw)) / 1000.0
+                if create_ts < self._connect_time:
+                    logger.info(
+                        "[Feishu] Dropping stale pre-connect message %s (created %.1fs before connect)",
+                        getattr(message, "message_id", "?"),
+                        self._connect_time - create_ts,
+                    )
+                    return
+            except (ValueError, TypeError):
+                pass  # unparseable — let it through
 
         message_id = getattr(message, "message_id", None)
         if not message_id or self._is_duplicate(message_id):

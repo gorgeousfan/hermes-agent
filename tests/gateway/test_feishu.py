@@ -4885,3 +4885,101 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+    def test_stale_pre_connect_message_is_dropped(self):
+        """Messages created before adapter connect() are skipped on restart."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = 1700000010.0  # adapter connected at this time
+
+        class _Loop:
+            def is_closed(self):
+                return False
+
+        adapter._loop = _Loop()
+
+        # Message created 60 seconds BEFORE connect → stale
+        message = SimpleNamespace(
+            message_id="om_stale",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            content='{"text":"old message"}',
+            create_time="1700000000000",  # 1700000000s < 1700000010s connect
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        # The _on_message_event path goes through _handle_message_event_data;
+        # we test the async path directly for precision.
+        import asyncio
+
+        async def _run():
+            await adapter._handle_message_event_data(data)
+
+        with patch.object(adapter, "_process_inbound_message", new_callable=AsyncMock) as proc:
+            asyncio.run(_run())
+        proc.assert_not_called()
+
+    def test_fresh_post_connect_message_is_accepted(self):
+        """Messages created after adapter connect() are processed normally."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = 1700000000.0
+
+        # Message created 60 seconds AFTER connect → fresh
+        message = SimpleNamespace(
+            message_id="om_fresh",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            content='{"text":"new message"}',
+            create_time="1700000060000",  # 1700000060s > 1700000000s connect
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        import asyncio
+
+        async def _run():
+            await adapter._handle_message_event_data(data)
+
+        with patch.object(adapter, "_process_inbound_message", new_callable=AsyncMock) as proc:
+            asyncio.run(_run())
+        proc.assert_called_once()
+        self.assertEqual(proc.call_args.kwargs["message_id"], "om_fresh")
+
+    def test_message_without_create_time_is_accepted(self):
+        """Events without create_time (older SDK) are not blocked."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._connect_time = 1700000000.0
+
+        message = SimpleNamespace(
+            message_id="om_no_ts",
+            chat_type="p2p",
+            chat_id="oc_chat",
+            message_type="text",
+            content='{"text":"no timestamp"}',
+            # no create_time attribute
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+        sender = SimpleNamespace(sender_id=sender_id, sender_type="user")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+
+        import asyncio
+
+        async def _run():
+            await adapter._handle_message_event_data(data)
+
+        with patch.object(adapter, "_process_inbound_message", new_callable=AsyncMock) as proc:
+            asyncio.run(_run())
+        proc.assert_called_once()
