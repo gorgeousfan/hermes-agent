@@ -76,6 +76,46 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+class _ConnWithoutResourceClosing:
+    """sqlite3.Connection context managers do not close the FD."""
+
+    def __init__(self):
+        self.closed = False
+        self.exited = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.exited = True
+        return False
+
+    def close(self):
+        self.closed = True
+
+
+def test_decompose_closes_connection_when_task_is_unknown(monkeypatch):
+    conn = _ConnWithoutResourceClosing()
+    monkeypatch.setattr(decomp.kb, "connect", lambda: conn)
+    monkeypatch.setattr(decomp.kb, "get_task", lambda _conn, _task_id: None)
+
+    outcome = decomp.decompose_task("missing")
+
+    assert outcome.ok is False
+    assert conn.exited is True
+    assert conn.closed is True
+
+
+def test_list_triage_ids_closes_connection(monkeypatch):
+    conn = _ConnWithoutResourceClosing()
+    monkeypatch.setattr(decomp.kb, "connect", lambda: conn)
+    monkeypatch.setattr(decomp.kb, "list_tasks", lambda _conn, **_kwargs: [])
+
+    assert decomp.list_triage_ids() == []
+    assert conn.exited is True
+    assert conn.closed is True
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)
