@@ -558,7 +558,10 @@ class TestGetSectionConfigSummary:
             def env_side(key, _target=env_var):
                 if key != _target:
                     return ""
-                if _target == "WHATSAPP_ENABLED":
+                # Some platforms parse a boolean-style sentinel and only treat
+                # truthy values as "configured" (WhatsApp, Webhook). Use the
+                # literal "true" so _platform_status doesn't drop them.
+                if _target in {"WHATSAPP_ENABLED", "WEBHOOK_ENABLED"}:
                     return "true"
                 return "x"
             import hermes_cli.gateway as gateway_mod
