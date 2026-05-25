@@ -278,13 +278,47 @@ class SessionResetPolicy:
 
 
 @dataclass
+class ChannelOverride:
+    """
+    Per-channel override for model, provider, and system prompt.
+
+    Used in config under platforms.<name>.channel_overrides[channel_id].
+    Enables different channels (e.g. Discord #daily vs #dev) to use different
+    models and personas without running separate gateway instances.
+    """
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    system_prompt: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.model is not None:
+            out["model"] = self.model
+        if self.provider is not None:
+            out["provider"] = self.provider
+        if self.system_prompt is not None:
+            out["system_prompt"] = self.system_prompt
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
+        if not data:
+            return cls()
+        return cls(
+            model=data.get("model"),
+            provider=data.get("provider"),
+            system_prompt=data.get("system_prompt"),
+        )
+
+
+@dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
-    
+
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
@@ -297,6 +331,9 @@ class PlatformConfig:
     # by end users (e.g. Slack) where operator-flavored restart pings are
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
+
+    # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
+    channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
 
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -314,6 +351,10 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.channel_overrides:
+            result["channel_overrides"] = {
+                cid: ov.to_dict() for cid, ov in self.channel_overrides.items()
+            }
         return result
 
     @classmethod
@@ -321,6 +362,13 @@ class PlatformConfig:
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
+
+        channel_overrides: Dict[str, ChannelOverride] = {}
+        raw_overrides = data.get("channel_overrides") or {}
+        if isinstance(raw_overrides, dict):
+            for cid, ov_data in raw_overrides.items():
+                if isinstance(ov_data, dict):
+                    channel_overrides[str(cid)] = ChannelOverride.from_dict(ov_data)
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
@@ -337,6 +385,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            channel_overrides=channel_overrides,
             extra=data.get("extra", {}),
         )
 
@@ -868,10 +917,22 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
+                has_channel_overrides = "channel_overrides" in platform_cfg
+                if has_channel_overrides:
+                    raw_overrides = platform_cfg.get("channel_overrides")
+                    if isinstance(raw_overrides, dict):
+                        plat_data, _extra = _ensure_platform_extra_dict(
+                            platforms_data, plat.value
+                        )
+                        plat_data["channel_overrides"] = {
+                            str(cid): ov_data
+                            for cid, ov_data in raw_overrides.items()
+                            if isinstance(ov_data, dict)
+                        }
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 enabled_was_explicit = "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit:
+                if not bridged and not enabled_was_explicit and not has_channel_overrides:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
