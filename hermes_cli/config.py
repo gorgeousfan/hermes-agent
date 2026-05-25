@@ -1102,6 +1102,7 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        "tailscale_allowlist": [],  # Tailscale-User-Login values allowed through tailscale serve identity auth (empty = identity auth disabled)
     },
 
     # Privacy settings
