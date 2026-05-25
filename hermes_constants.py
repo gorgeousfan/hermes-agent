@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import pwd
 import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -279,6 +280,48 @@ def get_subprocess_home() -> str | None:
     if os.path.isdir(profile_home):
         return profile_home
     return None
+
+
+def get_shared_gh_config_dir() -> str | None:
+    """Return the non-profile-isolated GitHub CLI config dir, if discoverable.
+
+    Hermes profile subprocesses intentionally rewrite ``HOME`` to
+    ``{HERMES_HOME}/home`` so git/ssh/npm configs remain profile-scoped.
+    GitHub CLI auth is a special case: users often authenticate once in their
+    real OS account, and profile HOME isolation would otherwise hide
+    ``~/.config/gh`` from `gh auth status`, `gh pr view`, and related worker
+    subprocesses. This helper resolves the shared gh config directory from:
+
+    1. ``XDG_CONFIG_HOME/gh`` when present
+    2. the real passwd home ``~/.config/gh`` as a POSIX fallback
+
+    Returns ``None`` when no plausible directory exists on disk.
+    """
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_config_home:
+        gh_dir = Path(xdg_config_home) / "gh"
+        if gh_dir.is_dir():
+            return str(gh_dir)
+
+    try:
+        real_home = pwd.getpwuid(os.getuid()).pw_dir.strip()
+    except Exception:
+        real_home = ""
+    if real_home:
+        gh_dir = Path(real_home) / ".config" / "gh"
+        if gh_dir.is_dir():
+            return str(gh_dir)
+
+    return None
+
+
+def inject_shared_gh_config_dir(env: dict[str, str]) -> None:
+    """Set GH_CONFIG_DIR in-place when a shared GitHub CLI config exists."""
+    if env.get("GH_CONFIG_DIR"):
+        return
+    gh_dir = get_shared_gh_config_dir()
+    if gh_dir:
+        env["GH_CONFIG_DIR"] = gh_dir
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")

@@ -882,11 +882,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     run_env = os.environ.copy()
     run_env["HERMES_HOME"] = str(_get_hermes_home())
     try:
-        from hermes_constants import get_subprocess_home
+        from hermes_constants import get_subprocess_home, inject_shared_gh_config_dir
 
         profile_home = get_subprocess_home()
         if profile_home:
             run_env["HOME"] = profile_home
+        inject_shared_gh_config_dir(run_env)
     except Exception:
         pass
 

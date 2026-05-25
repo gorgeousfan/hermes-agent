@@ -106,6 +106,12 @@ def _resolve_home_dir() -> str:
 def _build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = _resolve_home_dir()
+    try:
+        from hermes_constants import inject_shared_gh_config_dir
+
+        inject_shared_gh_config_dir(env)
+    except Exception:
+        pass
     return env
 
 

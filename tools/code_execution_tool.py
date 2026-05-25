@@ -1215,10 +1215,11 @@ def execute_code(
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
-        from hermes_constants import get_subprocess_home
+        from hermes_constants import get_subprocess_home, inject_shared_gh_config_dir
         _profile_home = get_subprocess_home()
         if _profile_home:
             child_env["HOME"] = _profile_home
+        inject_shared_gh_config_dir(child_env)
 
         # Resolve interpreter + CWD based on execute_code mode.
         #   - strict : today's behavior (sys.executable + tmpdir CWD).

@@ -10,6 +10,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/4426
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -74,6 +75,31 @@ class TestGetSubprocessHome:
         assert home_a != home_b
         assert home_a.endswith("alpha/home")
         assert home_b.endswith("beta/home")
+
+
+class TestGetSharedGhConfigDir:
+    """Unit tests for hermes_constants.get_shared_gh_config_dir()."""
+
+    def test_prefers_xdg_config_home_when_present(self, tmp_path, monkeypatch):
+        xdg_root = tmp_path / "xdg"
+        gh_dir = xdg_root / "gh"
+        gh_dir.mkdir(parents=True)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+
+        from hermes_constants import get_shared_gh_config_dir
+
+        assert get_shared_gh_config_dir() == str(gh_dir)
+
+    def test_falls_back_to_real_user_home_when_xdg_missing(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real-home"
+        gh_dir = real_home / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+        with patch("pwd.getpwuid", return_value=SimpleNamespace(pw_dir=str(real_home))):
+            from hermes_constants import get_shared_gh_config_dir
+
+            assert get_shared_gh_config_dir() == str(gh_dir)
 
     def test_context_override_is_thread_local(self, tmp_path, monkeypatch):
         root = tmp_path / "root"
@@ -179,6 +205,44 @@ class TestMakeRunEnvHomeInjection:
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
 
+    def test_injects_gh_config_dir_from_xdg_config_home(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        xdg_root = tmp_path / "xdg"
+        gh_dir = xdg_root / "gh"
+        gh_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+
+        from tools.environments.local import _make_run_env
+        result = _make_run_env({})
+
+        assert result["HOME"] == str(hermes_home / "home")
+        assert result["GH_CONFIG_DIR"] == str(gh_dir)
+
+    def test_injects_gh_config_dir_from_real_home_fallback(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        real_home = tmp_path / "real-home"
+        gh_dir = real_home / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/root")
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+        from tools.environments.local import _make_run_env
+
+        with patch("pwd.getpwuid", return_value=SimpleNamespace(pw_dir=str(real_home))):
+            result = _make_run_env({})
+
+        assert result["HOME"] == str(hermes_home / "home")
+        assert result["GH_CONFIG_DIR"] == str(gh_dir)
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_subprocess_env() injection
@@ -230,6 +294,25 @@ class TestSanitizeSubprocessEnvHomeInjection:
 
         assert result["HERMES_HOME"] == str(profile)
         assert result["HOME"] == str(profile / "home")
+
+    def test_injects_gh_config_dir_for_background_processes(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        real_home = tmp_path / "real-home"
+        gh_dir = real_home / ".config" / "gh"
+        gh_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+        base_env = {"HOME": "/root", "PATH": "/usr/bin", "USER": "root"}
+        from tools.environments.local import _sanitize_subprocess_env
+
+        with patch("pwd.getpwuid", return_value=SimpleNamespace(pw_dir=str(real_home))):
+            result = _sanitize_subprocess_env(base_env)
+
+        assert result["HOME"] == str(hermes_home / "home")
+        assert result["GH_CONFIG_DIR"] == str(gh_dir)
 
 
 # ---------------------------------------------------------------------------

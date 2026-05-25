@@ -5699,6 +5699,12 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    try:
+        from hermes_constants import inject_shared_gh_config_dir
+
+        inject_shared_gh_config_dir(env)
+    except Exception:
+        pass
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
