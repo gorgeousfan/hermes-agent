@@ -77,6 +77,33 @@ For example: `agent:main:telegram:private:123456789`
 
 Thread-aware platforms (Telegram forum topics, Discord threads, Slack threads) may include thread IDs in the chat_id portion. **Never construct session keys manually** — always use `build_session_key()` from `gateway/session.py`.
 
+### Deterministic zero-token mirrors
+
+`gateway.deterministic_mirrors` can pair concrete Slack/Telegram lanes so the gateway copies messages directly through platform adapters without calling an LLM. The same config also aliases paired endpoints to one canonical session key (`agent:main:mirror:{pair_name}`), preventing duplicated mirrored context from being stored and re-read.
+
+Rules:
+
+- Mirror pair `name` values must be unique after canonicalization. Spaces and other unsafe characters become `_`, so `pm room` and `pm_room` collide; duplicate canonical names are ignored to avoid session alias collisions.
+- Slash/control commands are not mirrored as chat content.
+- A `thread_id: "*"` endpoint matches concrete source threads only. It is not a concrete outbound destination, and root messages without a thread do not match it.
+- Never construct mirror session keys manually; use `resolve_gateway_session_key()` from `gateway/zero_token_mirror.py` or the gateway/session helpers that call it.
+
+Example:
+
+```yaml
+gateway:
+  deterministic_mirrors:
+    enabled: true
+    pairs:
+      - name: pm-main
+        endpoints:
+          - platform: telegram
+            chat_id: "2091982351"
+          - platform: slack
+            chat_id: "C0123456789"
+            thread_id: "1779007573.641769"
+```
+
 ### Two-Level Message Guard
 
 When an agent is actively running, incoming messages pass through two sequential guards:
