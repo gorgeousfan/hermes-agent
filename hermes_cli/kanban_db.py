@@ -1181,7 +1181,24 @@ def connect(
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # synchronous=FULL: previously NORMAL. NORMAL returns from
+            # COMMIT before the WAL frames are durably on disk; under
+            # heartbeat-heavy concurrent workloads (dispatcher + worker
+            # subprocess both writing event rows + status updates) a
+            # power-loss-like race can leave the WAL header inconsistent
+            # with main DB pages, producing "database disk image is
+            # malformed" on subsequent reads. FULL forces fsync() after
+            # every commit — slower writes but durable. Performance cost
+            # is bounded because the kanban workload is dispatch-bounded,
+            # not write-bounded. See issue #30896 for the repro.
+            #
+            # wal_autocheckpoint=100: tighter than the default 1000 pages.
+            # Heartbeat-heavy review workloads (reviewer workers posting
+            # 50+ events in 5 minutes) can otherwise grow the WAL to many
+            # MB before checkpoint, widening the durability window where
+            # a worker crash can leave the WAL irreparable.
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("PRAGMA wal_autocheckpoint=100")
             conn.execute("PRAGMA foreign_keys=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
