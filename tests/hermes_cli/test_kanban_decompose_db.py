@@ -166,3 +166,78 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_children_inherit_root_dir_workspace(kanban_home, tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="split real project work",
+            triage=True,
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[
+                {"title": "backend", "assignee": "backend"},
+                {"title": "frontend", "assignee": "frontend"},
+            ],
+            author="alice",
+        )
+
+        assert child_ids is not None
+        children = [kb.get_task(conn, cid) for cid in child_ids]
+
+    assert [(c.workspace_kind, c.workspace_path) for c in children if c] == [
+        ("dir", str(workspace)),
+        ("dir", str(workspace)),
+    ]
+
+
+def test_decompose_children_inherit_root_notify_subscriptions(kanban_home):
+    with kb.connect() as conn:
+        tid = _create_triage(conn, title="needs fanout")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="dingtalk",
+            chat_id="chat-1",
+            thread_id="thread-1",
+            user_id="user-1",
+            notifier_profile="default",
+        )
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[
+                {"title": "backend", "assignee": "backend"},
+                {"title": "frontend", "assignee": "frontend"},
+            ],
+            author="alice",
+        )
+
+        assert child_ids is not None
+        child_subs = [kb.list_notify_subs(conn, cid) for cid in child_ids]
+
+    observed = [
+        [
+            sub["platform"],
+            sub["chat_id"],
+            sub["thread_id"],
+            sub["user_id"],
+            sub["notifier_profile"],
+        ]
+        for [sub] in child_subs
+    ]
+    assert observed == [
+        ["dingtalk", "chat-1", "thread-1", "user-1", "default"],
+        ["dingtalk", "chat-1", "thread-1", "user-1", "default"],
+    ]

@@ -3709,13 +3709,20 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        child_workspace_kind = "scratch"
+        child_workspace_path = None
+        if root_row["workspace_kind"] == "dir" and root_row["workspace_path"]:
+            child_workspace_kind = "dir"
+            child_workspace_path = root_row["workspace_path"]
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -3729,13 +3736,15 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    child_workspace_kind,
+                    child_workspace_path,
                     tenant,
                     now,
                     (author or "decomposer"),
@@ -3744,6 +3753,19 @@ def decompose_triage_task(
             _append_event(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO kanban_notify_subs
+                    (task_id, platform, chat_id, thread_id, user_id,
+                     notifier_profile, created_at, last_event_id)
+                SELECT ?, platform, chat_id, thread_id, user_id,
+                       notifier_profile, ?,
+                       COALESCE((SELECT MAX(id) FROM task_events), 0)
+                  FROM kanban_notify_subs
+                 WHERE task_id = ?
+                """,
+                (new_id, now, task_id),
             )
             child_ids.append(new_id)
 
