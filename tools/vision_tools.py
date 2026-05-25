@@ -41,6 +41,7 @@ from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
+from tools.url_safety import is_safe_url
 import sys
 
 logger = logging.getLogger(__name__)
@@ -98,11 +99,18 @@ def _validate_image_url(url: str) -> bool:
         return False
 
     # Block private/internal addresses to prevent SSRF
-    from tools.url_safety import is_safe_url
     if not is_safe_url(url):
         return False
 
     return True
+
+
+def _ensure_safe_download_url(url: str, media_type: str) -> None:
+    """Reject private/internal media download URLs before opening sockets."""
+    if not is_safe_url(url):
+        raise ValueError(
+            f"Blocked {media_type} download from private/internal address: {url}"
+        )
 
 
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:
@@ -157,13 +165,10 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
         """
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)
-            from tools.url_safety import is_safe_url
-            if not is_safe_url(redirect_url):
-                raise ValueError(
-                    f"Blocked redirect to private/internal address: {redirect_url}"
-                )
+            _ensure_safe_download_url(redirect_url, "image")
 
     last_error = None
+    _ensure_safe_download_url(image_url, "image")
     for attempt in range(max_retries):
         try:
             blocked = check_website_access(image_url)
@@ -1115,13 +1120,10 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     async def _ssrf_redirect_guard(response):
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)
-            from tools.url_safety import is_safe_url
-            if not is_safe_url(redirect_url):
-                raise ValueError(
-                    f"Blocked redirect to private/internal address: {redirect_url}"
-                )
+            _ensure_safe_download_url(redirect_url, "video")
 
     last_error = None
+    _ensure_safe_download_url(video_url, "video")
     for attempt in range(max_retries):
         try:
             blocked = check_website_access(video_url)

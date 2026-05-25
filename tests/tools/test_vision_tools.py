@@ -460,6 +460,18 @@ class TestVisionSafetyGuards:
         mock_download.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_download_rejects_private_url_before_http_client(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(ValueError, match="Blocked image download"),
+        ):
+            await _download_image("http://127.0.0.1:8080/private.png", tmp_path / "x.png", max_retries=1)
+
+        mock_client_cls.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_download_blocks_redirected_final_url(self, tmp_path):
         from tools.vision_tools import _download_image
 
@@ -485,6 +497,7 @@ class TestVisionSafetyGuards:
 
         with (
             patch("tools.vision_tools.check_website_access", side_effect=fake_check),
+            patch("tools.vision_tools.is_safe_url", return_value=True),
             patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
             pytest.raises(PermissionError, match="Blocked by website policy"),
         ):
