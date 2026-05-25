@@ -630,11 +630,117 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
+def _inspect_local_skill(name: str, console: Console) -> bool:
+    """Display an installed builtin/local skill by bare name, reading from disk.
+
+    `inspect` historically queried only hub registries, so a skill that is
+    installed on disk — and shows up in `hermes skills list` — returned a
+    misleading "not found in any source" error (#25087). We look on disk first
+    and, on a match, print the same panel the hub path would. Returns True when
+    a local skill was found and displayed (so the caller skips the hub lookup).
+    """
+    from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, MAX_NAME_LENGTH
+    from tools.skills_sync import _read_manifest
+    from agent.skill_utils import (
+        get_disabled_skill_names,
+        get_external_skills_dirs,
+        iter_skill_index_files,
+    )
+
+    c = console or _console
+
+    dirs_to_scan = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    # (skill_name, skill_md_path, frontmatter, content)
+    matches: list = []
+    seen: set = set()
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                key = skill_md.resolve()
+            except OSError:
+                key = skill_md
+            if key in seen:
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, PermissionError, OSError):
+                continue
+            try:
+                frontmatter, _ = _parse_frontmatter(content)
+            except Exception:
+                frontmatter = {}
+            skill_name = (frontmatter.get("name") or skill_md.parent.name)[:MAX_NAME_LENGTH]
+            # Match the canonical (frontmatter) name or the on-disk directory
+            # name — the same identity `hermes skills list` shows.
+            if name.lower() not in (skill_name.lower(), skill_md.parent.name.lower()):
+                continue
+            seen.add(key)
+            matches.append((skill_name, skill_md, frontmatter, content))
+
+    if not matches:
+        return False
+
+    if len(matches) > 1:
+        c.print(f"\n[yellow]Multiple local skills match '{name}':[/]")
+        for sname, smd, _, _ in matches:
+            c.print(f"  [cyan]{sname}[/] — {smd}")
+        c.print("[bold]Pass the full categorized path to disambiguate.[/]\n")
+        return True
+
+    skill_name, skill_md, frontmatter, content = matches[0]
+    builtin_names = set(_read_manifest())
+    disabled = get_disabled_skill_names()
+    source = "builtin" if skill_name in builtin_names else "local"
+    trust_style = "bright_cyan" if source == "builtin" else "dim"
+    status = "[dim red]disabled[/]" if skill_name in disabled else "[bold green]enabled[/]"
+
+    description = frontmatter.get("description", "")
+    tags = (((frontmatter.get("metadata") or {}).get("hermes") or {}).get("tags")
+            if isinstance(frontmatter.get("metadata"), dict) else None)
+
+    c.print()
+    info_lines = [
+        f"[bold]Name:[/] {skill_name}",
+        f"[bold]Description:[/] {description}",
+        f"[bold]Source:[/] {source}",
+        f"[bold]Trust:[/] [{trust_style}]{source}[/]",
+        f"[bold]Status:[/] {status}",
+        f"[bold]Path:[/] {skill_md}",
+    ]
+    if tags:
+        info_lines.append(f"[bold]Tags:[/] {', '.join(str(t) for t in tags)}")
+    c.print(Panel("\n".join(info_lines), title=f"Skill: {skill_name}"))
+
+    lines = content.split("\n")
+    preview = "\n".join(lines[:50])
+    if len(lines) > 50:
+        preview += f"\n\n... ({len(lines) - 50} more lines)"
+    c.print(Panel(preview, title="SKILL.md Preview",
+                  subtitle="installed locally — loaded by the runtime resolver"))
+    c.print()
+    return True
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
-    """Preview a skill's SKILL.md content without installing."""
+    """Preview a skill's SKILL.md content without installing.
+
+    Bare names are resolved against installed builtin/local skills first, then
+    fall back to hub registries; pass a full ``source/path`` identifier to force
+    a hub lookup.
+    """
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+
+    if "/" not in identifier and _inspect_local_skill(identifier, c):
+        return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
@@ -1602,7 +1708,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
-        "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
+        "  [cyan]inspect[/] <identifier>        Preview an installed local skill or a hub skill\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"

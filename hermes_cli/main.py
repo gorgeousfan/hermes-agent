@@ -12389,9 +12389,14 @@ Examples:
     )
 
     skills_inspect = skills_subparsers.add_parser(
-        "inspect", help="Preview a skill without installing"
+        "inspect",
+        help="Preview an installed local skill or a hub skill without installing",
     )
-    skills_inspect.add_argument("identifier", help="Skill identifier")
+    skills_inspect.add_argument(
+        "identifier",
+        help="Skill name (resolved against installed local skills first, then "
+             "hub registries) or a full source/path identifier",
+    )
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument(

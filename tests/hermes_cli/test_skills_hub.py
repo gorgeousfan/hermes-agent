@@ -565,3 +565,98 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
         "browse_skills() must not deduplicate browse-sh skills with the same name "
         "but different identifiers"
     )
+
+
+# ---------------------------------------------------------------------------
+# inspect: bare names resolve to installed local/builtin skills first (#25087)
+# ---------------------------------------------------------------------------
+
+
+def _write_local_skill(skills_dir, name, description="A local skill", body="# Body\nstuff"):
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n{body}\n",
+        encoding="utf-8",
+    )
+    return skill_dir / "SKILL.md"
+
+
+@pytest.fixture()
+def local_skill_env(monkeypatch, tmp_path):
+    """Point the on-disk skill scan at an isolated tmp dir with no externals."""
+    import tools.skills_tool as skills_tool
+    import tools.skills_sync as skills_sync
+    import agent.skill_utils as skill_utils
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [])
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda *a, **k: set())
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    return skills_dir
+
+
+def _capture_inspect(identifier: str) -> str:
+    from hermes_cli.skills_hub import do_inspect
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    do_inspect(identifier, console=console)
+    return sink.getvalue()
+
+
+def test_inspect_finds_installed_local_skill(local_skill_env):
+    _write_local_skill(local_skill_env, "dogfood", description="Eat our own food")
+
+    out = _capture_inspect("dogfood")
+
+    assert "dogfood" in out
+    assert "Eat our own food" in out
+    assert "local" in out
+    assert "enabled" in out
+    # The misleading hub-only errors must not appear for an installed skill.
+    assert "any source" not in out
+    assert "Did you mean" not in out
+
+
+def test_inspect_labels_builtin_skill(local_skill_env, monkeypatch):
+    import tools.skills_sync as skills_sync
+
+    _write_local_skill(local_skill_env, "gifs")
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {"gifs": "deadbeef"})
+
+    out = _capture_inspect("gifs")
+
+    assert "gifs" in out
+    assert "builtin" in out
+
+
+def test_inspect_marks_disabled_local_skill(local_skill_env, monkeypatch):
+    import agent.skill_utils as skill_utils
+
+    _write_local_skill(local_skill_env, "findmy")
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda *a, **k: {"findmy"})
+
+    out = _capture_inspect("findmy")
+
+    assert "findmy" in out
+    assert "disabled" in out
+
+
+def test_inspect_falls_back_to_hub_when_no_local_match(local_skill_env, monkeypatch):
+    import hermes_cli.skills_hub as cli_hub
+
+    called = {}
+
+    def _fake_resolve(name, sources, console):
+        called["name"] = name
+        return ""  # mimic "no hub match" so do_inspect returns cleanly
+
+    monkeypatch.setattr(cli_hub, "_resolve_short_name", _fake_resolve)
+    with patch("tools.skills_hub.create_source_router", return_value=[]), \
+         patch("tools.skills_hub.GitHubAuth"):
+        _capture_inspect("not-installed-anywhere")
+
+    assert called.get("name") == "not-installed-anywhere"
