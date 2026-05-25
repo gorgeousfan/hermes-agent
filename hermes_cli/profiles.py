@@ -609,6 +609,10 @@ def list_profiles() -> List[ProfileInfo]:
             name = entry.name
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if name == "default":
+                # The built-in default profile is the root HERMES_HOME itself.
+                # Ignore stray profiles/default directories so it never appears twice.
+                continue
             model, provider = _read_config_model(entry)
             alias_path = wrapper_dir / name
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
