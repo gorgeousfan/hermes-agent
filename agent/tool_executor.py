@@ -628,29 +628,37 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
-            target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
-            function_result = _memory_tool(
-                action=function_args.get("action"),
-                target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
-                store=agent._memory_store,
-            )
-            # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-                try:
-                    agent._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
-                    )
-                except Exception:
-                    pass
+            # Incognito guard: block durable memory writes when session
+            # persistence is disabled. Reads still pass through to the tool.
+            if not getattr(agent, "persist_session", True) and function_args.get("action") in {"add", "replace", "remove"}:
+                function_result = json.dumps({
+                    "success": False,
+                    "error": "Incognito mode is ON — durable memory writes are disabled for this session."
+                }, ensure_ascii=False)
+            else:
+                target = function_args.get("target", "memory")
+                from tools.memory_tool import memory_tool as _memory_tool
+                function_result = _memory_tool(
+                    action=function_args.get("action"),
+                    target=target,
+                    content=function_args.get("content"),
+                    old_text=function_args.get("old_text"),
+                    store=agent._memory_store,
+                )
+                # Bridge: notify external memory provider of built-in memory writes
+                if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
+                    try:
+                        agent._memory_manager.on_memory_write(
+                            function_args.get("action", ""),
+                            target,
+                            function_args.get("content", ""),
+                            metadata=agent._build_memory_write_metadata(
+                                task_id=effective_task_id,
+                                tool_call_id=getattr(tool_call, "id", None),
+                            ),
+                        )
+                    except Exception:
+                        pass
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
@@ -715,27 +723,39 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
             # Memory provider tools (hindsight_retain, honcho_search, etc.)
             # These are not in the tool registry — route through MemoryManager.
-            spinner = None
-            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                preview = _build_tool_preview(function_name, function_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
-            _mem_result = None
-            try:
-                function_result = agent._memory_manager.handle_tool_call(function_name, function_args)
-                _mem_result = function_result
-            except Exception as tool_error:
-                function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            finally:
+            # Incognito guard: block external memory retention tools
+            # (suffix `_retain`) when persistence is disabled. Search/read
+            # tools still pass through to the manager.
+            if not getattr(agent, "persist_session", True) and function_name.endswith("_retain"):
+                function_result = json.dumps({
+                    "success": False,
+                    "error": "Incognito mode is ON — external memory retention is disabled for this session."
+                }, ensure_ascii=False)
                 tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
+                if agent._should_emit_quiet_tool_messages():
+                    agent._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
+            else:
+                spinner = None
+                if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+                    face = random.choice(KawaiiSpinner.get_waiting_faces())
+                    emoji = _get_tool_emoji(function_name)
+                    preview = _build_tool_preview(function_name, function_args) or function_name
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
+                    spinner.start()
+                _mem_result = None
+                try:
+                    function_result = agent._memory_manager.handle_tool_call(function_name, function_args)
+                    _mem_result = function_result
+                except Exception as tool_error:
+                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
+                    logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                finally:
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif agent._should_emit_quiet_tool_messages():
+                        agent._vprint(f"  {cute_msg}")
         elif agent.quiet_mode:
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():

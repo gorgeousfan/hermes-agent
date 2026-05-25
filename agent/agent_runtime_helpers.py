@@ -1565,6 +1565,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             current_session_id=agent.session_id,
         )
     elif function_name == "memory":
+        # Incognito guard: block durable memory writes when session
+        # persistence is disabled. Reads still pass through to the tool.
+        if not getattr(agent, "persist_session", True) and function_args.get("action") in {"add", "replace", "remove"}:
+            return json.dumps({
+                "success": False,
+                "error": "Incognito mode is ON — durable memory writes are disabled for this session."
+            }, ensure_ascii=False)
         target = function_args.get("target", "memory")
         from tools.memory_tool import memory_tool as _memory_tool
         result = _memory_tool(
@@ -1590,6 +1597,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 pass
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
+        # Incognito guard: block external memory retention tools
+        # (hindsight_retain, honcho_retain, etc.) when persistence is
+        # disabled. Search/read tools fall through to the manager.
+        if not getattr(agent, "persist_session", True) and function_name.endswith("_retain"):
+            return json.dumps({
+                "success": False,
+                "error": "Incognito mode is ON — external memory retention is disabled for this session."
+            }, ensure_ascii=False)
         return agent._memory_manager.handle_tool_call(function_name, function_args)
     elif function_name == "clarify":
         from tools.clarify_tool import clarify_tool as _clarify_tool
