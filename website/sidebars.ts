@@ -649,6 +649,7 @@ const sidebars: SidebarsConfig = {
         'integrations/index',
         'integrations/nous-portal',
         'integrations/providers',
+        'integrations/cursor',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/api-server',

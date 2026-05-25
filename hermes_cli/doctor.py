@@ -1865,6 +1865,45 @@ def run_doctor(args):
         for _issue in _issues_to_add:
             issues.append(_issue)
 
+    _section("Cursor SDK (optional)")
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from agent.cursor_sdk_client import cursor_sdk_available, probe_cursor_api_key
+
+        if os.environ.get("CURSOR_API_KEY", "").strip():
+            if cursor_sdk_available():
+                probe = probe_cursor_api_key()
+                if probe.get("ok"):
+                    check_ok("Cursor SDK", probe.get("detail", ""))
+                else:
+                    check_warn("Cursor SDK", f"({probe.get('detail', 'probe failed')})")
+                    issues.append("CURSOR_API_KEY is set but Cursor API probe failed")
+            else:
+                check_warn(
+                    "cursor-sdk package",
+                    f"(install: {_python_install_cmd()} 'hermes-agent[cursor]')",
+                )
+        else:
+            check_info("CURSOR_API_KEY not set (cursor_agent tool disabled)")
+        bridge_port = os.environ.get("CURSOR_BRIDGE_PORT", "18765")
+        bridge_host = os.environ.get("CURSOR_BRIDGE_HOST", "127.0.0.1")
+        try:
+            import urllib.request
+
+            url = f"http://{bridge_host}:{bridge_port}/health"
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                if resp.status == 200:
+                    check_ok("cursor_bridge", f"({url})")
+                else:
+                    check_info("cursor_bridge not running", f"(optional — {url})")
+        except Exception:
+            check_info(
+                "cursor_bridge not running",
+                f"(optional — http://{bridge_host}:{bridge_port}/health)",
+            )
+    except Exception as e:
+        check_warn("Cursor SDK check skipped", f"({e})")
+
     _section("Tool Availability")
     try:
         # Add project root to path for imports

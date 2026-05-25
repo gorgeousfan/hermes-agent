@@ -68,6 +68,7 @@ Speech-to-text supports six providers: local faster-whisper (free, runs on-devic
 ## IDE & Editor Integration
 
 - **[IDE Integration (ACP)](/docs/user-guide/features/acp)** — Use Hermes Agent inside ACP-compatible editors such as VS Code, Zed, and JetBrains. Hermes runs as an ACP server, rendering chat messages, tool activity, file diffs, and terminal commands inside your editor.
+- **[Cursor Agent SDK](/docs/integrations/cursor)** — Delegate coding tasks to Cursor Composer via the `cursor_agent` tool, with an optional local OpenAI-compatible bridge for advanced setups.
 
 ## Programmatic Access
 

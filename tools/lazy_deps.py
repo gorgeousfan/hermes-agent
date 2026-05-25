@@ -149,6 +149,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "qrcode==7.4.2",
     ),
 
+    # ─── External agent runtimes ───────────────────────────────────────────
+    "tools.cursor": ("cursor-sdk>=0.1.5,<0.2",),
+
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),

@@ -240,6 +240,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "cursor": {
+        "description": (
+            "Delegate focused coding work to Cursor Agent SDK (Composer) — "
+            "requires CURSOR_API_KEY and optional cursor-sdk install"
+        ),
+        "tools": ["cursor_agent"],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 
@@ -354,7 +363,7 @@ TOOLSETS = {
             "session_search",
             "execute_code", "delegate_task",
         ],
-        "includes": []
+        "includes": ["cursor"]
     },
 
     "hermes-api-server": {
@@ -387,7 +396,7 @@ TOOLSETS = {
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 
         ],
-        "includes": []
+        "includes": ["cursor"]
     },
     
     "hermes-cli": {

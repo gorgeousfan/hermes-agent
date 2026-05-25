@@ -2313,6 +2313,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "CURSOR_API_KEY": {
+        "description": "Cursor API key for cursor_agent tool and optional cursor_bridge",
+        "prompt": "Cursor API key",
+        "url": "https://cursor.com/dashboard/integrations",
+        "tools": ["cursor_agent"],
+        "password": True,
+        "category": "tool",
+    },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",

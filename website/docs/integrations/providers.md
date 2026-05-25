@@ -602,6 +602,8 @@ with the Generative Language API enabled.
 
 Hermes Agent works with **any OpenAI-compatible API endpoint**. If a server implements `/v1/chat/completions`, you can point Hermes at it. This means you can use local models, GPU inference servers, multi-provider routers, or any third-party API.
 
+For **Cursor Composer** specifically, see [Cursor Agent SDK](/docs/integrations/cursor) (`cursor_agent` tool and optional experimental bridge).
+
 ### General Setup
 
 Three ways to configure a custom endpoint:
